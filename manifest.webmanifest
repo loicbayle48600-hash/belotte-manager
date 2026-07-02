@@ -1,0 +1,17 @@
+{
+  "name": "HACCP Cuisine — EHPAD / FAM",
+  "short_name": "HACCP",
+  "description": "Registres HACCP pour cuisine collective : températures, réceptions, nettoyage, traçabilité.",
+  "lang": "fr",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#146346",
+  "theme_color": "#1a7f5a",
+  "icons": [
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}

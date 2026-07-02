@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <meta name="theme-color" content="#1a7f5a">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <title>HACCP Cuisine</title>
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icons/icon-192.png">
+  <link rel="apple-touch-icon" href="icons/icon-192.png">
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <div id="app">
+    <nav id="sidebar">
+      <div class="logo">
+        <span class="logo-icon">🌡️</span>
+        <span class="logo-text">HACCP<br><small id="etab-name">Cuisine</small></span>
+      </div>
+      <button class="nav-btn active" data-view="dashboard"><span>🏠</span>Accueil</button>
+      <button class="nav-btn" data-view="temperatures"><span>❄️</span>Enceintes froides</button>
+      <button class="nav-btn" data-view="reception"><span>🚚</span>Réceptions</button>
+      <button class="nav-btn" data-view="refroidissement"><span>📉</span>Refroidissement</button>
+      <button class="nav-btn" data-view="service"><span>🍽️</span>Service</button>
+      <button class="nav-btn" data-view="tracabilite"><span>🏷️</span>Étiquettes</button>
+      <button class="nav-btn" data-view="nettoyage"><span>🧽</span>Nettoyage</button>
+      <button class="nav-btn" data-view="huiles"><span>🍟</span>Huiles</button>
+      <button class="nav-btn" data-view="nonconformites"><span>⚠️</span>Non-conf.</button>
+      <button class="nav-btn" data-view="historique"><span>📋</span>Historique</button>
+      <button class="nav-btn" data-view="parametres"><span>⚙️</span>Réglages</button>
+    </nav>
+    <main id="main">
+      <div id="view"></div>
+    </main>
+  </div>
+  <div id="modal-root"></div>
+  <div id="toast-root"></div>
+  <script src="js/db.js"></script>
+  <script src="js/ui.js"></script>
+  <script src="js/app.js"></script>
+  <script>
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', () => navigator.serviceWorker.register('sw.js'));
+    }
+  </script>
+</body>
+</html>
