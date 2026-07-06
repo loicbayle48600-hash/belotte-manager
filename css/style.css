@@ -118,6 +118,16 @@ input:focus, select:focus, textarea:focus { outline: 3px solid rgba(26,127,90,.2
 .seg button.on { border-color: var(--green); background: var(--green-light); color: var(--green-dark); }
 .seg button.on.bad { border-color: var(--red); background: var(--red-light); color: var(--red); }
 
+/* Puces de sélection multiple (menu du jour) */
+.chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.chips button {
+  min-height: 46px; padding: 9px 15px; font-size: 15px; font-weight: 600;
+  border: 2px solid var(--border); background: #fff; color: var(--muted);
+  border-radius: 99px; cursor: pointer;
+}
+.chips button.on { border-color: var(--green); background: var(--green-light); color: var(--green-dark); }
+.chips button.on::before { content: '✔ '; }
+
 /* ---- Pastilles état ---- */
 .pill { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 700; padding: 4px 12px; border-radius: 99px; }
 .pill.ok { background: var(--green-light); color: var(--green-dark); }

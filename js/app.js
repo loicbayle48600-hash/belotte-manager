@@ -20,6 +20,9 @@ const RULES = {
 const DEFAULT_SETTINGS = {
   etablissement: 'Cuisine EHPAD / FAM',
   agents: [],
+  plats: [],
+  driveUrl: '',
+  driveAuto: false,
   equipements: [
     { id: 'e1', name: 'Frigo 1', type: 'positif', min: 0, max: 4 },
     { id: 'e2', name: 'Frigo 2', type: 'positif', min: 0, max: 4 },
@@ -115,6 +118,84 @@ function actionFieldHTML(value) {
   return '<label class="field" data-action-field style="display:none">' +
     '<span class="lbl">Action corrective (obligatoire si non conforme)</span>' +
     '<textarea data-f="action" placeholder="Ex. : produit isolé/jeté, maintenance appelée, nouveau contrôle prévu…">' + UI.esc(value || '') + '</textarea></label>';
+}
+
+/* ---------- Menu : plats & suggestions ---------- */
+const PLAT_CATS = [
+  { value: 'entree', label: 'Entrée' },
+  { value: 'plat', label: 'Plat principal' },
+  { value: 'garniture', label: 'Garniture' },
+  { value: 'dessert', label: 'Dessert' },
+  { value: 'autre', label: 'Autre' },
+];
+const PLAT_CAT_LABEL = Object.fromEntries(PLAT_CATS.map(c => [c.value, c.label]));
+
+/** Noms des plats prévus au menu du jour (midi + soir), pour aujourd'hui. */
+async function getTodayMenuNames() {
+  const today = UI.todayISO();
+  const menus = await DB.getByTypeAndRange('menu', today, today);
+  const names = [];
+  menus.forEach(mn => (mn.items || []).forEach(n => { if (!names.includes(n)) names.push(n); }));
+  return names;
+}
+
+/** Champ de saisie d'un plat avec suggestions (menu du jour d'abord, puis catalogue).
+ *  L'agent peut choisir dans la liste OU taper librement. */
+function dishInputHTML(field, label, placeholder, menuNames, value) {
+  const catalogue = SETTINGS.plats.map(p => p.name);
+  const ordered = [...menuNames, ...catalogue.filter(n => !menuNames.includes(n))];
+  const listId = 'dl-' + field;
+  return '<label class="field"><span class="lbl">' + UI.esc(label) + '</span>' +
+    '<input type="text" data-f="' + field + '" list="' + listId + '" placeholder="' + UI.esc(placeholder) + '" value="' + UI.esc(value || '') + '" autocomplete="off">' +
+    '<datalist id="' + listId + '">' + ordered.map(n => '<option value="' + UI.esc(n) + '">').join('') + '</datalist>' +
+    (menuNames.length ? '<span class="muted" style="font-size:12.5px">🍲 Menu du jour : ' + menuNames.map(UI.esc).join(', ') + '</span>' : '') +
+    '</label>';
+}
+
+/* ---------- Sauvegarde Google Drive (via Apps Script) ---------- */
+function lastAutoBackupDate() { return localStorage.getItem('haccp-drive-last') || ''; }
+function setLastAutoBackupDate(d) { localStorage.setItem('haccp-drive-last', d || ''); }
+
+async function buildBackup() {
+  const records = await DB.getAllRecords();
+  return { app: 'haccp-cuisine', version: 1, exportedAt: new Date().toISOString(), etablissement: SETTINGS.etablissement, settings: SETTINGS, records };
+}
+
+/** Envoie la sauvegarde au script Google Drive. Retourne {ok, message}.
+ *  Sous Capacitor (APK) la requête passe en natif (pas de blocage CORS) ; en
+ *  navigateur, fetch classique (repli no-cors si le domaine bloque la lecture). */
+async function sendToDrive() {
+  const url = (SETTINGS.driveUrl || '').trim();
+  if (!url) return { ok: false, message: 'Aucune URL Google Drive configurée' };
+  if (!navigator.onLine) return { ok: false, message: 'Pas de connexion Internet' };
+  const payload = JSON.stringify(await buildBackup());
+  const isNative = !!(window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform());
+  try {
+    if (isNative) {
+      const resp = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: payload });
+      const txt = await resp.text().catch(() => '');
+      if (!resp.ok) return { ok: false, message: 'Erreur serveur (' + resp.status + ')' };
+      return { ok: true, message: txt || 'Sauvegarde envoyée' };
+    }
+    // Navigateur : envoi « au mieux » (réponse opaque, on suppose la réussite si pas d'erreur réseau)
+    await fetch(url, { method: 'POST', mode: 'no-cors', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: payload });
+    return { ok: true, message: 'Sauvegarde envoyée' };
+  } catch (e) {
+    return { ok: false, message: 'Échec de l’envoi : ' + e.message };
+  }
+}
+
+/** Sauvegarde automatique quotidienne (au démarrage, si activée et connectée). */
+async function maybeAutoBackup() {
+  if (!SETTINGS.driveAuto || !SETTINGS.driveUrl) return;
+  if (!navigator.onLine) return;
+  const today = UI.todayISO();
+  if (lastAutoBackupDate() === today) return;
+  const res = await sendToDrive();
+  if (res.ok) {
+    setLastAutoBackupDate(today);
+    UI.toast('Sauvegarde Google Drive effectuée ✔', 'ok');
+  }
 }
 
 /* ================================================================
@@ -395,7 +476,8 @@ VIEWS.refroidissement = async function (el) {
   el.querySelectorAll('[data-finish]').forEach(b => b.addEventListener('click', () => openRefroidFinishModal(Number(b.dataset.finish))));
 };
 
-function openRefroidStartModal() {
+async function openRefroidStartModal() {
+  const menuNames = await getTodayMenuNames();
   UI.modal(
     '<h2>Démarrer un suivi</h2>' +
     '<label class="field"><span class="lbl">Type</span>' +
@@ -403,8 +485,7 @@ function openRefroidStartModal() {
       { value: 'refroidissement', label: '📉 Refroidissement (2 h max)' },
       { value: 'remise', label: '🔥 Remise en T° (1 h max)' },
     ], 'refroidissement') + '</label>' +
-    '<label class="field"><span class="lbl">Préparation / plat</span>' +
-    '<input type="text" data-f="produit" placeholder="Ex. : blanquette de veau"></label>' +
+    dishInputHTML('produit', 'Préparation / plat', 'Ex. : blanquette de veau', menuNames) +
     '<label class="field"><span class="lbl">Température de départ (°C)</span>' +
     '<input type="number" step="0.1" inputmode="decimal" class="temp-input" data-f="temp" placeholder="63.0"></label>' +
     agentField() +
@@ -508,11 +589,11 @@ VIEWS.service = async function (el) {
   el.querySelector('#new-serv').addEventListener('click', openServiceModal);
 };
 
-function openServiceModal() {
+async function openServiceModal() {
+  const menuNames = await getTodayMenuNames();
   UI.modal(
     '<h2>🍽️ Contrôle au service</h2>' +
-    '<label class="field"><span class="lbl">Plat</span>' +
-    '<input type="text" data-f="plat" placeholder="Ex. : purée, salade de betteraves…"></label>' +
+    dishInputHTML('plat', 'Plat', 'Ex. : purée, salade de betteraves…', menuNames) +
     '<label class="field"><span class="lbl">Liaison</span>' +
     UI.segHTML('liaison', [
       { value: 'chaude', label: '🔥 Chaude (≥ 63 °C)' },
@@ -566,6 +647,118 @@ function openServiceModal() {
     }
   );
 }
+
+/* ================================================================
+   MENU (catalogue de plats + menu du jour)
+================================================================ */
+VIEWS.menu = async function (el) {
+  const state = VIEWS.menu._state || (VIEWS.menu._state = { date: UI.todayISO(), service: 'midi', items: null });
+
+  async function loadDayMenu() {
+    const menus = await DB.getByTypeAndRange('menu', state.date, state.date);
+    const rec = menus.find(m => m.service === state.service);
+    state.items = rec ? [...(rec.items || [])] : [];
+    state._recId = rec ? rec.id : null;
+  }
+  if (state.items === null) await loadDayMenu();
+
+  const catByType = {};
+  SETTINGS.plats.forEach(p => { (catByType[p.cat] = catByType[p.cat] || []).push(p); });
+
+  el.innerHTML = headerHTML('Menu', 'Saisis tes plats une fois : ils seront proposés automatiquement dans Refroidissement, Remise en T° et Service') +
+
+    '<div class="card"><h2>🍲 Menu du jour</h2>' +
+    '<div class="row" style="margin-bottom:12px">' +
+    '<div><label class="field" style="margin:0"><span class="lbl">Date</span><input type="date" id="m-date" value="' + state.date + '"></label></div>' +
+    '<div class="grow"><label class="field" style="margin:0"><span class="lbl">Service</span>' +
+    UI.segHTML('service', [{ value: 'midi', label: '🌞 Midi' }, { value: 'soir', label: '🌙 Soir' }], state.service) + '</label></div>' +
+    '</div>' +
+    (SETTINGS.plats.length
+      ? '<p class="muted" style="margin-bottom:8px">Coche les plats servis :</p>' +
+        PLAT_CATS.filter(c => catByType[c.value]).map(c =>
+          '<div style="margin-bottom:8px"><div class="zone" style="margin-bottom:6px">' + c.label + '</div><div class="chips">' +
+          catByType[c.value].map(p =>
+            '<button type="button" class="menu-pick ' + (state.items.includes(p.name) ? 'on' : '') + '" data-pick="' + UI.esc(p.name) + '">' + UI.esc(p.name) + '</button>'
+          ).join('') + '</div></div>'
+        ).join('')
+      : '<div class="empty" style="padding:16px">Ajoute d’abord des plats au catalogue ci-dessous.</div>') +
+    '<hr class="sep">' +
+    '<div class="row"><div class="grow"><input type="text" id="m-free" placeholder="Ajouter un plat ponctuel (hors catalogue)"></div>' +
+    '<button class="btn small secondary" id="m-free-add">Ajouter au menu</button></div>' +
+    '<div id="m-selected" class="row" style="margin-top:12px"></div>' +
+    '<div class="spacer"></div><button class="btn" id="m-save">💾 Enregistrer le menu du jour</button></div>' +
+
+    '<div class="card"><h2>📖 Catalogue des plats (' + SETTINGS.plats.length + ')</h2>' +
+    '<p class="muted" style="margin-bottom:12px">Les plats réutilisables d’un jour à l’autre. Ils alimentent les listes déroulantes.</p>' +
+    (SETTINGS.plats.length
+      ? PLAT_CATS.filter(c => catByType[c.value]).map(c =>
+          '<div style="margin-bottom:10px"><div class="zone" style="margin-bottom:6px">' + c.label + '</div><div class="rec-list">' +
+          catByType[c.value].map(p =>
+            '<div class="rec-item"><div class="body"><div class="title">' + UI.esc(p.name) + '</div></div>' +
+            '<button class="btn small ghost" data-del-plat="' + p.id + '">🗑️</button></div>'
+          ).join('') + '</div></div>'
+        ).join('')
+      : '<div class="empty" style="padding:16px">Aucun plat dans le catalogue.</div>') +
+    '<hr class="sep"><div class="row"><div class="grow"><input type="text" id="p-name" placeholder="Nom du plat"></div>' +
+    '<div><select id="p-cat">' + PLAT_CATS.map(c => '<option value="' + c.value + '">' + c.label + '</option>').join('') + '</select></div>' +
+    '<button class="btn small" id="p-add">➕ Ajouter</button></div></div>';
+
+  UI.segWire(el);
+
+  function renderSelected() {
+    const box = el.querySelector('#m-selected');
+    box.innerHTML = state.items.length
+      ? state.items.map(n => '<span class="pill info">' + UI.esc(n) + ' <button data-unpick="' + UI.esc(n) + '" style="border:none;background:none;cursor:pointer;font-size:15px">✕</button></span>').join('')
+      : '<span class="muted">Aucun plat sélectionné pour ce service.</span>';
+    box.querySelectorAll('[data-unpick]').forEach(b => b.addEventListener('click', () => {
+      state.items = state.items.filter(x => x !== b.dataset.unpick);
+      el.querySelectorAll('[data-pick]').forEach(p => { if (p.dataset.pick === b.dataset.unpick) p.classList.remove('on'); });
+      renderSelected();
+    }));
+  }
+  renderSelected();
+
+  el.querySelectorAll('[data-pick]').forEach(btn => btn.addEventListener('click', () => {
+    const n = btn.dataset.pick;
+    if (state.items.includes(n)) { state.items = state.items.filter(x => x !== n); btn.classList.remove('on'); }
+    else { state.items.push(n); btn.classList.add('on'); }
+    renderSelected();
+  }));
+
+  el.querySelector('#m-date').addEventListener('change', async e => { state.date = e.target.value; await loadDayMenu(); render(); });
+  el.querySelector('.seg[data-seg="service"]').addEventListener('click', () => setTimeout(async () => {
+    const v = UI.segValue(el, 'service');
+    if (v && v !== state.service) { state.service = v; await loadDayMenu(); render(); }
+  }, 30));
+
+  el.querySelector('#m-free-add').addEventListener('click', () => {
+    const v = el.querySelector('#m-free').value.trim();
+    if (!v) return;
+    if (!state.items.includes(v)) state.items.push(v);
+    el.querySelector('#m-free').value = '';
+    renderSelected();
+  });
+
+  el.querySelector('#m-save').addEventListener('click', async () => {
+    const rec = { type: 'menu', date: state.date, service: state.service, items: state.items };
+    if (state._recId) { rec.id = state._recId; await DB.updateRecord(rec); }
+    else { state._recId = await DB.addRecord(rec); }
+    UI.toast('Menu du ' + UI.frDate(state.date) + ' (' + (state.service === 'midi' ? 'midi' : 'soir') + ') enregistré ✔', 'ok');
+  });
+
+  el.querySelector('#p-add').addEventListener('click', async () => {
+    const name = el.querySelector('#p-name').value.trim();
+    if (!name) { UI.toast('Indique le nom du plat', 'bad'); return; }
+    if (SETTINGS.plats.some(p => p.name.toLowerCase() === name.toLowerCase())) { UI.toast('Ce plat existe déjà', 'bad'); return; }
+    SETTINGS.plats.push({ id: uid(), name, cat: el.querySelector('#p-cat').value });
+    SETTINGS.plats.sort((a, b) => a.name.localeCompare(b.name, 'fr'));
+    await saveSettings(); render();
+  });
+  el.querySelectorAll('[data-del-plat]').forEach(b => b.addEventListener('click', async () => {
+    SETTINGS.plats = SETTINGS.plats.filter(p => p.id !== b.dataset.delPlat);
+    await saveSettings(); render();
+  }));
+};
 
 /* ================================================================
    TRAÇABILITÉ ÉTIQUETTES (photos)
@@ -966,8 +1159,19 @@ VIEWS.parametres = async function (el) {
       '<button class="btn small ghost" data-del-task="' + i + '">🗑️</button></div>').join('') + '</div>' +
     '<button class="btn small" id="s-task-add">➕ Ajouter une tâche</button></div>' +
 
-    '<div class="card"><h2>💾 Sauvegarde des données</h2>' +
-    '<p class="muted" style="margin-bottom:12px">Les données restent sur la tablette. Exporte régulièrement une sauvegarde complète (JSON) et garde-la ailleurs (clé USB, ordinateur, mail).</p>' +
+    '<div class="card"><h2>☁️ Sauvegarde automatique Google Drive</h2>' +
+    '<p class="muted" style="margin-bottom:12px">La tablette étant connectée à Internet, l’application peut déposer chaque jour une sauvegarde dans ton Google Drive. Il faut une seule fois coller l’adresse du script (voir la notice <b>GOOGLE-DRIVE.md</b>).</p>' +
+    '<label class="field"><span class="lbl">Adresse du script Google Drive</span>' +
+    '<input type="text" id="s-drive-url" value="' + UI.esc(SETTINGS.driveUrl || '') + '" placeholder="https://script.google.com/macros/s/.../exec"></label>' +
+    '<label class="field" style="display:flex;align-items:center;gap:12px"><input type="checkbox" id="s-drive-auto" ' + (SETTINGS.driveAuto ? 'checked' : '') + ' style="width:26px;height:26px;min-height:0">' +
+    '<span class="lbl" style="margin:0;text-transform:none;letter-spacing:0;font-size:15px">Sauvegarde automatique quotidienne</span></label>' +
+    '<div class="row"><button class="btn small" id="s-drive-save">Enregistrer</button>' +
+    '<button class="btn small secondary" id="s-drive-now">☁️ Sauvegarder maintenant</button></div>' +
+    (lastAutoBackupDate() ? '<p class="muted" style="margin-top:10px">Dernière sauvegarde auto : ' + UI.frDate(lastAutoBackupDate()) + '</p>' : '') +
+    '</div>' +
+
+    '<div class="card"><h2>💾 Sauvegarde locale (fichier)</h2>' +
+    '<p class="muted" style="margin-bottom:12px">Les données restent sur la tablette. Exporte aussi régulièrement une sauvegarde complète (JSON) et garde-la ailleurs (clé USB, ordinateur, mail).</p>' +
     '<div class="row"><button class="btn small" id="s-backup">⬇️ Exporter la sauvegarde</button>' +
     '<button class="btn small secondary" id="s-restore">⬆️ Restaurer une sauvegarde</button>' +
     '<input type="file" id="s-restore-file" accept="application/json" style="display:none"></div></div>';
@@ -976,6 +1180,24 @@ VIEWS.parametres = async function (el) {
   el.querySelector('#s-etab-save').addEventListener('click', async () => {
     SETTINGS.etablissement = el.querySelector('#s-etab').value.trim() || DEFAULT_SETTINGS.etablissement;
     await saveSettings(); UI.toast('Enregistré ✔', 'ok');
+  });
+
+  // Google Drive
+  el.querySelector('#s-drive-save').addEventListener('click', async () => {
+    SETTINGS.driveUrl = el.querySelector('#s-drive-url').value.trim();
+    SETTINGS.driveAuto = el.querySelector('#s-drive-auto').checked;
+    await saveSettings();
+    UI.toast('Réglages Drive enregistrés ✔', 'ok');
+  });
+  el.querySelector('#s-drive-now').addEventListener('click', async () => {
+    SETTINGS.driveUrl = el.querySelector('#s-drive-url').value.trim();
+    SETTINGS.driveAuto = el.querySelector('#s-drive-auto').checked;
+    await saveSettings();
+    if (!SETTINGS.driveUrl) { UI.toast('Colle d’abord l’adresse du script', 'bad'); return; }
+    UI.toast('Envoi en cours…');
+    const res = await sendToDrive();
+    if (res.ok) { setLastAutoBackupDate(UI.todayISO()); UI.toast('Sauvegarde envoyée sur Drive ✔', 'ok'); render(); }
+    else UI.toast(res.message, 'bad');
   });
 
   // Agents
@@ -1112,4 +1334,6 @@ VIEWS.parametres = async function (el) {
   await loadSettings();
   document.querySelectorAll('.nav-btn').forEach(b => b.addEventListener('click', () => navigate(b.dataset.view)));
   render();
+  // Sauvegarde automatique quotidienne (différée pour ne pas ralentir l'ouverture)
+  setTimeout(() => { maybeAutoBackup().catch(e => console.warn('backup auto', e)); }, 2500);
 })();
