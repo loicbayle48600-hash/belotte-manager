@@ -648,6 +648,207 @@ async function openServiceModal() {
   );
 }
 
+/* ---------- Import de menus (Excel / CSV) ---------- */
+
+// Charge la bibliothèque de lecture Excel à la demande (mise en cache hors ligne).
+let _xlsxPromise = null;
+function ensureXLSX() {
+  if (window.XLSX) return Promise.resolve(window.XLSX);
+  if (_xlsxPromise) return _xlsxPromise;
+  _xlsxPromise = new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = 'js/vendor/xlsx.full.min.js';
+    s.onload = () => resolve(window.XLSX);
+    s.onerror = () => reject(new Error('Impossible de charger le lecteur Excel'));
+    document.head.appendChild(s);
+  });
+  return _xlsxPromise;
+}
+
+// Convertit une cellule (Date, série Excel, ou texte) en date ISO AAAA-MM-JJ, sinon null.
+function parseDateCell(v) {
+  if (v == null || v === '') return null;
+  if (v instanceof Date && !isNaN(v)) {
+    return v.getFullYear() + '-' + String(v.getMonth() + 1).padStart(2, '0') + '-' + String(v.getDate()).padStart(2, '0');
+  }
+  if (typeof v === 'number' && v > 20000 && v < 90000) {
+    const ms = Math.round((v - 25569) * 86400 * 1000); // série Excel -> ms UTC
+    const d = new Date(ms);
+    return d.getUTCFullYear() + '-' + String(d.getUTCMonth() + 1).padStart(2, '0') + '-' + String(d.getUTCDate()).padStart(2, '0');
+  }
+  const s = String(v).trim();
+  let m = s.match(/^(\d{4})[-\/.](\d{1,2})[-\/.](\d{1,2})/); // AAAA-MM-JJ
+  if (m) return m[1] + '-' + m[2].padStart(2, '0') + '-' + m[3].padStart(2, '0');
+  m = s.match(/^(\d{1,2})[-\/.](\d{1,2})[-\/.](\d{2,4})/);   // JJ/MM/AAAA
+  if (m) {
+    let y = m[3]; if (y.length === 2) y = '20' + y;
+    return y + '-' + m[2].padStart(2, '0') + '-' + m[1].padStart(2, '0');
+  }
+  return null;
+}
+
+// Lit un fichier Excel/CSV en tableau de lignes (tableaux de cellules).
+async function readSheetRows(file) {
+  const XLSX = await ensureXLSX();
+  const buf = await file.arrayBuffer();
+  const wb = XLSX.read(buf, { type: 'array', cellDates: true });
+  const sheet = wb.Sheets[wb.SheetNames[0]];
+  return XLSX.utils.sheet_to_json(sheet, { header: 1, raw: true, defval: '' });
+}
+
+/** Assistant d'import : mapping des colonnes -> (date, colonnes de plats), aperçu, application. */
+function openImportMenu(onDone) {
+  UI.modal(
+    '<h2>📥 Importer un menu (Excel / CSV)</h2>' +
+    '<p class="muted" style="margin-bottom:12px">Sélectionne ton fichier .xlsx ou .csv. Chaque ligne = un jour ; chaque colonne de plat sera rattachée au midi ou au soir.</p>' +
+    '<label class="field"><span class="lbl">Fichier</span>' +
+    '<input type="file" accept=".xlsx,.xls,.csv" data-f="file" style="min-height:52px;padding:12px;border:1.5px dashed var(--border);border-radius:12px;width:100%"></label>' +
+    '<div data-step></div>' +
+    '<div class="actions"><button class="btn ghost" data-x="cancel">Fermer</button></div>',
+    (m, close) => {
+      const step = m.querySelector('[data-step]');
+      m.querySelector('[data-x="cancel"]').onclick = close;
+      m.querySelector('[data-f="file"]').addEventListener('change', async e => {
+        const f = e.target.files[0];
+        if (!f) return;
+        step.innerHTML = '<p class="muted">Lecture du fichier…</p>';
+        let rows;
+        try { rows = await readSheetRows(f); }
+        catch (err) { step.innerHTML = '<p class="pill bad">' + UI.esc(err.message) + '</p>'; return; }
+        rows = rows.filter(r => r.some(c => String(c).trim() !== ''));
+        if (rows.length < 2) { step.innerHTML = '<p class="pill bad">Fichier vide ou illisible.</p>'; return; }
+        buildMapping(step, rows, close, onDone);
+      });
+    }
+  );
+}
+
+function buildMapping(step, rows, close, onDone) {
+  const header = rows[0].map((c, i) => String(c).trim() || ('Colonne ' + (i + 1)));
+  const nCols = header.length;
+  // Détection automatique de la colonne date (celle dont le plus de cellules sont des dates)
+  let dateCol = 0, best = -1;
+  for (let c = 0; c < nCols; c++) {
+    let hits = 0;
+    for (let r = 1; r < Math.min(rows.length, 40); r++) if (parseDateCell(rows[r][c])) hits++;
+    if (hits > best) { best = hits; dateCol = c; }
+  }
+  const colOptions = sel => header.map((h, i) => '<option value="' + i + '"' + (i === sel ? ' selected' : '') + '>' + UI.esc(h) + '</option>').join('');
+  const catOptions = PLAT_CATS.map(c => '<option value="' + c.value + '">' + c.label + '</option>').join('');
+
+  // Une ligne de configuration par colonne de plat (toutes sauf la colonne date par défaut)
+  const dishRows = header.map((h, i) => ({ col: i, use: i !== dateCol, service: 'midi', cat: guessCat(h) }));
+
+  step.innerHTML =
+    '<hr class="sep">' +
+    '<label class="field"><span class="lbl">Colonne de la date</span><select data-map="date">' + colOptions(dateCol) + '</select></label>' +
+    '<div class="lbl">Colonnes de plats à importer</div>' +
+    '<div class="table-wrap"><table><thead><tr><th>Importer</th><th>Colonne</th><th>Service</th><th>Catégorie</th></tr></thead><tbody>' +
+    dishRows.map((d, idx) =>
+      '<tr data-dish="' + idx + '"><td style="text-align:center"><input type="checkbox" data-c="use" ' + (d.use ? 'checked' : '') + ' style="width:24px;height:24px"></td>' +
+      '<td>' + UI.esc(header[d.col]) + '</td>' +
+      '<td><select data-c="service"><option value="midi">🌞 Midi</option><option value="soir">🌙 Soir</option></select></td>' +
+      '<td><select data-c="cat">' + PLAT_CATS.map(c => '<option value="' + c.value + '"' + (c.value === d.cat ? ' selected' : '') + '>' + c.label + '</option>').join('') + '</select></td></tr>'
+    ).join('') + '</tbody></table></div>' +
+    '<div class="spacer"></div>' +
+    '<button class="btn secondary" data-act="preview">👁️ Aperçu</button>' +
+    '<div data-preview style="margin-top:12px"></div>';
+
+  // La colonne date ne doit pas être importée comme plat
+  const syncDateExclusion = () => {
+    const dc = Number(step.querySelector('[data-map="date"]').value);
+    step.querySelectorAll('tr[data-dish]').forEach((tr, idx) => {
+      if (dishRows[idx].col === dc) tr.querySelector('[data-c="use"]').checked = false;
+    });
+  };
+  step.querySelector('[data-map="date"]').addEventListener('change', syncDateExclusion);
+
+  const collectConfig = () => {
+    const dc = Number(step.querySelector('[data-map="date"]').value);
+    const dishes = [];
+    step.querySelectorAll('tr[data-dish]').forEach((tr, idx) => {
+      if (tr.querySelector('[data-c="use"]').checked && dishRows[idx].col !== dc) {
+        dishes.push({ col: dishRows[idx].col, service: tr.querySelector('[data-c="service"]').value, cat: tr.querySelector('[data-c="cat"]').value });
+      }
+    });
+    return { dc, dishes };
+  };
+
+  const compute = () => {
+    const { dc, dishes } = collectConfig();
+    const days = {}; // date -> { midi:Set, soir:Set }
+    const catalog = {}; // name -> cat
+    for (let r = 1; r < rows.length; r++) {
+      const iso = parseDateCell(rows[r][dc]);
+      if (!iso) continue;
+      dishes.forEach(d => {
+        const name = String(rows[r][d.col]).trim();
+        if (!name) return;
+        (days[iso] = days[iso] || { midi: new Set(), soir: new Set() })[d.service].add(name);
+        if (!catalog[name]) catalog[name] = d.cat;
+      });
+    }
+    return { days, catalog };
+  };
+
+  step.querySelector('[data-act="preview"]').addEventListener('click', () => {
+    const { days, catalog } = compute();
+    const dates = Object.keys(days).sort();
+    const box = step.querySelector('[data-preview]');
+    if (!dates.length) { box.innerHTML = '<p class="pill bad">Aucune date reconnue — vérifie la colonne de la date.</p>'; return; }
+    const sample = dates.slice(0, 4).map(d =>
+      '<div class="rec-item"><div class="body"><div class="title">' + UI.frDate(d) + '</div>' +
+      '<div class="meta">Midi : ' + ([...days[d].midi].map(UI.esc).join(', ') || '—') + '<br>Soir : ' + ([...days[d].soir].map(UI.esc).join(', ') || '—') + '</div></div></div>'
+    ).join('');
+    box.innerHTML = '<p class="pill ok">' + dates.length + ' jour(s) · ' + Object.keys(catalog).length + ' plat(s) différents</p>' +
+      '<div class="rec-list" style="margin-top:10px">' + sample + '</div>' +
+      (dates.length > 4 ? '<p class="muted">… et ' + (dates.length - 4) + ' autres jours.</p>' : '') +
+      '<div class="spacer"></div><button class="btn block" data-act="apply">✅ Importer ' + dates.length + ' jour(s)</button>';
+    box.querySelector('[data-act="apply"]').addEventListener('click', async () => {
+      await applyImport(compute());
+      close();
+      UI.toast('Menu importé : ' + dates.length + ' jour(s) ✔', 'ok');
+      if (onDone) onDone();
+    });
+  });
+}
+
+// Devine la catégorie d'une colonne d'après son intitulé.
+function guessCat(label) {
+  const s = (label || '').toLowerCase();
+  if (/entr[ée]e|hors.?d|potage|soupe/.test(s)) return 'entree';
+  if (/dessert|fromage|laitage|fruit|compote/.test(s)) return 'dessert';
+  if (/garniture|l[ée]gume|f[ée]culent|accompagn/.test(s)) return 'garniture';
+  if (/plat|viande|poisson|principal/.test(s)) return 'plat';
+  return 'plat';
+}
+
+// Applique l'import : ajoute les plats au catalogue et enregistre les menus du jour.
+async function applyImport({ days, catalog }) {
+  // Catalogue : ajoute les plats manquants
+  const known = new Set(SETTINGS.plats.map(p => p.name.toLowerCase()));
+  Object.keys(catalog).forEach(name => {
+    if (!known.has(name.toLowerCase())) {
+      SETTINGS.plats.push({ id: uid(), name, cat: catalog[name] });
+      known.add(name.toLowerCase());
+    }
+  });
+  SETTINGS.plats.sort((a, b) => a.name.localeCompare(b.name, 'fr'));
+  await saveSettings();
+
+  // Menus du jour : remplace les enregistrements existants pour chaque date+service importé
+  for (const iso of Object.keys(days)) {
+    const existing = await DB.getByTypeAndRange('menu', iso, iso);
+    for (const service of ['midi', 'soir']) {
+      const items = [...days[iso][service]];
+      if (!items.length) continue;
+      const prev = existing.find(m => m.service === service);
+      if (prev) { prev.items = items; await DB.updateRecord(prev); }
+      else await DB.addRecord({ type: 'menu', date: iso, service, items });
+    }
+  }
+}
+
 /* ================================================================
    MENU (catalogue de plats + menu du jour)
 ================================================================ */
@@ -673,23 +874,25 @@ VIEWS.menu = async function (el) {
     '<div class="grow"><label class="field" style="margin:0"><span class="lbl">Service</span>' +
     UI.segHTML('service', [{ value: 'midi', label: '🌞 Midi' }, { value: 'soir', label: '🌙 Soir' }], state.service) + '</label></div>' +
     '</div>' +
-    (SETTINGS.plats.length
+    (SETTINGS.plats.length && SETTINGS.plats.length <= 24
       ? '<p class="muted" style="margin-bottom:8px">Coche les plats servis :</p>' +
         PLAT_CATS.filter(c => catByType[c.value]).map(c =>
           '<div style="margin-bottom:8px"><div class="zone" style="margin-bottom:6px">' + c.label + '</div><div class="chips">' +
           catByType[c.value].map(p =>
             '<button type="button" class="menu-pick ' + (state.items.includes(p.name) ? 'on' : '') + '" data-pick="' + UI.esc(p.name) + '">' + UI.esc(p.name) + '</button>'
           ).join('') + '</div></div>'
-        ).join('')
-      : '<div class="empty" style="padding:16px">Ajoute d’abord des plats au catalogue ci-dessous.</div>') +
-    '<hr class="sep">' +
-    '<div class="row"><div class="grow"><input type="text" id="m-free" placeholder="Ajouter un plat ponctuel (hors catalogue)"></div>' +
+        ).join('') + '<hr class="sep">'
+      : (SETTINGS.plats.length ? '' : '<div class="empty" style="padding:16px">Ajoute des plats au catalogue ci-dessous, ou importe ton fichier Excel.</div>')) +
+    '<div class="row"><div class="grow"><input type="text" id="m-free" list="dl-menu-add" placeholder="Ajouter un plat (recherche dans le catalogue ou saisie libre)" autocomplete="off">' +
+    '<datalist id="dl-menu-add">' + SETTINGS.plats.map(p => '<option value="' + UI.esc(p.name) + '">').join('') + '</datalist></div>' +
     '<button class="btn small secondary" id="m-free-add">Ajouter au menu</button></div>' +
     '<div id="m-selected" class="row" style="margin-top:12px"></div>' +
     '<div class="spacer"></div><button class="btn" id="m-save">💾 Enregistrer le menu du jour</button></div>' +
 
     '<div class="card"><h2>📖 Catalogue des plats (' + SETTINGS.plats.length + ')</h2>' +
     '<p class="muted" style="margin-bottom:12px">Les plats réutilisables d’un jour à l’autre. Ils alimentent les listes déroulantes.</p>' +
+    '<div class="row" style="margin-bottom:12px"><button class="btn small" id="m-import">📥 Importer un menu (Excel / CSV)</button>' +
+    (SETTINGS.plats.length ? '<button class="btn small ghost" id="m-clear">🗑️ Vider le catalogue</button>' : '') + '</div>' +
     (SETTINGS.plats.length
       ? PLAT_CATS.filter(c => catByType[c.value]).map(c =>
           '<div style="margin-bottom:10px"><div class="zone" style="margin-bottom:6px">' + c.label + '</div><div class="rec-list">' +
@@ -757,6 +960,12 @@ VIEWS.menu = async function (el) {
   el.querySelectorAll('[data-del-plat]').forEach(b => b.addEventListener('click', async () => {
     SETTINGS.plats = SETTINGS.plats.filter(p => p.id !== b.dataset.delPlat);
     await saveSettings(); render();
+  }));
+
+  el.querySelector('#m-import').addEventListener('click', () => openImportMenu(() => { state.items = null; render(); }));
+  const clearBtn = el.querySelector('#m-clear');
+  if (clearBtn) clearBtn.addEventListener('click', () => UI.confirm('Vider tout le catalogue de plats ? Les menus déjà enregistrés par jour sont conservés.', async () => {
+    SETTINGS.plats = []; await saveSettings(); render();
   }));
 };
 
