@@ -51,16 +51,21 @@ Le plus simple : **GitHub Pages**.
 - Penser à faire régulièrement **⚙️ Réglages → Exporter la sauvegarde** (fichier JSON) et à la conserver ailleurs (ordinateur, clé USB, e-mail).
 - Pour les contrôles sanitaires : **📋 Historique → Exporter ce registre (CSV)**, ouvrable dans Excel/LibreOffice.
 
-## Seuils réglementaires utilisés (GBPH restauration collective)
+## Conformité au Plan de Maîtrise Sanitaire (PMS)
 
-- Froid positif : 0 à +4 °C · Froid négatif : ≤ −18 °C
-- Réception : frais ≤ +4 °C, surgelés ≤ −15 °C (tolérance ponctuelle)
-- Liaison chaude ≥ +63 °C · Liaison froide ≤ +10 °C
-- Refroidissement rapide : +63 → +10 °C en moins de 2 h
-- Remise en température : +10 → +63 °C en moins d'1 h
-- Plat témoin : 100 g conservés 5 jours entre 0 et 3 °C
+L'application est **préconfigurée d'après le PMS FAM/EHPAD 2025 de l'établissement** (Cuisine EHPAD Nostr'Oustaou, Grandrieu) — arrêté du 21 décembre 2009 et règlement (CE) n° 852/2004 :
 
-Les consignes de chaque enceinte sont modifiables dans les Réglages pour coller au plan de maîtrise sanitaire (PMS) de l'établissement.
+- **Enceintes froides** : les 12 enceintes réelles du PMS (chambres froides négative/fruits-légumes/produits laitiers/viandes, armoires froides, frigo jour, frigo plats témoins, table réfrigérée, frigos économat…). Positif : cible 3 °C, limite critique 6 °C · Négatif : cible −18 °C, tolérance −15 °C. Relevé quotidien en début de journée.
+- **Réception** : frais cible 3 °C (limite 6 °C, contrôle à cœur de 6 à 10 °C, refus > 10 °C), surgelés ≤ −15 °C ; contrôle DLC/étiquetage/emballage ; n° de lot / bon de livraison enregistrable ; les 13 fournisseurs du PMS préchargés avec leurs jours de livraison.
+- **Refroidissement** : +63 → +10 °C en moins de 2 h (pas de tolérance) · **Remise en température** : +10 → +63 °C en moins d'1 h, avec actions correctives du PMS.
+- **Service / expédition** : liaison chaude ≥ 63 °C (pas de tolérance) ; liaison froide cible 3 °C, limite 6 °C, tolérée jusqu'à 10 °C si consommation dans les 2 h ; suivi des plats témoins (100 g, 5 jours à 3 °C).
+- **Décongélation** : registre dédié (enceinte à 3 °C uniquement, 48 h max, jamais de recongélation) avec alerte de dépassement.
+- **Produits entamés** : registre dédié avec les DLC internes du PMS (lait 2-3 j, mayonnaise 3 semaines, IV gamme 1-2 j, charcuterie tranchée 2 j, plats cuisinés 3 j, excédents 1 j…) et alertes de péremption.
+- **Nettoyage & désinfection** : les fiches de suivi réelles du PMS par zone (préparation froide, cuisson, légumerie, plonge, office, économat/réception — 57 tâches).
+- **Non-conformités** : fiche complète (lieu d'incident, n° de lot, date de péremption, description, action corrective, visa) + remontée automatique de tout relevé hors limites.
+- **Équipe HACCP 2025** préchargée (coordinateur : BAYLE Loïc) — chaque enregistrement porte le visa de l'agent.
+
+Tout reste modifiable dans ⚙️ Réglages pour suivre les mises à jour du PMS.
 
 ## Technique
 
