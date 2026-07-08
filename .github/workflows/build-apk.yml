@@ -2,12 +2,12 @@ name: Construire l'APK Android
 
 # Compile l'application HACCP (Capacitor) en APK debug installable, puis publie
 # le fichier sur la branche « apk-build » et comme artefact du run.
+# La branche apk-build (qui ne contient que l'APK) ne porte pas ce fichier de
+# workflow : la pousser ne redéclenche donc pas de build (pas de boucle).
 on:
   push:
     branches:
-      - claude/haccp-android-tablet-app-sk7oa1
-    paths-ignore:
-      - 'mobile/www/**'
+      - '**'
   workflow_dispatch:
 
 permissions:

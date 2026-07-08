@@ -128,7 +128,10 @@ const UI = (() => {
   /** Export CSV (séparateur ; pour Excel FR) et téléchargement. */
   function downloadCSV(filename, headers, rows) {
     const escCell = v => {
-      const s = String(v == null ? '' : v);
+      let s = String(v == null ? '' : v);
+      // Neutralise l'injection de formule dans Excel/LibreOffice (=, +, -, @, tab),
+      // sans toucher aux vrais nombres (températures négatives : -18).
+      if (/^[=+\-@\t]/.test(s) && !/^-?\d+([.,]\d+)?$/.test(s)) s = "'" + s;
       return /[;"\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
     };
     const csv = '﻿' + [headers, ...rows].map(r => r.map(escCell).join(';')).join('\r\n');

@@ -11,6 +11,7 @@
 const RULES = {
   fraisMax: 6,        // réception frais : tolérance jusqu'à 6 °C (cible 3) ; >10 °C = refus
   fraisRefus: 10,
+  hacheMax: 2,        // viandes hachées ≤ 2 °C (abats ≤ 3 °C) — arrêté du 21/12/2009
   surgeleMax: -15,    // réception surgelés : tolérance jusqu'à −15 °C (cible −18)
   chaudMin: 63,       // liaison chaude : ≥ 63 °C, pas de tolérance
   froidCible: 3,      // liaison froide : cible 3 °C
@@ -161,17 +162,18 @@ async function loadSettings() {
   const saved = await DB.getSetting('config', null);
   SETTINGS = saved ? Object.assign({}, JSON.parse(JSON.stringify(DEFAULT_SETTINGS)), saved) : JSON.parse(JSON.stringify(DEFAULT_SETTINGS));
 
-  // Migration des anciennes installations vers la préconfiguration PMS
+  // Migration des anciennes installations vers la préconfiguration PMS.
+  // Ne s'applique qu'aux listes jamais personnalisées : une liste volontairement
+  // vidée par l'utilisateur ne doit pas être ressuscitée (d'où les tests length > 0).
   if (saved) {
     let dirty = false;
-    if (!saved.agents || !saved.agents.length) { SETTINGS.agents = [...DEFAULT_SETTINGS.agents]; dirty = true; }
+    if (!('agents' in saved)) { SETTINGS.agents = [...DEFAULT_SETTINGS.agents]; dirty = true; }
     if (!saved.fournisseurs) { SETTINGS.fournisseurs = JSON.parse(JSON.stringify(DEFAULT_SETTINGS.fournisseurs)); dirty = true; }
-    // Anciennes valeurs génériques (v1) jamais personnalisées -> listes réelles du PMS
     const oldEquips = ['Frigo 1', 'Frigo 2', 'Chambre froide', 'Congélateur'];
-    if (saved.equipements && saved.equipements.length <= 4 && saved.equipements.every(e => oldEquips.includes(e.name))) {
+    if (saved.equipements && saved.equipements.length > 0 && saved.equipements.length <= 4 && saved.equipements.every(e => oldEquips.includes(e.name))) {
       SETTINGS.equipements = JSON.parse(JSON.stringify(DEFAULT_SETTINGS.equipements)); dirty = true;
     }
-    if (saved.cleaningTasks && saved.cleaningTasks.length <= 8 && saved.cleaningTasks.every(t => /^n[1-8]$/.test(t.id))) {
+    if (saved.cleaningTasks && saved.cleaningTasks.length > 0 && saved.cleaningTasks.length <= 8 && saved.cleaningTasks.every(t => /^n[1-8]$/.test(t.id))) {
       SETTINGS.cleaningTasks = JSON.parse(JSON.stringify(DEFAULT_SETTINGS.cleaningTasks)); dirty = true;
     }
     if (saved.etablissement === 'Cuisine EHPAD / FAM') { SETTINGS.etablissement = DEFAULT_SETTINGS.etablissement; dirty = true; }
@@ -278,23 +280,23 @@ async function buildBackup() {
 }
 
 /** Envoie la sauvegarde au script Google Drive. Retourne {ok, message}.
- *  Sous Capacitor (APK) la requête passe en natif (pas de blocage CORS) ; en
- *  navigateur, fetch classique (repli no-cors si le domaine bloque la lecture). */
+ *  Sous Capacitor (APK) la requête passe en natif ; en navigateur, un POST
+ *  text/plain vers Apps Script est une « simple request » CORS dont la réponse
+ *  est lisible — on vérifie donc réellement la réussite (pas de no-cors qui
+ *  afficherait un faux succès). */
 async function sendToDrive() {
   const url = (SETTINGS.driveUrl || '').trim();
   if (!url) return { ok: false, message: 'Aucune URL Google Drive configurée' };
   if (!navigator.onLine) return { ok: false, message: 'Pas de connexion Internet' };
   const payload = JSON.stringify(await buildBackup());
-  const isNative = !!(window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform());
   try {
-    if (isNative) {
-      const resp = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: payload });
-      const txt = await resp.text().catch(() => '');
-      if (!resp.ok) return { ok: false, message: 'Erreur serveur (' + resp.status + ')' };
-      return { ok: true, message: txt || 'Sauvegarde envoyée' };
-    }
-    // Navigateur : envoi « au mieux » (réponse opaque, on suppose la réussite si pas d'erreur réseau)
-    await fetch(url, { method: 'POST', mode: 'no-cors', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: payload });
+    const resp = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: payload });
+    if (!resp.ok) return { ok: false, message: 'Erreur serveur (' + resp.status + ') — vérifie l’URL du script' };
+    const txt = await resp.text().catch(() => '');
+    try {
+      const json = JSON.parse(txt);
+      if (json && json.ok === false) return { ok: false, message: 'Script Drive : ' + (json.erreur || 'erreur inconnue') };
+    } catch { /* réponse non JSON : on garde le statut HTTP comme critère */ }
     return { ok: true, message: 'Sauvegarde envoyée' };
   } catch (e) {
     return { ok: false, message: 'Échec de l’envoi : ' + e.message };
@@ -328,7 +330,7 @@ VIEWS.dashboard = async function (el) {
     DB.getByType('decongel'),
     DB.getByType('entame'),
   ]);
-  const decDepasse = decongels.filter(r => r.statut !== 'termine' && r.limite && r.limite < today);
+  const decDepasse = decongels.filter(isDecongelDepasse);
   const entPerimes = entames.filter(r => r.statut !== 'termine' && r.dlc && r.dlc < today);
   const entAujourdhui = entames.filter(r => r.statut !== 'termine' && r.dlc === today);
 
@@ -489,9 +491,9 @@ VIEWS.reception = async function (el) {
       '<div class="rec-item ' + (r.conforme === false ? 'bad' : 'ok') + '">' +
       '<div class="big">' + (r.temp != null && r.temp !== '' ? UI.fmtTemp(r.temp) : '—') + '</div>' +
       '<div class="body"><div class="title">' + UI.esc(r.produit) + ' <span class="muted">· ' + UI.esc(r.fournisseur) + '</span></div>' +
-      '<div class="meta">' + UI.frDate(r.date) + ' ' + UI.esc(r.time) + ' — ' + UI.esc(r.famille) + ' — ' + UI.esc(r.agent) +
-      (r.conforme === false ? ' — ⚠️ ' + UI.esc(r.action || 'non conforme') : '') + '</div></div>' +
-      '<span class="pill ' + (r.conforme === false ? 'bad' : 'ok') + '">' + (r.conforme === false ? 'Non conforme' : 'Conforme') + '</span></div>'
+      '<div class="meta">' + UI.frDate(r.date) + ' ' + UI.esc(r.time) + ' — ' + UI.esc(r.famille) + (r.lot ? ' — lot ' + UI.esc(r.lot) : '') + ' — ' + UI.esc(r.agent) +
+      (r.action ? ' — ' + UI.esc(r.action) : '') + '</div></div>' +
+      '<span class="pill ' + (r.conforme === false ? 'bad' : (r.tolere ? 'warn' : 'ok')) + '">' + (r.conforme === false ? 'Non conforme' : (r.tolere ? 'Contrôlé à cœur' : 'Conforme')) + '</span></div>'
     ).join('') + '</div>' : '<div class="empty"><span class="e-ico">🚚</span>Aucune réception enregistrée cette semaine.</div>');
 
   el.querySelector('#new-rec').addEventListener('click', openReceptionModal);
@@ -514,10 +516,11 @@ async function openReceptionModal() {
     '<label class="field"><span class="lbl">Famille de produits</span>' +
     UI.segHTML('famille', [
       { value: 'frais', label: '❄️ Frais (≤ 6 °C)' },
+      { value: 'hache', label: '🥩 Viande hachée / abats (≤ 2 °C)' },
       { value: 'surgele', label: '🧊 Surgelé (≤ −15 °C)' },
       { value: 'epicerie', label: '📦 Épicerie / sec' },
     ], 'frais') + '</label>' +
-    '<p class="muted" style="font-size:12.5px;margin:-6px 0 12px">Cibles PMS : frais 3 °C (viandes hachées ≤ 2 °C), surgelés −18 °C. Entre 6 et 10 °C : contrôle à cœur ; &gt; 10 °C : refus.</p>' +
+    '<p class="muted" style="font-size:12.5px;margin:-6px 0 12px">Cibles PMS : frais 3 °C, viandes hachées 2 °C, surgelés −18 °C. Au-dessus du seuil : contrôle à cœur ; &gt; 10 °C : refus.</p>' +
     '<label class="field"><span class="lbl">Température à réception (°C)</span>' +
     '<input type="number" step="0.1" inputmode="decimal" class="temp-input" data-f="temp" placeholder="—"></label>' +
     '<label class="field"><span class="lbl">État (emballage, étiquetage, DLC, propreté camion)</span>' +
@@ -531,18 +534,28 @@ async function openReceptionModal() {
       const verdict = m.querySelector('[data-verdict]');
       const actionField = m.querySelector('[data-action-field]');
 
+      // Verdict PMS : ok / tolere (frais 6–10 °C : contrôle à cœur requis) / refus
       const evalConf = () => {
         const fam = UI.segValue(m, 'famille');
         const etat = UI.segValue(m, 'etat');
         const t = parseFloat(m.querySelector('[data-f="temp"]').value);
         let ok = etat !== 'bad';
-        if (fam === 'frais' && !isNaN(t) && t > RULES.fraisMax) ok = false;
+        let tolere = false;
+        if ((fam === 'frais' || fam === 'hache') && !isNaN(t)) {
+          const seuil = fam === 'hache' ? RULES.hacheMax : RULES.fraisMax;
+          if (t > RULES.fraisRefus) ok = false;
+          else if (t > seuil) tolere = true;
+        }
         if (fam === 'surgele' && !isNaN(t) && t > RULES.surgeleMax) ok = false;
-        verdict.innerHTML = ok
-          ? '<p class="pill ok" style="margin-bottom:12px">✔ Conforme</p>'
-          : '<p class="pill bad" style="margin-bottom:12px">✘ NON CONFORME</p>';
-        actionField.style.display = ok ? 'none' : 'block';
-        return ok;
+        if (ok && tolere) {
+          verdict.innerHTML = '<p class="pill warn" style="margin-bottom:12px">⚠ Seuil dépassé : contrôle de la T° à cœur obligatoire avant acceptation (refus si &gt; 10 °C à cœur)</p>';
+        } else if (ok) {
+          verdict.innerHTML = '<p class="pill ok" style="margin-bottom:12px">✔ Conforme</p>';
+        } else {
+          verdict.innerHTML = '<p class="pill bad" style="margin-bottom:12px">✘ NON CONFORME — refus de la marchandise</p>';
+        }
+        actionField.style.display = (ok && !tolere) ? 'none' : 'block';
+        return { ok, tolere };
       };
       m.addEventListener('click', () => setTimeout(evalConf, 30));
       m.querySelector('[data-f="temp"]').addEventListener('input', evalConf);
@@ -552,17 +565,20 @@ async function openReceptionModal() {
         const fournisseur = m.querySelector('[data-f="fournisseur"]').value.trim();
         const produit = m.querySelector('[data-f="produit"]').value.trim();
         if (!fournisseur || !produit) { UI.toast('Fournisseur et produit sont obligatoires', 'bad'); return; }
+        const fam = UI.segValue(m, 'famille');
+        const t = parseFloat(m.querySelector('[data-f="temp"]').value);
+        if (fam !== 'epicerie' && isNaN(t)) { UI.toast('La température est obligatoire pour les produits frais et surgelés', 'bad'); return; }
         const agent = requireAgent(m); if (!agent) return;
-        const ok = evalConf();
+        const { ok, tolere } = evalConf();
         const action = m.querySelector('[data-f="action"]').value.trim();
         if (!ok && !action) { UI.toast('Indique l’action corrective (refus, réserve…)', 'bad'); return; }
-        const t = parseFloat(m.querySelector('[data-f="temp"]').value);
+        if (ok && tolere && !action) { UI.toast('Indique le résultat du contrôle de la T° à cœur', 'bad'); return; }
         await DB.addRecord({
           type: 'reception', date: UI.todayISO(), time: UI.nowHM(),
-          fournisseur, produit, famille: UI.segValue(m, 'famille'),
+          fournisseur, produit, famille: fam,
           lot: m.querySelector('[data-f="lot"]').value.trim(),
           temp: isNaN(t) ? null : t, etat: UI.segValue(m, 'etat'),
-          conforme: ok, action: ok ? '' : action, agent,
+          tolere, conforme: ok, action, agent,
         });
         close();
         UI.toast('Réception enregistrée ✔', 'ok');
@@ -577,9 +593,10 @@ async function openReceptionModal() {
 ================================================================ */
 VIEWS.refroidissement = async function (el) {
   const today = UI.todayISO();
-  const all = (await DB.getByTypeAndRange('refroid', UI.addDays(today, -6), today)).sort((a, b) => (b.date + b.timeStart).localeCompare(a.date + a.timeStart));
+  // Les suivis « en cours » restent visibles quel que soit leur âge (sinon inclôturables) ; historique borné à 7 jours.
+  const all = (await DB.getByType('refroid')).sort((a, b) => (b.date + b.timeStart).localeCompare(a.date + a.timeStart));
   const enCours = all.filter(r => r.status === 'encours');
-  const finis = all.filter(r => r.status !== 'encours');
+  const finis = all.filter(r => r.status !== 'encours' && r.date >= UI.addDays(today, -6));
 
   el.innerHTML = headerHTML('Refroidissement & remise en T°', 'Refroidissement : +63→+10 °C en 2 h max · Remise : +10→+63 °C en 1 h max',
       '<button class="btn" id="new-refroid">➕ Démarrer un suivi</button>') +
@@ -665,11 +682,13 @@ async function openRefroidFinishModal(id) {
       const tempInput = m.querySelector('[data-f="temp"]');
       const verdict = m.querySelector('[data-verdict]');
       const actionField = m.querySelector('[data-action-field]');
-      const mins = Math.round((Date.now() - new Date(rec.startISO).getTime()) / 60000);
+      // La durée est recalculée à chaque contrôle : la modale peut rester ouverte plusieurs minutes.
+      const elapsedMin = () => Math.round((Date.now() - new Date(rec.startISO).getTime()) / 60000);
 
       const check = () => {
         const v = parseFloat(tempInput.value);
         if (isNaN(v)) { verdict.innerHTML = ''; actionField.style.display = 'none'; return null; }
+        const mins = elapsedMin();
         const tempOK = rec.mode === 'remise' ? v >= target : v <= target;
         const ok = tempOK && mins <= limit;
         verdict.innerHTML = '<p class="pill ' + (ok ? 'ok' : 'bad') + '" style="margin-bottom:12px">' +
@@ -684,6 +703,7 @@ async function openRefroidFinishModal(id) {
         const v = parseFloat(tempInput.value);
         if (isNaN(v)) { UI.toast('Saisis la température finale', 'bad'); return; }
         const agent = requireAgent(m); if (!agent) return;
+        const mins = elapsedMin();
         const tempOK = rec.mode === 'remise' ? v >= target : v <= target;
         const ok = tempOK && mins <= limit;
         const action = m.querySelector('[data-f="action"]').value.trim();
@@ -800,6 +820,13 @@ async function openServiceModal() {
 /* ================================================================
    DÉCONGÉLATION (fiche de décongélation du PMS)
 ================================================================ */
+/** Vrai si le délai d'utilisation d'un produit en décongélation est dépassé. */
+function isDecongelDepasse(r) {
+  if (r.statut === 'termine' || !r.limite) return false;
+  const today = UI.todayISO();
+  return r.limite < today || (r.limite === today && r.limiteTime && r.limiteTime < UI.nowHM());
+}
+
 VIEWS.decongel = async function (el) {
   const today = UI.todayISO();
   // Les « en cours » restent visibles quel que soit leur âge (à traiter) ; historique limité à 14 jours.
@@ -808,7 +835,7 @@ VIEWS.decongel = async function (el) {
   const finis = recs.filter(r => r.statut === 'termine' && r.date >= UI.addDays(today, -14));
 
   const rowHTML = r => {
-    const depasse = r.statut !== 'termine' && r.limite && (r.limite < today || (r.limite === today && r.limiteTime && r.limiteTime < UI.nowHM()));
+    const depasse = isDecongelDepasse(r);
     return '<div class="rec-item ' + (depasse ? 'bad' : (r.statut === 'termine' ? '' : 'ok')) + '">' +
       '<div class="big">🧊</div>' +
       '<div class="body"><div class="title">' + UI.esc(r.produit) + (r.fournisseur ? ' <span class="muted">· ' + UI.esc(r.fournisseur) + '</span>' : '') + '</div>' +
@@ -968,7 +995,12 @@ function ensureXLSX() {
     const s = document.createElement('script');
     s.src = 'js/vendor/xlsx.full.min.js';
     s.onload = () => resolve(window.XLSX);
-    s.onerror = () => reject(new Error('Impossible de charger le lecteur Excel'));
+    s.onerror = () => {
+      // Échec passager (hors ligne au premier usage…) : permettre une nouvelle tentative
+      _xlsxPromise = null;
+      s.remove();
+      reject(new Error('Impossible de charger le lecteur Excel — réessaie'));
+    };
     document.head.appendChild(s);
   });
   return _xlsxPromise;
@@ -1289,7 +1321,7 @@ VIEWS.tracabilite = async function (el) {
       '<button class="btn" id="new-eti">📷 Nouvelle étiquette</button>') +
     (recs.length ? '<div class="photo-grid">' + recs.map(r =>
       '<div class="photo-card" data-id="' + r.id + '">' +
-      (r.photo ? '<img src="' + r.photo + '" alt="étiquette">' : '<div style="height:120px;display:flex;align-items:center;justify-content:center;font-size:40px;background:#eef">🏷️</div>') +
+      (r.photo ? '<img src="' + UI.esc(r.photo) + '" alt="étiquette">' : '<div style="height:120px;display:flex;align-items:center;justify-content:center;font-size:40px;background:#eef">🏷️</div>') +
       '<div class="cap"><b>' + UI.esc(r.produit || 'Produit') + '</b>' + UI.frDate(r.date) + (r.dlc ? ' · DLC ' + UI.frDate(r.dlc) : '') + '</div></div>'
     ).join('') + '</div>' : '<div class="empty"><span class="e-ico">🏷️</span>Aucune étiquette enregistrée.</div>');
 
@@ -1343,7 +1375,7 @@ async function openEtiquetteDetail(id) {
   if (!r) return;
   UI.modal(
     '<h2>' + UI.esc(r.produit || 'Étiquette') + '</h2>' +
-    (r.photo ? '<img src="' + r.photo + '" class="photo-full">' : '') +
+    (r.photo ? '<img src="' + UI.esc(r.photo) + '" class="photo-full">' : '') +
     '<p style="margin-top:12px">' + UI.frDate(r.date) + ' ' + UI.esc(r.time || '') +
     (r.lot ? ' · Lot : <b>' + UI.esc(r.lot) + '</b>' : '') +
     (r.dlc ? ' · DLC : <b>' + UI.frDate(r.dlc) + '</b>' : '') +
@@ -1409,10 +1441,12 @@ VIEWS.nettoyage = async function (el) {
     const taskId = btn.dataset.check;
     const task = SETTINGS.cleaningTasks.find(t => t.id === taskId);
     if (!task) return;
+    // Date prise au moment du clic (la vue peut rester ouverte au passage de minuit)
+    const clickDay = UI.todayISO();
 
     if (btn.dataset.donetoday === '1') {
       // décocher : supprime l'enregistrement du jour
-      const todays = (await DB.getByTypeAndRange('nettoyage', today, today)).filter(r => r.taskId === taskId);
+      const todays = (await DB.getByTypeAndRange('nettoyage', clickDay, clickDay)).filter(r => r.taskId === taskId);
       for (const r of todays) await DB.deleteRecord(r.id);
       UI.toast('Tâche décochée');
       render();
@@ -1421,7 +1455,7 @@ VIEWS.nettoyage = async function (el) {
 
     const doSave = async agent => {
       await DB.addRecord({
-        type: 'nettoyage', date: today, time: UI.nowHM(),
+        type: 'nettoyage', date: clickDay, time: UI.nowHM(),
         taskId, taskName: task.name, zone: task.zone, freq: task.freq, agent,
       });
       UI.toast(task.name + ' ✔', 'ok');
@@ -1605,7 +1639,7 @@ function openNCModal() {
 ================================================================ */
 const EXPORT_COLUMNS = {
   temp: [['Date', r => UI.frDate(r.date)], ['Heure', r => r.time], ['Équipement', r => r.equipName], ['Moment', r => r.moment], ['Température (°C)', r => r.temp], ['Conforme', r => r.conforme === false ? 'NON' : 'OUI'], ['Action corrective', r => r.action], ['Agent', r => r.agent]],
-  reception: [['Date', r => UI.frDate(r.date)], ['Heure', r => r.time], ['Fournisseur', r => r.fournisseur], ['Produit', r => r.produit], ['Lot / BL', r => r.lot], ['Famille', r => r.famille], ['Température (°C)', r => r.temp], ['État', r => r.etat === 'bad' ? 'Défaut' : 'Correct'], ['Conforme', r => r.conforme === false ? 'NON' : 'OUI'], ['Action corrective', r => r.action], ['Agent', r => r.agent]],
+  reception: [['Date', r => UI.frDate(r.date)], ['Heure', r => r.time], ['Fournisseur', r => r.fournisseur], ['Produit', r => r.produit], ['Lot / BL', r => r.lot], ['Famille', r => r.famille], ['Température (°C)', r => r.temp], ['État', r => r.etat === 'bad' ? 'Défaut' : 'Correct'], ['Conforme', r => r.conforme === false ? 'NON' : (r.tolere ? 'Contrôle à cœur' : 'OUI')], ['Action corrective', r => r.action], ['Agent', r => r.agent]],
   refroid: [['Date', r => UI.frDate(r.date)], ['Type', r => r.mode === 'remise' ? 'Remise en T°' : 'Refroidissement'], ['Préparation', r => r.produit], ['T° départ', r => r.tempStart], ['Heure départ', r => r.timeStart], ['T° fin', r => r.tempEnd], ['Heure fin', r => r.timeEnd], ['Durée (min)', r => r.durationMin], ['Conforme', r => r.status === 'encours' ? 'En cours' : (r.conforme === false ? 'NON' : 'OUI')], ['Action corrective', r => r.action], ['Agent', r => r.agent]],
   service: [['Date', r => UI.frDate(r.date)], ['Heure', r => r.time], ['Plat', r => r.plat], ['Liaison', r => r.liaison], ['Température (°C)', r => r.temp], ['Plat témoin', r => r.platTemoin ? 'OUI' : 'NON'], ['Conforme', r => r.conforme === false ? 'NON' : (r.tolere ? 'Toléré <2h' : 'OUI')], ['Action corrective', r => r.action], ['Agent', r => r.agent]],
   decongel: [['Date mise en décongélation', r => UI.frDate(r.date)], ['Heure', r => r.time], ['Produit', r => r.produit], ['Fournisseur', r => r.fournisseur], ['Lot', r => r.lot], ['À utiliser avant', r => UI.frDate(r.limite)], ['Sorti le', r => r.sortieDate ? UI.frDate(r.sortieDate) + ' ' + (r.sortieTime || '') : ''], ['Statut', r => r.statut === 'termine' ? 'Terminé' : 'En cours'], ['Agent', r => r.agent]],
@@ -1636,7 +1670,9 @@ VIEWS.historique = async function (el) {
   async function refreshTable() {
     const recs = (await DB.getByTypeAndRange(state.type, state.from, state.to)).sort((a, b) => (b.date + (b.time || '')).localeCompare(a.date + (a.time || '')));
     const cols = EXPORT_COLUMNS[state.type];
-    document.getElementById('h-table').innerHTML = recs.length
+    const box = document.getElementById('h-table');
+    if (!box) return; // l'utilisateur a quitté la vue pendant la requête
+    box.innerHTML = recs.length
       ? '<table><thead><tr>' + cols.map(c => '<th>' + UI.esc(c[0]) + '</th>').join('') + '</tr></thead><tbody>' +
         recs.map(r => '<tr' + (r.conforme === false ? ' style="background:var(--red-light)"' : '') + '>' +
           cols.map(c => '<td>' + UI.esc(c[1](r) == null ? '' : c[1](r)) + '</td>').join('') + '</tr>').join('') +
@@ -1893,7 +1929,21 @@ VIEWS.parametres = async function (el) {
       UI.confirm('Restaurer ' + data.records.length + ' enregistrements ? Ils s’ajoutent aux données actuelles.', async () => {
         SETTINGS = Object.assign({}, DEFAULT_SETTINGS, data.settings);
         await saveSettings();
-        for (const r of data.records) { delete r.id; await DB.addRecord(r); }
+        for (const r of data.records) {
+          delete r.id;
+          // Assainissement : une photo doit être une image en dataURL (sinon rejetée)
+          if (r.photo && !/^data:image\//.test(String(r.photo))) delete r.photo;
+          // Les menus sont uniques par (date, service) : fusionner au lieu de dupliquer
+          if (r.type === 'menu' && r.date && r.service) {
+            const existing = (await DB.getByTypeAndRange('menu', r.date, r.date)).find(m2 => m2.service === r.service);
+            if (existing) {
+              existing.items = [...new Set([...(existing.items || []), ...(r.items || [])])];
+              await DB.updateRecord(existing);
+              continue;
+            }
+          }
+          await DB.addRecord(r);
+        }
         UI.toast('Sauvegarde restaurée ✔', 'ok');
         render();
       });
@@ -1908,6 +1958,11 @@ VIEWS.parametres = async function (el) {
   await loadSettings();
   document.querySelectorAll('.nav-btn').forEach(b => b.addEventListener('click', () => navigate(b.dataset.view)));
   render();
-  // Sauvegarde automatique quotidienne (différée pour ne pas ralentir l'ouverture)
-  setTimeout(() => { maybeAutoBackup().catch(e => console.warn('backup auto', e)); }, 2500);
+  // Sauvegarde automatique quotidienne. La tablette reste souvent allumée en
+  // continu : on retente au retour au premier plan et toutes les heures
+  // (idempotent : une seule sauvegarde par jour grâce à haccp-drive-last).
+  const tryBackup = () => maybeAutoBackup().catch(e => console.warn('backup auto', e));
+  setTimeout(tryBackup, 2500);
+  setInterval(tryBackup, 60 * 60 * 1000);
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) tryBackup(); });
 })();
