@@ -56,7 +56,7 @@ Le plus simple : **GitHub Pages**.
 L'application est **préconfigurée d'après le PMS FAM/EHPAD 2025 de l'établissement** (Cuisine EHPAD Nostr'Oustaou, Grandrieu) — arrêté du 21 décembre 2009 et règlement (CE) n° 852/2004 :
 
 - **Enceintes froides** : les 12 enceintes réelles du PMS (chambres froides négative/fruits-légumes/produits laitiers/viandes, armoires froides, frigo jour, frigo plats témoins, table réfrigérée, frigos économat…). Positif : cible 3 °C, limite critique 6 °C · Négatif : cible −18 °C, tolérance −15 °C. Relevé quotidien en début de journée.
-- **Réception** : frais cible 3 °C (limite 6 °C, contrôle à cœur de 6 à 10 °C, refus > 10 °C), surgelés ≤ −15 °C ; contrôle DLC/étiquetage/emballage ; n° de lot / bon de livraison enregistrable ; les 13 fournisseurs du PMS préchargés avec leurs jours de livraison.
+- **Réception** : frais cible 3 °C (limite 6 °C), viandes hachées/abats ≤ 2 °C, contrôle à cœur obligatoire au-delà du seuil, refus > 10 °C ; surgelés ≤ −15 °C ; température obligatoire hors épicerie ; contrôle DLC/étiquetage/emballage ; n° de lot / bon de livraison ; les 13 fournisseurs du PMS préchargés avec leurs jours de livraison.
 - **Refroidissement** : +63 → +10 °C en moins de 2 h (pas de tolérance) · **Remise en température** : +10 → +63 °C en moins d'1 h, avec actions correctives du PMS.
 - **Service / expédition** : liaison chaude ≥ 63 °C (pas de tolérance) ; liaison froide cible 3 °C, limite 6 °C, tolérée jusqu'à 10 °C si consommation dans les 2 h ; suivi des plats témoins (100 g, 5 jours à 3 °C).
 - **Décongélation** : registre dédié (enceinte à 3 °C uniquement, 48 h max, jamais de recongélation) avec alerte de dépassement.
