@@ -802,9 +802,10 @@ async function openServiceModal() {
 ================================================================ */
 VIEWS.decongel = async function (el) {
   const today = UI.todayISO();
-  const recs = (await DB.getByTypeAndRange('decongel', UI.addDays(today, -14), today)).sort((a, b) => (b.date + b.time).localeCompare(a.date + a.time));
+  // Les « en cours » restent visibles quel que soit leur âge (à traiter) ; historique limité à 14 jours.
+  const recs = (await DB.getByType('decongel')).sort((a, b) => (b.date + b.time).localeCompare(a.date + a.time));
   const enCours = recs.filter(r => r.statut !== 'termine');
-  const finis = recs.filter(r => r.statut === 'termine');
+  const finis = recs.filter(r => r.statut === 'termine' && r.date >= UI.addDays(today, -14));
 
   const rowHTML = r => {
     const depasse = r.statut !== 'termine' && r.limite && (r.limite < today || (r.limite === today && r.limiteTime && r.limiteTime < UI.nowHM()));
@@ -891,9 +892,10 @@ const ENTAME_TYPES = [
 
 VIEWS.entames = async function (el) {
   const today = UI.todayISO();
-  const recs = (await DB.getByTypeAndRange('entame', UI.addDays(today, -45), today)).sort((a, b) => (a.dlc || '').localeCompare(b.dlc || ''));
+  // Les produits en cours restent visibles quel que soit leur âge ; historique limité à 45 jours.
+  const recs = (await DB.getByType('entame')).sort((a, b) => (a.dlc || '').localeCompare(b.dlc || ''));
   const actifs = recs.filter(r => r.statut !== 'termine');
-  const inactifs = recs.filter(r => r.statut === 'termine');
+  const inactifs = recs.filter(r => r.statut === 'termine' && r.date >= UI.addDays(today, -45));
 
   const rowHTML = r => {
     const perime = r.statut !== 'termine' && r.dlc && r.dlc < today;
