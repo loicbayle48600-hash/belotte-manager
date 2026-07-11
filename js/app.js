@@ -321,7 +321,8 @@ async function maybeAutoBackup() {
 ================================================================ */
 VIEWS.dashboard = async function (el) {
   const today = UI.todayISO();
-  const [temps, receptions, services, nettoyages, refroids, decongels, entames] = await Promise.all([
+  const j5 = UI.addDays(today, -5);
+  const [temps, receptions, services, nettoyages, refroids, decongels, entames, nonconfs, servicesJ5] = await Promise.all([
     DB.getByTypeAndRange('temp', today, today),
     DB.getByTypeAndRange('reception', today, today),
     DB.getByTypeAndRange('service', today, today),
@@ -329,19 +330,37 @@ VIEWS.dashboard = async function (el) {
     DB.getByType('refroid'),
     DB.getByType('decongel'),
     DB.getByType('entame'),
+    DB.getByType('nonconf'),
+    DB.getByTypeAndRange('service', j5, j5),
   ]);
   const decDepasse = decongels.filter(isDecongelDepasse);
   const entPerimes = entames.filter(r => r.statut !== 'termine' && r.dlc && r.dlc < today);
   const entAujourdhui = entames.filter(r => r.statut !== 'termine' && r.dlc === today);
+  const ncOuvertes = nonconfs.filter(r => r.statut === 'ouverte');
+  // Plats témoins prélevés il y a exactement 5 jours : fin de conservation PMS, à retirer du frigo
+  const temoinsARetirer = servicesJ5.filter(r => r.platTemoin);
 
   const dailyTasks = SETTINGS.cleaningTasks.filter(t => t.freq === 'quotidien');
   const doneTasks = new Set(nettoyages.map(n => n.taskId));
   const dailyDone = dailyTasks.filter(t => doneTasks.has(t.id)).length;
-  const ncToday = [...temps, ...receptions, ...services].filter(r => r.conforme === false).length;
+  const ncToday = [...temps, ...receptions, ...services, ...refroids.filter(r => r.date === today)].filter(r => r.conforme === false).length;
   const enCours = refroids.filter(r => r.status === 'encours');
 
   const equipsDone = new Set(temps.map(t => t.equipId));
   const equipsMissing = SETTINGS.equipements.filter(e => !equipsDone.has(e.id));
+
+  // Sauvegarde Drive automatique en échec silencieux ? (aucune sauvegarde depuis > 3 jours)
+  let driveWarn = '';
+  if (SETTINGS.driveAuto && SETTINGS.driveUrl) {
+    const last = lastAutoBackupDate();
+    const jours = last ? Math.round((new Date(today + 'T12:00:00') - new Date(last + 'T12:00:00')) / 86400000) : null;
+    if (!last || jours > 3) {
+      driveWarn = '<div class="card" style="border-color:var(--orange)"><div class="row">' +
+        '<span class="pill warn">☁️ Sauvegarde Google Drive : ' + (last ? 'dernière il y a ' + jours + ' jours' : 'jamais effectuée') + '</span>' +
+        '<span class="muted" style="font-size:13px">Vérifie l’URL du script dans les Réglages puis « Sauvegarder maintenant ».</span>' +
+        '<button class="btn small secondary" data-go="parametres">Réglages</button></div></div>';
+    }
+  }
 
   el.innerHTML =
     headerHTML(SETTINGS.etablissement, 'Aujourd’hui — ' + new Date().toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })) +
@@ -360,6 +379,7 @@ VIEWS.dashboard = async function (el) {
     '<div class="stat"><div class="n">' + receptions.length + '</div><div class="t">Réceptions du jour</div></div>' +
     '<div class="stat ' + (ncToday ? 'bad' : 'ok') + '"><div class="n">' + ncToday + '</div><div class="t">Non-conformités du jour</div></div>' +
     '</div>' +
+    driveWarn +
 
     (enCours.length ? '<div class="card"><h2>⏱️ En cours</h2><div class="rec-list">' + enCours.map(r => {
       const mins = Math.round((Date.now() - new Date(r.startISO).getTime()) / 60000);
@@ -370,11 +390,13 @@ VIEWS.dashboard = async function (el) {
         '<button class="btn small" data-go="refroidissement">Terminer</button></div>';
     }).join('') + '</div></div>' : '') +
 
-    ((decDepasse.length || entPerimes.length || entAujourdhui.length) ?
-      '<div class="card" style="border-color:var(--red)"><h2>🚨 Alertes denrées</h2><div class="rec-list">' +
+    ((decDepasse.length || entPerimes.length || entAujourdhui.length || ncOuvertes.length || temoinsARetirer.length) ?
+      '<div class="card" style="border-color:var(--red)"><h2>🚨 Alertes</h2><div class="rec-list">' +
       decDepasse.map(r => '<div class="rec-item bad"><div class="big">🧊</div><div class="body"><div class="title">' + UI.esc(r.produit) + '</div><div class="meta">Décongélation : délai de 48 h dépassé (limite ' + UI.frDate(r.limite) + ') — produit à détruire</div></div><button class="btn small danger" data-go="decongel">Traiter</button></div>').join('') +
       entPerimes.map(r => '<div class="rec-item bad"><div class="big">📦</div><div class="body"><div class="title">' + UI.esc(r.produit) + '</div><div class="meta">Produit entamé : DLC interne dépassée (' + UI.frDate(r.dlc) + ') — à jeter</div></div><button class="btn small danger" data-go="entames">Traiter</button></div>').join('') +
       entAujourdhui.map(r => '<div class="rec-item"><div class="big">📦</div><div class="body"><div class="title">' + UI.esc(r.produit) + '</div><div class="meta">Produit entamé : à consommer aujourd’hui</div></div><button class="btn small secondary" data-go="entames">Voir</button></div>').join('') +
+      ncOuvertes.map(r => '<div class="rec-item bad"><div class="big">⚠️</div><div class="body"><div class="title">' + UI.esc(r.objet) + '</div><div class="meta">Non-conformité ouverte depuis le ' + UI.frDate(r.date) + (r.lieu ? ' — ' + UI.esc(r.lieu) : '') + '</div></div><button class="btn small secondary" data-go="nonconformites">Traiter</button></div>').join('') +
+      (temoinsARetirer.length ? '<div class="rec-item"><div class="big">🥡</div><div class="body"><div class="title">Plats témoins du ' + UI.frDate(j5) + ' à retirer</div><div class="meta">Fin des 5 jours de conservation : ' + temoinsARetirer.map(r => UI.esc(r.plat)).join(', ') + '</div></div></div>' : '') +
       '</div></div>' : '') +
 
     (equipsMissing.length ? '<div class="card"><h2>À faire</h2><p class="muted" style="margin-bottom:10px">Enceintes sans relevé aujourd’hui :</p><div class="row">' +
@@ -401,7 +423,11 @@ VIEWS.temperatures = async function (el) {
   const today = UI.todayISO();
   const recs = await DB.getByTypeAndRange('temp', today, today);
 
-  el.innerHTML = headerHTML('Enceintes froides', 'Relevés du ' + UI.frDate(today) + ' — PMS : relevé quotidien en début de journée (avant la reprise du travail)') +
+  const doneIds = new Set(recs.map(r => r.equipId));
+  const missing = SETTINGS.equipements.filter(e => !doneIds.has(e.id)).map(e => e.id);
+
+  el.innerHTML = headerHTML('Enceintes froides', 'Relevés du ' + UI.frDate(today) + ' — PMS : relevé quotidien en début de journée (avant la reprise du travail)',
+      missing.length ? '<button class="btn" id="chain-btn">▶ Relevés à la chaîne (' + missing.length + ')</button>' : '') +
     '<div class="grid cols-3" id="equip-grid">' +
     SETTINGS.equipements.map(eq => {
       const rEq = recs.filter(r => r.equipId === eq.id).sort((a, b) => a.time < b.time ? -1 : 1);
@@ -418,25 +444,30 @@ VIEWS.temperatures = async function (el) {
     (SETTINGS.equipements.length === 0 ? '<div class="empty"><span class="e-ico">⚙️</span>Ajoute tes équipements dans les Réglages.</div>' : '');
 
   el.querySelectorAll('[data-eq]').forEach(tile => tile.addEventListener('click', () => openTempModal(tile.dataset.eq)));
+  const chainBtn = el.querySelector('#chain-btn');
+  if (chainBtn) chainBtn.addEventListener('click', () => openTempModal(missing[0], missing.slice(1)));
 };
 
-function openTempModal(equipId) {
+/** Modale de relevé. `queue` (optionnel) : ids des enceintes suivantes pour un relevé à la chaîne. */
+function openTempModal(equipId, queue) {
   const eq = SETTINGS.equipements.find(e => e.id === equipId);
-  if (!eq) return;
+  if (!eq) { if (queue && queue.length) openTempModal(queue[0], queue.slice(1)); return; }
   const hour = new Date().getHours();
   const defMoment = hour < 14 ? 'matin' : 'soir';
+  const hasNext = queue && queue.length > 0;
 
   UI.modal(
-    '<h2>' + UI.esc(eq.name) + '</h2>' +
+    '<h2>' + UI.esc(eq.name) + (queue ? ' <span class="pill info">' + (queue.length + 1) + ' restante' + (queue.length ? 's' : '') + '</span>' : '') + '</h2>' +
     '<p class="muted" style="margin-bottom:14px">' + (eq.cible != null ? 'Valeur cible : ' + eq.cible + ' °C · ' : '') + 'Limites critiques : ' + eq.min + ' à ' + eq.max + ' °C</p>' +
     '<label class="field"><span class="lbl">Température relevée (°C)</span>' +
-    '<input type="number" step="0.1" inputmode="decimal" class="temp-input" data-f="temp" placeholder="0.0" autofocus></label>' +
+    UI.tempInputHTML('temp', { placeholder: eq.type === 'negatif' ? '-18.0' : '3.0', hint: eq.type === 'negatif' ? 'Enceinte négative : pense au signe − (bouton ±)' : '' }) + '</label>' +
     '<label class="field"><span class="lbl">Moment</span>' +
     UI.segHTML('moment', [{ value: 'matin', label: '🌅 Matin' }, { value: 'soir', label: '🌇 Soir' }], defMoment) + '</label>' +
     agentField() +
     '<div data-verdict></div>' +
     actionFieldHTML() +
-    '<div class="actions"><button class="btn ghost" data-x="cancel">Annuler</button><button class="btn" data-x="save">Enregistrer</button></div>',
+    '<div class="actions"><button class="btn ghost" data-x="cancel">' + (queue ? 'Arrêter' : 'Annuler') + '</button>' +
+    '<button class="btn" data-x="save">' + (hasNext ? 'Enregistrer → suivante' : 'Enregistrer') + '</button></div>',
     (m, close) => {
       UI.segWire(m);
       const tempInput = m.querySelector('[data-f="temp"]');
@@ -474,6 +505,8 @@ function openTempModal(equipId) {
         close();
         UI.toast(ok ? 'Relevé enregistré ✔' : 'Non-conformité enregistrée', ok ? 'ok' : 'bad');
         render();
+        if (hasNext) openTempModal(queue[0], queue.slice(1));
+        else if (queue) UI.toast('🎉 Tous les relevés du jour sont faits !', 'ok');
       };
     }
   );
@@ -501,14 +534,22 @@ VIEWS.reception = async function (el) {
 
 async function openReceptionModal() {
   const past = await DB.getByType('reception');
-  const connus = (SETTINGS.fournisseurs || []).map(f => f.name);
+  // Fournisseurs attendus aujourd'hui (champ « jours de livraison ») proposés en tête
+  const jourNom = new Date().toLocaleDateString('fr-FR', { weekday: 'long' }).toLowerCase();
+  const attendus = (SETTINGS.fournisseurs || []).filter(f => {
+    const j = (f.jours || '').toLowerCase();
+    return j.includes(jourNom) || j.includes('tous les jours');
+  }).map(f => f.name);
+  const connus = (SETTINGS.fournisseurs || []).map(f => f.name).sort((a, b) => (attendus.includes(b) ? 1 : 0) - (attendus.includes(a) ? 1 : 0));
   const fournisseurs = [...connus, ...[...new Set(past.map(r => r.fournisseur).filter(Boolean))].filter(f => !connus.includes(f))];
 
   UI.modal(
     '<h2>🚚 Nouvelle réception</h2>' +
     '<label class="field"><span class="lbl">Fournisseur</span>' +
     '<input type="text" data-f="fournisseur" list="dl-fourn" placeholder="Nom du fournisseur" autocomplete="off">' +
-    '<datalist id="dl-fourn">' + fournisseurs.map(f => '<option value="' + UI.esc(f) + '">').join('') + '</datalist></label>' +
+    '<datalist id="dl-fourn">' + fournisseurs.map(f => '<option value="' + UI.esc(f) + '">').join('') + '</datalist>' +
+    (attendus.length ? '<span class="muted" style="font-size:12.5px">🚚 Attendus aujourd’hui : ' + attendus.map(UI.esc).join(', ') + '</span>' : '') +
+    '</label>' +
     '<label class="field"><span class="lbl">Produit / livraison</span>' +
     '<input type="text" data-f="produit" placeholder="Ex. : viande hachée, produits laitiers…"></label>' +
     '<label class="field"><span class="lbl">N° de lot / bon de livraison (optionnel)</span>' +
@@ -522,7 +563,7 @@ async function openReceptionModal() {
     ], 'frais') + '</label>' +
     '<p class="muted" style="font-size:12.5px;margin:-6px 0 12px">Cibles PMS : frais 3 °C, viandes hachées 2 °C, surgelés −18 °C. Au-dessus du seuil : contrôle à cœur ; &gt; 10 °C : refus.</p>' +
     '<label class="field"><span class="lbl">Température à réception (°C)</span>' +
-    '<input type="number" step="0.1" inputmode="decimal" class="temp-input" data-f="temp" placeholder="—"></label>' +
+    UI.tempInputHTML('temp', { hint: 'Surgelés : pense au signe − (bouton ±)' }) + '</label>' +
     '<label class="field"><span class="lbl">État (emballage, étiquetage, DLC, propreté camion)</span>' +
     UI.segHTML('etat', [{ value: 'ok', label: '✔ Correct' }, { value: 'bad', label: '✘ Défaut constaté', bad: true }], 'ok') + '</label>' +
     agentField() +
@@ -642,7 +683,7 @@ async function openRefroidStartModal() {
     ], 'refroidissement') + '</label>' +
     dishInputHTML('produit', 'Préparation / plat', 'Ex. : blanquette de veau', menuNames) +
     '<label class="field"><span class="lbl">Température de départ (°C)</span>' +
-    '<input type="number" step="0.1" inputmode="decimal" class="temp-input" data-f="temp" placeholder="63.0"></label>' +
+    UI.tempInputHTML('temp', { placeholder: '63.0' }) + '</label>' +
     '<label class="field"><span class="lbl">Heure de début (modifiable si saisie après coup)</span>' +
     '<input type="time" data-f="heure" value="' + UI.nowHM() + '"></label>' +
     agentField() +
@@ -655,9 +696,10 @@ async function openRefroidStartModal() {
         const t = parseFloat(m.querySelector('[data-f="temp"]').value);
         if (!produit || isNaN(t)) { UI.toast('Renseigne le plat et la température', 'bad'); return; }
         const heure = m.querySelector('[data-f="heure"]').value || UI.nowHM();
-        if (heure > UI.nowHM()) { UI.toast('L’heure de début ne peut pas être dans le futur', 'bad'); return; }
         const agent = requireAgent(m); if (!agent) return;
-        const day = UI.todayISO();
+        // Une heure « dans le futur » correspond en réalité à hier soir
+        // (ex. : départ 23:30 saisi à 00:15) : on date au jour précédent.
+        const day = heure > UI.nowHM() ? UI.addDays(UI.todayISO(), -1) : UI.todayISO();
         await DB.addRecord({
           type: 'refroid', date: day, mode: UI.segValue(m, 'mode'),
           produit, tempStart: t, timeStart: heure, startISO: isoFromDayTime(day, heure),
@@ -683,7 +725,7 @@ async function openRefroidFinishModal(id) {
     (rec.mode === 'remise' ? 'Objectif : ≥ ' + target + ' °C en moins de ' + limit + ' min' : 'Objectif : ≤ ' + target + ' °C en moins de ' + limit + ' min') +
     ' — départ ' + UI.esc(rec.timeStart) + ' à ' + UI.fmtTemp(rec.tempStart) + '</p>' +
     '<label class="field"><span class="lbl">Température finale (°C)</span>' +
-    '<input type="number" step="0.1" inputmode="decimal" class="temp-input" data-f="temp" placeholder="—"></label>' +
+    UI.tempInputHTML('temp') + '</label>' +
     '<label class="field"><span class="lbl">Heure de fin (modifiable si saisie après coup)</span>' +
     '<input type="time" data-f="heureFin" value="' + UI.nowHM() + '"></label>' +
     agentField(rec.agent) +
@@ -695,13 +737,17 @@ async function openRefroidFinishModal(id) {
       const heureInput = m.querySelector('[data-f="heureFin"]');
       const verdict = m.querySelector('[data-verdict]');
       const actionField = m.querySelector('[data-action-field]');
-      // Durée = heure de fin choisie − début ; si l'heure de fin est « avant »
-      // l'heure de début, le suivi a passé minuit : on bascule au jour suivant.
+      // Durée = heure de fin choisie − début. L'heure de fin est ancrée sur
+      // l'occurrence la plus récente NON FUTURE de HH:MM (si l'heure est
+      // « dans le futur », c'était hier soir). Une fin antérieure au début est
+      // refusée : mins vaut alors null.
       const endInfo = () => {
         const hm = heureInput.value || UI.nowHM();
-        let end = new Date(rec.date + 'T' + hm + ':00');
+        const now = new Date();
+        let end = new Date(UI.todayISO() + 'T' + hm + ':00');
+        if (end > now) end = new Date(end.getTime() - 24 * 3600 * 1000);
         const start = new Date(rec.startISO);
-        if (end < start) end = new Date(end.getTime() + 24 * 3600 * 1000);
+        if (end < start) return { hm, mins: null };
         return { hm, mins: Math.round((end - start) / 60000) };
       };
 
@@ -709,6 +755,11 @@ async function openRefroidFinishModal(id) {
         const v = parseFloat(tempInput.value);
         if (isNaN(v)) { verdict.innerHTML = ''; actionField.style.display = 'none'; return null; }
         const { mins } = endInfo();
+        if (mins == null) {
+          verdict.innerHTML = '<p class="pill bad" style="margin-bottom:12px">⚠ Heure de fin antérieure au début (' + UI.esc(rec.timeStart) + ') — vérifie l’heure saisie</p>';
+          actionField.style.display = 'none';
+          return null;
+        }
         const tempOK = rec.mode === 'remise' ? v >= target : v <= target;
         const ok = tempOK && mins <= limit;
         verdict.innerHTML = '<p class="pill ' + (ok ? 'ok' : 'bad') + '" style="margin-bottom:12px">' +
@@ -725,6 +776,7 @@ async function openRefroidFinishModal(id) {
         if (isNaN(v)) { UI.toast('Saisis la température finale', 'bad'); return; }
         const agent = requireAgent(m); if (!agent) return;
         const { hm, mins } = endInfo();
+        if (mins == null) { UI.toast('Heure de fin antérieure au début du suivi — corrige l’heure', 'bad'); return; }
         const tempOK = rec.mode === 'remise' ? v >= target : v <= target;
         const ok = tempOK && mins <= limit;
         const action = m.querySelector('[data-f="action"]').value.trim();
@@ -779,7 +831,7 @@ async function openServiceModal() {
       { value: 'froide', label: '❄️ Froide (≤ 10 °C)' },
     ], 'chaude') + '</label>' +
     '<label class="field"><span class="lbl">Température (°C)</span>' +
-    '<input type="number" step="0.1" inputmode="decimal" class="temp-input" data-f="temp" placeholder="—"></label>' +
+    UI.tempInputHTML('temp') + '</label>' +
     '<label class="field"><span class="lbl">Plat témoin prélevé ?</span>' +
     UI.segHTML('temoin', [{ value: 'oui', label: '✔ Oui' }, { value: 'non', label: 'Non' }], 'non') + '</label>' +
     agentField() +
@@ -1379,9 +1431,10 @@ VIEWS.tracabilite = async function (el) {
     return '<div class="card"><h2>📅 Semaine du ' + UI.frDate(wk) + ' au ' + UI.frDate(UI.addDays(wk, 6)) + ' <span class="pill info">' + count + ' étiquette' + (count > 1 ? 's' : '') + '</span></h2>' +
       days.map(d => {
         const mn = menuByDay[d];
-        const menuLine = mn
-          ? '<div class="muted" style="font-size:13px;margin:2px 0 8px">🍲 Menu : ' +
-            ['midi', 'soir'].filter(s => mn[s] && mn[s].length).map(s => (s === 'midi' ? '🌞 ' : '🌙 ') + mn[s].map(UI.esc).join(', ')).join(' · ') + '</div>'
+        const parts = mn ? ['midi', 'soir'].filter(s => mn[s] && mn[s].length)
+          .map(s => (s === 'midi' ? '🌞 ' : '🌙 ') + mn[s].map(UI.esc).join(', ')) : [];
+        const menuLine = parts.length
+          ? '<div class="muted" style="font-size:13px;margin:2px 0 8px">🍲 Menu : ' + parts.join(' · ') + '</div>'
           : '';
         return '<div style="margin-bottom:14px"><div style="font-weight:700;text-transform:capitalize">' + dayName(d) + ' ' + UI.frDate(d) + '</div>' +
           menuLine + '<div class="photo-grid">' + byWeek[wk][d].map(cardHTML).join('') + '</div></div>';
@@ -1398,7 +1451,7 @@ VIEWS.tracabilite = async function (el) {
 
 function openEtiquetteModal() {
   UI.modal(
-    '<h2>🏷️ Nouvelle étiquette</h2>' +
+    '<h2>🏷️ Nouvelle étiquette <span class="pill info" data-count style="display:none"></span></h2>' +
     '<label class="field"><span class="lbl">Photo de l’étiquette</span>' +
     '<input type="file" accept="image/*" capture="environment" data-f="photo" style="min-height:52px;padding:12px;border:1.5px dashed var(--border);border-radius:12px;width:100%"></label>' +
     '<div data-preview style="margin-bottom:12px"></div>' +
@@ -1406,10 +1459,14 @@ function openEtiquetteModal() {
     '<div class="row"><div class="grow"><label class="field"><span class="lbl">N° de lot (optionnel)</span><input type="text" data-f="lot"></label></div>' +
     '<div class="grow"><label class="field"><span class="lbl">DLC / DDM (optionnel)</span><input type="date" data-f="dlc"></label></div></div>' +
     agentField() +
-    '<div class="actions"><button class="btn ghost" data-x="cancel">Annuler</button><button class="btn" data-x="save">Enregistrer</button></div>',
+    '<div class="actions"><button class="btn ghost" data-x="cancel">Fermer</button>' +
+    '<button class="btn secondary" data-x="next">💾 + 📷 Suivante</button>' +
+    '<button class="btn" data-x="save">Enregistrer</button></div>',
     (m, close) => {
       let photoData = null;
-      m.querySelector('[data-f="photo"]').addEventListener('change', async e => {
+      let saved = 0;
+      const photoInput = m.querySelector('[data-f="photo"]');
+      photoInput.addEventListener('change', async e => {
         const f = e.target.files[0];
         if (!f) return;
         try {
@@ -1417,11 +1474,11 @@ function openEtiquetteModal() {
           m.querySelector('[data-preview]').innerHTML = '<img src="' + photoData + '" class="photo-full" style="max-height:220px">';
         } catch { UI.toast('Impossible de lire la photo', 'bad'); }
       });
-      m.querySelector('[data-x="cancel"]').onclick = close;
-      m.querySelector('[data-x="save"]').onclick = async () => {
+
+      const save = async () => {
         const produit = m.querySelector('[data-f="produit"]').value.trim();
-        if (!photoData && !produit) { UI.toast('Ajoute une photo ou le nom du produit', 'bad'); return; }
-        const agent = requireAgent(m); if (!agent) return;
+        if (!photoData && !produit) { UI.toast('Ajoute une photo ou le nom du produit', 'bad'); return false; }
+        const agent = requireAgent(m); if (!agent) return false;
         await DB.addRecord({
           type: 'etiquette', date: UI.todayISO(), time: UI.nowHM(),
           produit, photo: photoData,
@@ -1429,9 +1486,31 @@ function openEtiquetteModal() {
           dlc: m.querySelector('[data-f="dlc"]').value,
           agent,
         });
+        saved++;
+        return true;
+      };
+
+      m.querySelector('[data-x="cancel"]').onclick = () => { close(); if (saved) render(); };
+      m.querySelector('[data-x="save"]').onclick = async () => {
+        if (!(await save())) return;
         close();
         UI.toast('Étiquette enregistrée ✔', 'ok');
         render();
+      };
+      // Enregistrer puis enchaîner directement sur la photo suivante (réceptions en rafale)
+      m.querySelector('[data-x="next"]').onclick = async () => {
+        if (!(await save())) return;
+        photoData = null;
+        m.querySelector('[data-preview]').innerHTML = '';
+        m.querySelector('[data-f="produit"]').value = '';
+        m.querySelector('[data-f="lot"]').value = '';
+        m.querySelector('[data-f="dlc"]').value = '';
+        photoInput.value = '';
+        const counter = m.querySelector('[data-count]');
+        counter.style.display = '';
+        counter.textContent = saved + ' enregistrée' + (saved > 1 ? 's' : '');
+        UI.toast('Étiquette ' + saved + ' enregistrée ✔', 'ok');
+        photoInput.click();
       };
     }
   );
@@ -1491,13 +1570,17 @@ VIEWS.nettoyage = async function (el) {
       (last ? ' · fait le ' + UI.frDate(last.date) + ' par ' + UI.esc(last.agent) : ' · jamais fait') + '</div></div></div>';
   };
 
+  const isDue = t => {
+    const last = lastDone[t.id];
+    return !(last && last.date >= UI.addDays(today, -FREQ_DAYS[t.freq]));
+  };
+
   const sections = zones.map(z => {
     const tasks = byZone[z].slice().sort((a, b) => FREQ_ORDER[a.freq] - FREQ_ORDER[b.freq] || a.name.localeCompare(b.name, 'fr'));
-    const due = tasks.filter(t => {
-      const last = lastDone[t.id];
-      return !(last && last.date >= UI.addDays(today, -FREQ_DAYS[t.freq]));
-    }).length;
-    return '<div class="card"><h2>🧽 ' + UI.esc(z) + ' ' + (due ? '<span class="pill warn">' + due + ' à faire</span>' : '<span class="pill ok">à jour</span>') + '</h2>' +
+    const due = tasks.filter(isDue).length;
+    const dueDaily = tasks.filter(t => t.freq === 'quotidien' && isDue(t)).length;
+    return '<div class="card"><h2>🧽 ' + UI.esc(z) + ' ' + (due ? '<span class="pill warn">' + due + ' à faire</span>' : '<span class="pill ok">à jour</span>') +
+      (dueDaily > 1 ? ' <button class="btn small secondary" data-checkzone="' + UI.esc(z) + '" style="float:right">✔ Tout le quotidien (' + dueDaily + ')</button>' : '') + '</h2>' +
       tasks.map(taskHTML).join('') + '</div>';
   }).join('');
 
@@ -1539,6 +1622,39 @@ VIEWS.nettoyage = async function (el) {
         m.querySelector('[data-x="save"]').onclick = () => {
           const a = requireAgent(m); if (!a) return;
           close(); doSave(a);
+        };
+      }
+    );
+  }));
+
+  // « Tout cocher » les tâches quotidiennes dues d'une zone en une fois
+  el.querySelectorAll('[data-checkzone]').forEach(btn => btn.addEventListener('click', () => {
+    const zone = btn.dataset.checkzone;
+    const clickDay = UI.todayISO();
+    const todo = SETTINGS.cleaningTasks.filter(t => t.zone === zone && t.freq === 'quotidien' && isDue(t));
+    if (!todo.length) return;
+
+    const doSaveAll = async agent => {
+      for (const t of todo) {
+        await DB.addRecord({
+          type: 'nettoyage', date: clickDay, time: UI.nowHM(),
+          taskId: t.id, taskName: t.name, zone: t.zone, freq: t.freq, agent,
+        });
+      }
+      UI.toast(zone + ' : ' + todo.length + ' tâches cochées ✔', 'ok');
+      render();
+    };
+
+    const agent = getCurrentAgent();
+    if (agent) { doSaveAll(agent); return; }
+    UI.modal(
+      '<h2>Qui a réalisé le nettoyage « ' + UI.esc(zone) + ' » ?</h2>' + agentField('') +
+      '<div class="actions"><button class="btn ghost" data-x="cancel">Annuler</button><button class="btn" data-x="save">Valider</button></div>',
+      (m, close) => {
+        m.querySelector('[data-x="cancel"]').onclick = close;
+        m.querySelector('[data-x="save"]').onclick = () => {
+          const a = requireAgent(m); if (!a) return;
+          close(); doSaveAll(a);
         };
       }
     );
@@ -1722,14 +1838,21 @@ VIEWS.historique = async function (el) {
   const state = VIEWS.historique._state || (VIEWS.historique._state = { type: 'temp', from: UI.addDays(today, -6), to: today });
 
   el.innerHTML = headerHTML('Historique & export', 'Consultation des enregistrements et export CSV pour les contrôles sanitaires') +
-    '<div class="card"><div class="row">' +
+    '<div class="card no-print"><div class="row">' +
     '<div class="grow"><label class="field" style="margin:0"><span class="lbl">Registre</span><select id="h-type">' +
     Object.keys(TYPE_LABELS).map(t => '<option value="' + t + '"' + (t === state.type ? ' selected' : '') + '>' + TYPE_LABELS[t] + '</option>').join('') +
     '</select></label></div>' +
     '<div><label class="field" style="margin:0"><span class="lbl">Du</span><input type="date" id="h-from" value="' + state.from + '"></label></div>' +
     '<div><label class="field" style="margin:0"><span class="lbl">Au</span><input type="date" id="h-to" value="' + state.to + '"></label></div>' +
     '</div><div class="spacer"></div><div class="row">' +
+    '<span class="lbl" style="margin:0">Période :</span>' +
+    '<button class="btn small ghost" data-range="7">7 jours</button>' +
+    '<button class="btn small ghost" data-range="30">30 jours</button>' +
+    '<button class="btn small ghost" data-range="mois">Mois dernier</button>' +
+    '<button class="btn small ghost" data-range="90">Trimestre</button>' +
+    '</div><div class="spacer"></div><div class="row">' +
     '<button class="btn small" id="h-export">⬇️ Exporter ce registre (CSV)</button>' +
+    '<button class="btn small" id="h-export-all">📁 Tout exporter (inspection)</button>' +
     '<button class="btn small secondary" id="h-print">🖨️ Imprimer</button>' +
     '</div></div>' +
     '<div class="card"><div class="table-wrap" id="h-table"></div></div>';
@@ -1739,18 +1862,62 @@ VIEWS.historique = async function (el) {
     const cols = EXPORT_COLUMNS[state.type];
     const box = document.getElementById('h-table');
     if (!box) return; // l'utilisateur a quitté la vue pendant la requête
-    box.innerHTML = recs.length
+    // En-tête officiel, visible uniquement à l'impression (classeur PMS)
+    const printHeader = '<div class="print-header"><h2>' + UI.esc(SETTINGS.etablissement) + '</h2>' +
+      'Registre : <b>' + UI.esc(TYPE_LABELS[state.type]) + '</b> — Période : du ' + UI.frDate(state.from) + ' au ' + UI.frDate(state.to) +
+      ' — Édité le ' + UI.frDate(UI.todayISO()) + ' à ' + UI.nowHM() +
+      '<div class="visa">Visa du responsable : ______________________</div></div>';
+    box.innerHTML = printHeader + (recs.length
       ? '<table><thead><tr>' + cols.map(c => '<th>' + UI.esc(c[0]) + '</th>').join('') + '</tr></thead><tbody>' +
         recs.map(r => '<tr' + (r.conforme === false ? ' style="background:var(--red-light)"' : '') + '>' +
           cols.map(c => '<td>' + UI.esc(c[1](r) == null ? '' : c[1](r)) + '</td>').join('') + '</tr>').join('') +
         '</tbody></table>'
-      : '<div class="empty">Aucun enregistrement sur cette période.</div>';
+      : '<div class="empty">Aucun enregistrement sur cette période.</div>');
   }
 
   el.querySelector('#h-type').addEventListener('change', e => { state.type = e.target.value; refreshTable(); });
   el.querySelector('#h-from').addEventListener('change', e => { state.from = e.target.value; refreshTable(); });
   el.querySelector('#h-to').addEventListener('change', e => { state.to = e.target.value; refreshTable(); });
   el.querySelector('#h-print').addEventListener('click', () => window.print());
+
+  // Raccourcis de période
+  el.querySelectorAll('[data-range]').forEach(b => b.addEventListener('click', () => {
+    const t = UI.todayISO();
+    if (b.dataset.range === 'mois') {
+      const debutMoisCourant = t.slice(0, 8) + '01';
+      state.to = UI.addDays(debutMoisCourant, -1);            // dernier jour du mois précédent
+      state.from = state.to.slice(0, 8) + '01';               // 1er jour du mois précédent
+    } else {
+      state.from = UI.addDays(t, -(Number(b.dataset.range) - 1));
+      state.to = t;
+    }
+    el.querySelector('#h-from').value = state.from;
+    el.querySelector('#h-to').value = state.to;
+    refreshTable();
+  }));
+
+  // Export complet pour inspection : un seul CSV avec une section par registre
+  el.querySelector('#h-export-all').addEventListener('click', async () => {
+    const sections = [];
+    let total = 0;
+    for (const type of Object.keys(EXPORT_COLUMNS)) {
+      const recs = (await DB.getByTypeAndRange(type, state.from, state.to)).sort((a, b) => (a.date + (a.time || '')).localeCompare(b.date + (b.time || '')));
+      if (!recs.length) continue;
+      total += recs.length;
+      const cols = EXPORT_COLUMNS[type];
+      sections.push([['=== ' + TYPE_LABELS[type] + ' (' + recs.length + ') ===']]);
+      sections.push([cols.map(c => c[0]), ...recs.map(r => cols.map(c => c[1](r)))]);
+      sections.push([['']]);
+    }
+    if (!total) { UI.toast('Rien à exporter sur cette période', 'bad'); return; }
+    const rows = sections.flat();
+    UI.downloadCSV(
+      'haccp-inspection-' + state.from + '-' + state.to + '.csv',
+      [SETTINGS.etablissement + ' — Registres HACCP du ' + UI.frDate(state.from) + ' au ' + UI.frDate(state.to)],
+      rows
+    );
+    UI.toast('Export inspection généré (' + total + ' enregistrements) ✔', 'ok');
+  });
   el.querySelector('#h-export').addEventListener('click', async () => {
     const recs = (await DB.getByTypeAndRange(state.type, state.from, state.to)).sort((a, b) => (a.date + (a.time || '')).localeCompare(b.date + (b.time || '')));
     if (!recs.length) { UI.toast('Rien à exporter sur cette période', 'bad'); return; }

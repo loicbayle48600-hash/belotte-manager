@@ -107,6 +107,13 @@ input:focus, select:focus, textarea:focus { outline: 3px solid rgba(26,127,90,.2
 
 /* Saisie température géante */
 .temp-input { font-size: 34px !important; font-weight: 800; text-align: center; letter-spacing: 1px; }
+.temp-wrap { display: flex; gap: 8px; }
+.temp-wrap .temp-input { flex: 1; min-width: 0; }
+.sign-btn {
+  min-width: 64px; border-radius: 12px; border: 2px solid var(--border);
+  background: #fff; color: var(--ink); font-size: 28px; font-weight: 800; cursor: pointer;
+}
+.sign-btn:active { background: var(--green-light); border-color: var(--green); }
 
 /* Boutons de choix (segmented) */
 .seg { display: flex; gap: 8px; flex-wrap: wrap; }
@@ -250,7 +257,16 @@ hr.sep { border: none; border-top: 1px solid var(--border); margin: 14px 0; }
   #main { padding: 14px 14px 20px; }
 }
 
+/* En-tête officiel visible uniquement à l'impression des registres */
+.print-header { display: none; }
+
 @media print {
-  #sidebar, .btn, #toast-root { display: none !important; }
+  #sidebar, .btn, #toast-root, .view-header, .no-print { display: none !important; }
   #main { padding: 0; }
+  .print-header {
+    display: block; margin-bottom: 14px; padding-bottom: 10px;
+    border-bottom: 2px solid #000; font-size: 13px;
+  }
+  .print-header h2 { font-size: 17px; margin-bottom: 4px; }
+  .print-header .visa { margin-top: 8px; font-weight: 700; }
 }

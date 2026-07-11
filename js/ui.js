@@ -25,6 +25,7 @@ const UI = (() => {
     const close = () => overlay.remove();
     overlay.addEventListener('click', e => { if (e.target === overlay) close(); });
     root.appendChild(overlay);
+    signWire(overlay); // boutons ± des champs température, quel que soit le formulaire
     if (setup) setup(overlay.querySelector('.modal'), close);
     return close;
   }
@@ -106,6 +107,30 @@ const UI = (() => {
       '</select></label>';
   }
 
+  /** Champ température avec bouton ± (le clavier Android decimal n'a pas toujours de touche moins). */
+  function tempInputHTML(field, opts) {
+    const o = opts || {};
+    return '<div class="temp-wrap">' +
+      '<input type="number" step="0.1" inputmode="decimal" class="temp-input" data-f="' + esc(field) + '" placeholder="' + esc(o.placeholder || '—') + '">' +
+      '<button type="button" class="sign-btn" data-sign="' + esc(field) + '" title="Changer le signe">±</button>' +
+      '</div>' +
+      (o.hint ? '<span class="muted" style="font-size:12.5px">' + esc(o.hint) + '</span>' : '');
+  }
+
+  /** Câble les boutons ± : inverse le signe et redéclenche la validation. */
+  function signWire(container) {
+    container.querySelectorAll('[data-sign]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const input = container.querySelector('input[data-f="' + btn.dataset.sign + '"]');
+        if (!input) return;
+        const v = parseFloat(input.value);
+        if (!isNaN(v) && v !== 0) input.value = -v;
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+        input.focus();
+      });
+    });
+  }
+
   /** Réduit une image (fichier) en dataURL JPEG max 900 px. */
   function shrinkImage(file, maxDim) {
     return new Promise((resolve, reject) => {
@@ -143,5 +168,5 @@ const UI = (() => {
     setTimeout(() => URL.revokeObjectURL(a.href), 5000);
   }
 
-  return { esc, toast, modal, confirm, todayISO, nowHM, frDate, addDays, fmtTemp, segHTML, segWire, segValue, agentSelectHTML, shrinkImage, downloadCSV };
+  return { esc, toast, modal, confirm, todayISO, nowHM, frDate, addDays, fmtTemp, segHTML, segWire, segValue, agentSelectHTML, tempInputHTML, signWire, shrinkImage, downloadCSV };
 })();
