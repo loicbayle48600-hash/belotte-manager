@@ -33,6 +33,12 @@ Configuration en **5 minutes**, une seule fois.
 3. Coche **Sauvegarde automatique quotidienne**.
 4. Clique **Enregistrer**, puis **☁️ Sauvegarder maintenant** pour tester.
 
+## Ce qui est sauvegardé
+
+**Tout** : réglages, tous les registres **et les photos des étiquettes** (compressées).
+Avec beaucoup de photos, le fichier peut atteindre plusieurs Mo — c'est normal, et
+les 60 sauvegardes conservées tournent automatiquement.
+
 ## Résultat
 
 - Un dossier **« Sauvegardes HACCP »** apparaît dans ton Google Drive.

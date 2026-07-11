@@ -626,6 +626,11 @@ VIEWS.refroidissement = async function (el) {
   el.querySelectorAll('[data-finish]').forEach(b => b.addEventListener('click', () => openRefroidFinishModal(Number(b.dataset.finish))));
 };
 
+/** ISO datetime local à partir d'une date AAAA-MM-JJ et d'une heure HH:MM. */
+function isoFromDayTime(day, hm) {
+  return new Date(day + 'T' + hm + ':00').toISOString();
+}
+
 async function openRefroidStartModal() {
   const menuNames = await getTodayMenuNames();
   UI.modal(
@@ -638,6 +643,8 @@ async function openRefroidStartModal() {
     dishInputHTML('produit', 'Préparation / plat', 'Ex. : blanquette de veau', menuNames) +
     '<label class="field"><span class="lbl">Température de départ (°C)</span>' +
     '<input type="number" step="0.1" inputmode="decimal" class="temp-input" data-f="temp" placeholder="63.0"></label>' +
+    '<label class="field"><span class="lbl">Heure de début (modifiable si saisie après coup)</span>' +
+    '<input type="time" data-f="heure" value="' + UI.nowHM() + '"></label>' +
     agentField() +
     '<div class="actions"><button class="btn ghost" data-x="cancel">Annuler</button><button class="btn" data-x="save">▶ Démarrer</button></div>',
     (m, close) => {
@@ -647,10 +654,13 @@ async function openRefroidStartModal() {
         const produit = m.querySelector('[data-f="produit"]').value.trim();
         const t = parseFloat(m.querySelector('[data-f="temp"]').value);
         if (!produit || isNaN(t)) { UI.toast('Renseigne le plat et la température', 'bad'); return; }
+        const heure = m.querySelector('[data-f="heure"]').value || UI.nowHM();
+        if (heure > UI.nowHM()) { UI.toast('L’heure de début ne peut pas être dans le futur', 'bad'); return; }
         const agent = requireAgent(m); if (!agent) return;
+        const day = UI.todayISO();
         await DB.addRecord({
-          type: 'refroid', date: UI.todayISO(), mode: UI.segValue(m, 'mode'),
-          produit, tempStart: t, timeStart: UI.nowHM(), startISO: new Date().toISOString(),
+          type: 'refroid', date: day, mode: UI.segValue(m, 'mode'),
+          produit, tempStart: t, timeStart: heure, startISO: isoFromDayTime(day, heure),
           status: 'encours', agent,
         });
         close();
@@ -674,21 +684,31 @@ async function openRefroidFinishModal(id) {
     ' — départ ' + UI.esc(rec.timeStart) + ' à ' + UI.fmtTemp(rec.tempStart) + '</p>' +
     '<label class="field"><span class="lbl">Température finale (°C)</span>' +
     '<input type="number" step="0.1" inputmode="decimal" class="temp-input" data-f="temp" placeholder="—"></label>' +
+    '<label class="field"><span class="lbl">Heure de fin (modifiable si saisie après coup)</span>' +
+    '<input type="time" data-f="heureFin" value="' + UI.nowHM() + '"></label>' +
     agentField(rec.agent) +
     '<div data-verdict></div>' +
     actionFieldHTML() +
     '<div class="actions"><button class="btn ghost" data-x="cancel">Annuler</button><button class="btn" data-x="save">Enregistrer</button></div>',
     (m, close) => {
       const tempInput = m.querySelector('[data-f="temp"]');
+      const heureInput = m.querySelector('[data-f="heureFin"]');
       const verdict = m.querySelector('[data-verdict]');
       const actionField = m.querySelector('[data-action-field]');
-      // La durée est recalculée à chaque contrôle : la modale peut rester ouverte plusieurs minutes.
-      const elapsedMin = () => Math.round((Date.now() - new Date(rec.startISO).getTime()) / 60000);
+      // Durée = heure de fin choisie − début ; si l'heure de fin est « avant »
+      // l'heure de début, le suivi a passé minuit : on bascule au jour suivant.
+      const endInfo = () => {
+        const hm = heureInput.value || UI.nowHM();
+        let end = new Date(rec.date + 'T' + hm + ':00');
+        const start = new Date(rec.startISO);
+        if (end < start) end = new Date(end.getTime() + 24 * 3600 * 1000);
+        return { hm, mins: Math.round((end - start) / 60000) };
+      };
 
       const check = () => {
         const v = parseFloat(tempInput.value);
         if (isNaN(v)) { verdict.innerHTML = ''; actionField.style.display = 'none'; return null; }
-        const mins = elapsedMin();
+        const { mins } = endInfo();
         const tempOK = rec.mode === 'remise' ? v >= target : v <= target;
         const ok = tempOK && mins <= limit;
         verdict.innerHTML = '<p class="pill ' + (ok ? 'ok' : 'bad') + '" style="margin-bottom:12px">' +
@@ -697,19 +717,20 @@ async function openRefroidFinishModal(id) {
         return ok;
       };
       tempInput.addEventListener('input', check);
+      heureInput.addEventListener('input', check);
 
       m.querySelector('[data-x="cancel"]').onclick = close;
       m.querySelector('[data-x="save"]').onclick = async () => {
         const v = parseFloat(tempInput.value);
         if (isNaN(v)) { UI.toast('Saisis la température finale', 'bad'); return; }
         const agent = requireAgent(m); if (!agent) return;
-        const mins = elapsedMin();
+        const { hm, mins } = endInfo();
         const tempOK = rec.mode === 'remise' ? v >= target : v <= target;
         const ok = tempOK && mins <= limit;
         const action = m.querySelector('[data-f="action"]').value.trim();
         if (!ok && !action) { UI.toast('Indique l’action corrective (prolongation, jet du produit…)', 'bad'); return; }
         Object.assign(rec, {
-          tempEnd: v, timeEnd: UI.nowHM(), durationMin: mins,
+          tempEnd: v, timeEnd: hm, durationMin: mins,
           status: 'fini', conforme: ok, action: ok ? '' : action, agent,
         });
         await DB.updateRecord(rec);
@@ -1313,17 +1334,63 @@ VIEWS.menu = async function (el) {
 /* ================================================================
    TRAÇABILITÉ ÉTIQUETTES (photos)
 ================================================================ */
+/** Lundi de la semaine d'une date ISO (AAAA-MM-JJ). */
+function mondayOf(iso) {
+  const d = new Date(iso + 'T12:00:00');
+  return UI.addDays(iso, -((d.getDay() + 6) % 7));
+}
+
 VIEWS.tracabilite = async function (el) {
   const today = UI.todayISO();
-  const recs = (await DB.getByTypeAndRange('etiquette', UI.addDays(today, -30), today)).sort((a, b) => (b.date + (b.time || '')).localeCompare(a.date + (a.time || '')));
+  const from = UI.addDays(today, -35);
+  const [recs, menus] = await Promise.all([
+    DB.getByTypeAndRange('etiquette', from, today),
+    DB.getByTypeAndRange('menu', from, today),
+  ]);
+  recs.sort((a, b) => (b.date + (b.time || '')).localeCompare(a.date + (a.time || '')));
 
-  el.innerHTML = headerHTML('Traçabilité des étiquettes', 'Photographie les étiquettes des produits utilisés (30 derniers jours affichés)',
+  // Menus par jour (midi + soir) pour rapprocher étiquettes et menu, comme le classeur hebdomadaire du PMS
+  const menuByDay = {};
+  menus.forEach(mn => {
+    menuByDay[mn.date] = menuByDay[mn.date] || {};
+    menuByDay[mn.date][mn.service] = mn.items || [];
+  });
+
+  // Regroupement par semaine (lundi → dimanche), puis par jour
+  const weeks = [];
+  const byWeek = {};
+  recs.forEach(r => {
+    const wk = mondayOf(r.date);
+    if (!byWeek[wk]) { byWeek[wk] = {}; weeks.push(wk); }
+    (byWeek[wk][r.date] = byWeek[wk][r.date] || []).push(r);
+  });
+
+  const JOURS = ['dimanche', 'lundi', 'mardi', 'mercredi', 'jeudi', 'vendredi', 'samedi'];
+  const dayName = iso => JOURS[new Date(iso + 'T12:00:00').getDay()];
+
+  const cardHTML = r =>
+    '<div class="photo-card" data-id="' + r.id + '">' +
+    (r.photo ? '<img src="' + UI.esc(r.photo) + '" alt="étiquette">' : '<div style="height:120px;display:flex;align-items:center;justify-content:center;font-size:40px;background:#eef">🏷️</div>') +
+    '<div class="cap"><b>' + UI.esc(r.produit || 'Produit') + '</b>🕐 ' + UI.frDate(r.date) + (r.time ? ' à ' + UI.esc(r.time) : '') + (r.dlc ? ' · DLC ' + UI.frDate(r.dlc) : '') + '</div></div>';
+
+  const weekHTML = wk => {
+    const days = Object.keys(byWeek[wk]).sort().reverse();
+    const count = days.reduce((n, d) => n + byWeek[wk][d].length, 0);
+    return '<div class="card"><h2>📅 Semaine du ' + UI.frDate(wk) + ' au ' + UI.frDate(UI.addDays(wk, 6)) + ' <span class="pill info">' + count + ' étiquette' + (count > 1 ? 's' : '') + '</span></h2>' +
+      days.map(d => {
+        const mn = menuByDay[d];
+        const menuLine = mn
+          ? '<div class="muted" style="font-size:13px;margin:2px 0 8px">🍲 Menu : ' +
+            ['midi', 'soir'].filter(s => mn[s] && mn[s].length).map(s => (s === 'midi' ? '🌞 ' : '🌙 ') + mn[s].map(UI.esc).join(', ')).join(' · ') + '</div>'
+          : '';
+        return '<div style="margin-bottom:14px"><div style="font-weight:700;text-transform:capitalize">' + dayName(d) + ' ' + UI.frDate(d) + '</div>' +
+          menuLine + '<div class="photo-grid">' + byWeek[wk][d].map(cardHTML).join('') + '</div></div>';
+      }).join('') + '</div>';
+  };
+
+  el.innerHTML = headerHTML('Traçabilité des étiquettes', 'Classées par semaine avec le menu correspondant (PMS : classeur hebdomadaire) — 5 dernières semaines',
       '<button class="btn" id="new-eti">📷 Nouvelle étiquette</button>') +
-    (recs.length ? '<div class="photo-grid">' + recs.map(r =>
-      '<div class="photo-card" data-id="' + r.id + '">' +
-      (r.photo ? '<img src="' + UI.esc(r.photo) + '" alt="étiquette">' : '<div style="height:120px;display:flex;align-items:center;justify-content:center;font-size:40px;background:#eef">🏷️</div>') +
-      '<div class="cap"><b>' + UI.esc(r.produit || 'Produit') + '</b>' + UI.frDate(r.date) + (r.dlc ? ' · DLC ' + UI.frDate(r.dlc) : '') + '</div></div>'
-    ).join('') + '</div>' : '<div class="empty"><span class="e-ico">🏷️</span>Aucune étiquette enregistrée.</div>');
+    (recs.length ? weeks.map(weekHTML).join('') : '<div class="empty"><span class="e-ico">🏷️</span>Aucune étiquette enregistrée.</div>');
 
   el.querySelector('#new-eti').addEventListener('click', openEtiquetteModal);
   el.querySelectorAll('.photo-card').forEach(c => c.addEventListener('click', () => openEtiquetteDetail(Number(c.dataset.id))));
