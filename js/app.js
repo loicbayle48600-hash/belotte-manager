@@ -344,13 +344,15 @@ async function sendToWebdav(payload) {
   }
 }
 
-/** Serveur maison : simple POST JSON vers l'adresse fournie (voir SAUVEGARDES-CLOUD.md). */
+/** Serveur maison : simple POST vers l'adresse fournie (voir SAUVEGARDES-CLOUD.md).
+ *  Envoyé en text/plain pour rester une « simple request » CORS (pas de préflight
+ *  OPTIONS que l'exemple PHP ne saurait pas servir) — le corps reste du JSON. */
 async function sendToHttp(payload) {
   const cfg = SETTINGS.httpPost || {};
   const url = (cfg.url || '').trim();
   if (!url) return { ok: false, message: 'adresse du serveur manquante' };
   try {
-    const resp = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: payload });
+    const resp = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: payload });
     if (!resp.ok) return { ok: false, message: 'erreur serveur ' + resp.status };
     return { ok: true };
   } catch (e) {
@@ -368,6 +370,10 @@ function backupTargets() {
   return t;
 }
 
+/** Dernière réussite d'une destination donnée (suivi par destination : une
+ *  destination cassée reste visible même si les autres fonctionnent). */
+function lastBackupFor(name) { return localStorage.getItem('haccp-backup-last:' + name) || ''; }
+
 /** Envoie la sauvegarde vers toutes les destinations configurées. */
 async function sendBackupAll() {
   const targets = backupTargets();
@@ -377,6 +383,7 @@ async function sendBackupAll() {
   const results = [];
   for (const t of targets) {
     const r = await t.send(payload);
+    if (r.ok) localStorage.setItem('haccp-backup-last:' + t.name, UI.todayISO());
     results.push({ name: t.name, ok: r.ok, message: r.message || '' });
   }
   return { ok: results.some(r => r.ok), allOk: results.every(r => r.ok), results };
@@ -391,8 +398,11 @@ async function maybeAutoBackup() {
   const res = await sendBackupAll();
   if (res.ok) {
     setLastAutoBackupDate(today);
-    const rate = res.allOk ? '' : ' (' + res.results.filter(r => !r.ok).map(r => r.name + ' : ' + r.message).join(' ; ') + ')';
-    UI.toast('Sauvegarde cloud effectuée ✔' + rate, res.allOk ? 'ok' : 'bad');
+    if (res.allOk) {
+      UI.toast('Sauvegarde cloud effectuée ✔', 'ok');
+    } else {
+      UI.toast('Sauvegarde cloud PARTIELLE — échec : ' + res.results.filter(r => !r.ok).map(r => r.name).join(', '), 'bad');
+    }
   }
 }
 
@@ -429,15 +439,18 @@ VIEWS.dashboard = async function (el) {
   const equipsDone = new Set(temps.map(t => t.equipId));
   const equipsMissing = SETTINGS.equipements.filter(e => !equipsDone.has(e.id));
 
-  // Sauvegarde cloud automatique en échec silencieux ? (aucune sauvegarde depuis > 3 jours)
+  // Sauvegarde cloud en échec silencieux ? — vérifiée destination par destination
   let driveWarn = '';
   if (SETTINGS.driveAuto && backupTargets().length) {
-    const last = lastAutoBackupDate();
-    const jours = last ? Math.round((new Date(today + 'T12:00:00') - new Date(last + 'T12:00:00')) / 86400000) : null;
-    if (!last || jours > 3) {
+    const enRetard = backupTargets().map(t => {
+      const last = lastBackupFor(t.name);
+      const jours = last ? Math.round((new Date(today + 'T12:00:00') - new Date(last + 'T12:00:00')) / 86400000) : null;
+      return { name: t.name, last, jours };
+    }).filter(t => !t.last || t.jours > 3);
+    if (enRetard.length) {
       driveWarn = '<div class="card" style="border-color:var(--orange)"><div class="row">' +
-        '<span class="pill warn">☁️ Sauvegarde cloud : ' + (last ? 'dernière il y a ' + jours + ' jours' : 'jamais effectuée') + '</span>' +
-        '<span class="muted" style="font-size:13px">Vérifie les destinations dans les Réglages puis « Sauvegarder maintenant ».</span>' +
+        enRetard.map(t => '<span class="pill warn">☁️ ' + UI.esc(t.name) + ' : ' + (t.last ? 'dernière sauvegarde il y a ' + t.jours + ' jours' : 'jamais sauvegardé') + '</span>').join(' ') +
+        '<span class="muted" style="font-size:13px">Vérifie cette destination dans les Réglages puis « Sauvegarder maintenant ».</span>' +
         '<button class="btn small secondary" data-go="parametres">Réglages</button></div></div>';
     }
   }
@@ -1213,6 +1226,7 @@ const GRID_OFFSET_CAT = { '-1': 'entree', 0: 'plat', 1: 'garniture', 2: 'dessert
 function parseGridMenus(sheets) {
   const days = {};   // date ISO -> { midi:Set, soir:Set }
   const catalog = {}; // nom -> catégorie
+  const canon = {};   // nom en minuscules -> première graphie rencontrée (déduplication de casse)
   let skipped = 0;
 
   sheets.forEach(sheet => {
@@ -1223,14 +1237,22 @@ function parseGridMenus(sheets) {
       if (dayIdx === -1) return;
 
       // Date du jour : cellule date en colonne A dans le bloc n−1 .. n+3,
-      // sinon reconstruite depuis la date de début de semaine de l'en-tête.
+      // sinon reconstruite depuis une date de l'en-tête, recalée sur son lundi
+      // réel (l'en-tête peut porter une date de milieu ou de fin de semaine).
       let iso = null;
       for (let r = n - 1; r <= n + 3 && r < rows.length; r++) {
         if (r >= 0 && rows[r]) { const d = parseDateCell(rows[r][0]); if (d) { iso = d; break; } }
       }
       if (!iso) {
         for (const hr of rows.slice(0, 3)) {
-          for (const c of hr) { const d = parseDateCell(c); if (d) { iso = UI.addDays(d, dayIdx); break; } }
+          for (const c of hr) {
+            const d = parseDateCell(c);
+            if (d) {
+              const wd = (new Date(d + 'T12:00:00').getDay() + 6) % 7; // 0 = lundi
+              iso = UI.addDays(d, dayIdx - wd);
+              break;
+            }
+          }
           if (iso) break;
         }
       }
@@ -1241,8 +1263,12 @@ function parseGridMenus(sheets) {
         if (r < 0 || r >= rows.length || !rows[r]) continue;
         const cat = GRID_OFFSET_CAT[off];
         [['midi', 1], ['soir', 3]].forEach(([service, col]) => {
-          const name = String(rows[r][col] == null ? '' : rows[r][col]).trim().replace(/\s+/g, ' ');
-          if (!name || parseDateCell(name)) return;
+          const raw = rows[r][col];
+          if (raw == null || raw instanceof Date || parseDateCell(raw)) return; // vraie date égarée en colonne plat
+          const brut = String(raw).trim().replace(/\s+/g, ' ');
+          if (!brut) return;
+          const key = brut.toLowerCase();
+          const name = canon[key] || (canon[key] = brut); // graphie canonique unique
           (days[iso] = days[iso] || { midi: new Set(), soir: new Set() })[service].add(name);
           if (!catalog[name]) catalog[name] = cat;
         });
@@ -2068,13 +2094,29 @@ VIEWS.historique = async function (el) {
   el.querySelector('#h-to').addEventListener('change', e => { state.to = e.target.value; refreshTable(); });
   el.querySelector('#h-print').addEventListener('click', () => window.print());
 
-  // Recherche multi-registres (traçabilité ascendante : « où est passé le lot X ? »)
+  // Recherche multi-registres (traçabilité ascendante : « où est passé le lot X ? »).
+  // Index léger construit par curseur (sans matérialiser les photos), une fois par visite.
+  state._searchIndex = null;
+  const getSearchIndex = async () => {
+    if (state._searchIndex) return state._searchIndex;
+    const idx = [];
+    await DB.eachRecord(r => idx.push({
+      id: r.id, type: r.type, date: r.date, time: r.time, conforme: r.conforme,
+      produit: r.produit, plat: r.plat, lot: r.lot, fournisseur: r.fournisseur,
+      objet: r.objet, equipName: r.equipName, taskName: r.taskName,
+      description: r.description, categorie: r.categorie, agent: r.agent,
+      hasPhoto: !!r.photo,
+    }));
+    state._searchIndex = idx;
+    return idx;
+  };
+
   const doSearch = async () => {
     const q = el.querySelector('#h-search').value.trim().toLowerCase();
     const box = el.querySelector('#h-search-results');
     if (q.length < 2) { box.innerHTML = '<p class="muted">Saisis au moins 2 caractères.</p>'; return; }
     box.innerHTML = '<p class="muted">Recherche…</p>';
-    const all = await DB.getAllRecords();
+    const all = await getSearchIndex();
     const FIELDS = ['produit', 'plat', 'lot', 'fournisseur', 'objet', 'equipName', 'taskName', 'description', 'categorie'];
     const hits = all.filter(r => FIELDS.some(f => r[f] && String(r[f]).toLowerCase().includes(q)))
       .sort((a, b) => (b.date + (b.time || '')).localeCompare(a.date + (a.time || '')));
@@ -2086,7 +2128,7 @@ VIEWS.historique = async function (el) {
           const titre = r.produit || r.plat || r.objet || r.equipName || r.taskName || '—';
           return '<div class="rec-item ' + (r.conforme === false ? 'bad' : '') + '"' + (r.type === 'etiquette' ? ' data-open-eti="' + r.id + '" style="cursor:pointer"' : '') + '>' +
             '<div class="big" style="font-size:13px">' + UI.esc(TYPE_LABELS[r.type] || r.type).split(' ')[0] + '</div>' +
-            '<div class="body"><div class="title">' + UI.esc(titre) + (r.type === 'etiquette' && r.photo ? ' 📷' : '') + '</div>' +
+            '<div class="body"><div class="title">' + UI.esc(titre) + (r.type === 'etiquette' && r.hasPhoto ? ' 📷' : '') + '</div>' +
             '<div class="meta">' + UI.esc(TYPE_LABELS[r.type] || r.type) + ' — ' + UI.frDate(r.date) + ' ' + UI.esc(r.time || '') +
             (r.lot ? ' — lot <b>' + UI.esc(r.lot) + '</b>' : '') +
             (r.fournisseur ? ' — ' + UI.esc(r.fournisseur) : '') +

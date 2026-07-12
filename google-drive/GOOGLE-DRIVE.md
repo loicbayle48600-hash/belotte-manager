@@ -39,6 +39,16 @@ Configuration en **5 minutes**, une seule fois.
 Avec beaucoup de photos, le fichier peut atteindre plusieurs Mo — c'est normal, et
 les 60 sauvegardes conservées tournent automatiquement.
 
+En plus du fichier JSON, le script dépose chaque photo d'étiquette en **vrai fichier
+image** dans le sous-dossier **« Photos étiquettes »** (nommée
+`date_heure_produit_empreinte.jpg`), consultable directement dans Drive. Chaque photo
+n'est déposée qu'une seule fois ; au maximum 100 nouvelles photos par sauvegarde (le
+reste part avec la suivante).
+
+> ⚠️ **Si tu avais déjà installé le script** : recopie le nouveau `Code.gs`, puis
+> **Déployer → Gérer les déploiements → ✏️ Modifier → Version : Nouvelle version →
+> Déployer** (l'URL ne change pas).
+
 ## Résultat
 
 - Un dossier **« Sauvegardes HACCP »** apparaît dans ton Google Drive.

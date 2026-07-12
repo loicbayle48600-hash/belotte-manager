@@ -91,6 +91,21 @@ const DB = (() => {
       }));
     },
 
+    /** Parcourt tous les enregistrements un par un (curseur : mémoire constante,
+     *  utile pour indexer sans matérialiser les photos). */
+    eachRecord(cb) {
+      return open().then(db => new Promise((resolve, reject) => {
+        const req = db.transaction('records', 'readonly').objectStore('records').openCursor();
+        req.onsuccess = () => {
+          const cur = req.result;
+          if (!cur) { resolve(); return; }
+          cb(cur.value);
+          cur.continue();
+        };
+        req.onerror = () => reject(req.error);
+      }));
+    },
+
     /** Paramètre de configuration (retourne fallback si absent). */
     getSetting(key, fallback) {
       return tx('settings', 'readonly', s => s.get(key)).then(row => (row ? row.value : fallback));

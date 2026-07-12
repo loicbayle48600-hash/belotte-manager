@@ -63,6 +63,7 @@ Toute réponse HTTP 200 = succès. Exemple de récepteur PHP à déposer sur ton
 ```php
 <?php
 // haccp-backup.php — reçoit et range les sauvegardes de l'application HACCP.
+header('Access-Control-Allow-Origin: *'); // nécessaire si l'appli tourne en version navigateur (PWA)
 $dossier = __DIR__ . '/sauvegardes-haccp';
 if (!is_dir($dossier)) mkdir($dossier, 0770, true);
 

@@ -34,10 +34,15 @@ function doPost(e) {
   }
 }
 
+// Nombre maximal de photos écrites par exécution : Apps Script est limité à
+// ~6 minutes ; le reliquat éventuel part avec la sauvegarde suivante.
+var MAX_PHOTOS_PAR_ENVOI = 100;
+
 /**
  * Enregistre les photos d'étiquettes comme VRAIS fichiers images dans le
  * sous-dossier « Photos étiquettes » (visibles/consultables directement dans
- * Drive). Chaque photo n'est enregistrée qu'une fois (nom basé sur son id).
+ * Drive). Chaque photo n'est enregistrée qu'une fois : le nom contient une
+ * empreinte du contenu, stable même après restauration d'une sauvegarde.
  */
 function extrairePhotos_(dossier, data) {
   if (!data.records) return 0;
@@ -50,19 +55,32 @@ function extrairePhotos_(dossier, data) {
   while (files.hasNext()) existants[files.next().getName()] = true;
 
   var ajoutees = 0;
-  data.records.forEach(function (r) {
-    if (r.type !== 'etiquette' || !r.photo) return;
+  for (var i = 0; i < data.records.length; i++) {
+    if (ajoutees >= MAX_PHOTOS_PAR_ENVOI) break;
+    var r = data.records[i];
+    if (r.type !== 'etiquette' || !r.photo) continue;
     var m = String(r.photo).match(/^data:image\/(jpeg|jpg|png|webp);base64,(.+)$/);
-    if (!m) return;
+    if (!m) continue;
     var produit = String(r.produit || 'etiquette').replace(/[^\w\-À-ÿ ]+/g, '').trim().replace(/\s+/g, '-').slice(0, 40) || 'etiquette';
-    var nom = (r.date || 'sans-date') + '_' + String(r.time || '').replace(':', 'h') + '_' + produit + '_' + (r.id || '') + '.jpg';
-    if (existants[nom]) return;
+    var nom = (r.date || 'sans-date') + '_' + String(r.time || '').replace(':', 'h') + '_' + produit + '_' + empreinte_(m[2]) + '.jpg';
+    if (existants[nom]) continue;
     var blob = Utilities.newBlob(Utilities.base64Decode(m[2]), 'image/jpeg', nom);
     sousDossier.createFile(blob);
     existants[nom] = true;
     ajoutees++;
-  });
+  }
   return ajoutees;
+}
+
+// Empreinte courte (8 hexa) du contenu d'une photo, indépendante des ids.
+function empreinte_(base64) {
+  var digest = Utilities.computeDigest(Utilities.DigestAlgorithm.MD5, base64);
+  var hex = '';
+  for (var i = 0; i < 4; i++) {
+    var v = (digest[i] + 256) % 256;
+    hex += ('0' + v.toString(16)).slice(-2);
+  }
+  return hex;
 }
 
 // Permet de vérifier que le script répond (ouverture de l'URL dans un navigateur).
