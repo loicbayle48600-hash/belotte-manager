@@ -41,6 +41,9 @@ const DEFAULT_SETTINGS = {
   plats: [],
   driveUrl: '',
   driveAuto: false,
+  dropbox: { on: false, token: '' },
+  webdav: { on: false, url: '', user: '', pass: '' },
+  httpPost: { on: false, url: '' },
   equipements: [
     { id: 'e1', name: 'Chambre froide négative', ...NEG },
     { id: 'e2', name: 'Chambre froide fruits et légumes', ...POS },
@@ -279,40 +282,117 @@ async function buildBackup() {
   return { app: 'haccp-cuisine', version: 1, exportedAt: new Date().toISOString(), etablissement: SETTINGS.etablissement, settings: SETTINGS, records };
 }
 
-/** Envoie la sauvegarde au script Google Drive. Retourne {ok, message}.
- *  Sous Capacitor (APK) la requête passe en natif ; en navigateur, un POST
- *  text/plain vers Apps Script est une « simple request » CORS dont la réponse
- *  est lisible — on vérifie donc réellement la réussite (pas de no-cors qui
- *  afficherait un faux succès). */
-async function sendToDrive() {
+/** Google Drive (script Apps Script). Un POST text/plain est une « simple
+ *  request » CORS dont la réponse est lisible — on vérifie réellement la
+ *  réussite (pas de no-cors qui afficherait un faux succès). */
+async function sendToDrive(payload) {
   const url = (SETTINGS.driveUrl || '').trim();
-  if (!url) return { ok: false, message: 'Aucune URL Google Drive configurée' };
-  if (!navigator.onLine) return { ok: false, message: 'Pas de connexion Internet' };
-  const payload = JSON.stringify(await buildBackup());
+  if (!url) return { ok: false, message: 'URL du script manquante' };
   try {
     const resp = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: payload });
-    if (!resp.ok) return { ok: false, message: 'Erreur serveur (' + resp.status + ') — vérifie l’URL du script' };
+    if (!resp.ok) return { ok: false, message: 'erreur serveur ' + resp.status + ' — vérifie l’URL du script' };
     const txt = await resp.text().catch(() => '');
     try {
       const json = JSON.parse(txt);
-      if (json && json.ok === false) return { ok: false, message: 'Script Drive : ' + (json.erreur || 'erreur inconnue') };
+      if (json && json.ok === false) return { ok: false, message: json.erreur || 'erreur du script' };
     } catch { /* réponse non JSON : on garde le statut HTTP comme critère */ }
-    return { ok: true, message: 'Sauvegarde envoyée' };
+    return { ok: true };
   } catch (e) {
-    return { ok: false, message: 'Échec de l’envoi : ' + e.message };
+    return { ok: false, message: e.message };
   }
 }
 
-/** Sauvegarde automatique quotidienne (au démarrage, si activée et connectée). */
+/** Dropbox : dépôt direct via un jeton d'accès (app « scoped », dossier dédié). */
+async function sendToDropbox(payload) {
+  const cfg = SETTINGS.dropbox || {};
+  const token = (cfg.token || '').trim();
+  if (!token) return { ok: false, message: 'jeton d’accès manquant' };
+  try {
+    const resp = await fetch('https://content.dropboxapi.com/2/files/upload', {
+      method: 'POST',
+      headers: {
+        'Authorization': 'Bearer ' + token,
+        'Dropbox-API-Arg': JSON.stringify({ path: '/sauvegarde-haccp-' + UI.todayISO() + '.json', mode: 'overwrite', mute: true }),
+        'Content-Type': 'application/octet-stream',
+      },
+      body: payload,
+    });
+    if (!resp.ok) return { ok: false, message: 'erreur ' + resp.status + (resp.status === 401 ? ' — jeton invalide ou expiré' : '') };
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, message: e.message };
+  }
+}
+
+/** Nextcloud / ownCloud / tout serveur WebDAV : PUT avec authentification basique. */
+async function sendToWebdav(payload) {
+  const cfg = SETTINGS.webdav || {};
+  let url = (cfg.url || '').trim();
+  if (!url) return { ok: false, message: 'URL du dossier manquante' };
+  if (!url.endsWith('/')) url += '/';
+  const auth = 'Basic ' + btoa(unescape(encodeURIComponent((cfg.user || '') + ':' + (cfg.pass || ''))));
+  try {
+    const resp = await fetch(url + 'sauvegarde-haccp-' + UI.todayISO() + '.json', {
+      method: 'PUT',
+      headers: { 'Authorization': auth, 'Content-Type': 'application/json' },
+      body: payload,
+    });
+    if (!resp.ok) return { ok: false, message: 'erreur ' + resp.status + (resp.status === 401 ? ' — identifiants refusés' : '') };
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, message: e.message };
+  }
+}
+
+/** Serveur maison : simple POST JSON vers l'adresse fournie (voir SAUVEGARDES-CLOUD.md). */
+async function sendToHttp(payload) {
+  const cfg = SETTINGS.httpPost || {};
+  const url = (cfg.url || '').trim();
+  if (!url) return { ok: false, message: 'adresse du serveur manquante' };
+  try {
+    const resp = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: payload });
+    if (!resp.ok) return { ok: false, message: 'erreur serveur ' + resp.status };
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, message: e.message };
+  }
+}
+
+/** Liste des destinations activées et configurées. */
+function backupTargets() {
+  const t = [];
+  if ((SETTINGS.driveUrl || '').trim()) t.push({ name: 'Google Drive', send: sendToDrive });
+  if (SETTINGS.dropbox && SETTINGS.dropbox.on) t.push({ name: 'Dropbox', send: sendToDropbox });
+  if (SETTINGS.webdav && SETTINGS.webdav.on) t.push({ name: 'Serveur WebDAV', send: sendToWebdav });
+  if (SETTINGS.httpPost && SETTINGS.httpPost.on) t.push({ name: 'Serveur HTTP', send: sendToHttp });
+  return t;
+}
+
+/** Envoie la sauvegarde vers toutes les destinations configurées. */
+async function sendBackupAll() {
+  const targets = backupTargets();
+  if (!targets.length) return { ok: false, results: [], message: 'Aucune destination de sauvegarde configurée' };
+  if (!navigator.onLine) return { ok: false, results: [], message: 'Pas de connexion Internet' };
+  const payload = JSON.stringify(await buildBackup());
+  const results = [];
+  for (const t of targets) {
+    const r = await t.send(payload);
+    results.push({ name: t.name, ok: r.ok, message: r.message || '' });
+  }
+  return { ok: results.some(r => r.ok), allOk: results.every(r => r.ok), results };
+}
+
+/** Sauvegarde automatique quotidienne (si activée et connectée). */
 async function maybeAutoBackup() {
-  if (!SETTINGS.driveAuto || !SETTINGS.driveUrl) return;
+  if (!SETTINGS.driveAuto || !backupTargets().length) return;
   if (!navigator.onLine) return;
   const today = UI.todayISO();
   if (lastAutoBackupDate() === today) return;
-  const res = await sendToDrive();
+  const res = await sendBackupAll();
   if (res.ok) {
     setLastAutoBackupDate(today);
-    UI.toast('Sauvegarde Google Drive effectuée ✔', 'ok');
+    const rate = res.allOk ? '' : ' (' + res.results.filter(r => !r.ok).map(r => r.name + ' : ' + r.message).join(' ; ') + ')';
+    UI.toast('Sauvegarde cloud effectuée ✔' + rate, res.allOk ? 'ok' : 'bad');
   }
 }
 
@@ -349,15 +429,15 @@ VIEWS.dashboard = async function (el) {
   const equipsDone = new Set(temps.map(t => t.equipId));
   const equipsMissing = SETTINGS.equipements.filter(e => !equipsDone.has(e.id));
 
-  // Sauvegarde Drive automatique en échec silencieux ? (aucune sauvegarde depuis > 3 jours)
+  // Sauvegarde cloud automatique en échec silencieux ? (aucune sauvegarde depuis > 3 jours)
   let driveWarn = '';
-  if (SETTINGS.driveAuto && SETTINGS.driveUrl) {
+  if (SETTINGS.driveAuto && backupTargets().length) {
     const last = lastAutoBackupDate();
     const jours = last ? Math.round((new Date(today + 'T12:00:00') - new Date(last + 'T12:00:00')) / 86400000) : null;
     if (!last || jours > 3) {
       driveWarn = '<div class="card" style="border-color:var(--orange)"><div class="row">' +
-        '<span class="pill warn">☁️ Sauvegarde Google Drive : ' + (last ? 'dernière il y a ' + jours + ' jours' : 'jamais effectuée') + '</span>' +
-        '<span class="muted" style="font-size:13px">Vérifie l’URL du script dans les Réglages puis « Sauvegarder maintenant ».</span>' +
+        '<span class="pill warn">☁️ Sauvegarde cloud : ' + (last ? 'dernière il y a ' + jours + ' jours' : 'jamais effectuée') + '</span>' +
+        '<span class="muted" style="font-size:13px">Vérifie les destinations dans les Réglages puis « Sauvegarder maintenant ».</span>' +
         '<button class="btn small secondary" data-go="parametres">Réglages</button></div></div>';
     }
   }
@@ -1101,13 +1181,76 @@ function parseDateCell(v) {
   return null;
 }
 
-// Lit un fichier Excel/CSV en tableau de lignes (tableaux de cellules).
-async function readSheetRows(file) {
+// Lit un fichier Excel/CSV : toutes les feuilles, en tableaux de lignes.
+async function readWorkbook(file) {
   const XLSX = await ensureXLSX();
   const buf = await file.arrayBuffer();
   const wb = XLSX.read(buf, { type: 'array', cellDates: true });
-  const sheet = wb.Sheets[wb.SheetNames[0]];
-  return XLSX.utils.sheet_to_json(sheet, { header: 1, raw: true, defval: '' });
+  return wb.SheetNames.map(name => ({
+    name,
+    rows: XLSX.utils.sheet_to_json(wb.Sheets[name], { header: 1, raw: true, defval: '' }),
+  }));
+}
+
+/* ---- Format « grille hebdomadaire » (fichier de menus de l'établissement) ----
+ * Une feuille par semaine. Chaque jour est un bloc de 5 lignes ancré sur le nom
+ * du jour en colonne A : entrée (n−1), plat (n), garniture (n+1), fromage (n+2),
+ * dessert (n+3). Colonne B = midi, colonne D = soir ; la date est en colonne A
+ * dans le bloc. */
+const JOURS_SEMAINE = ['lundi', 'mardi', 'mercredi', 'jeudi', 'vendredi', 'samedi', 'dimanche'];
+
+function isGridMenuWorkbook(sheets) {
+  const first = sheets[0];
+  if (!first) return false;
+  const headerOK = first.rows.slice(0, 3).some(r => r.some(c => /menu du/i.test(String(c))));
+  const daysFound = first.rows.filter(r => JOURS_SEMAINE.includes(String(r[0]).trim().toLowerCase())).length;
+  return headerOK && daysFound >= 3;
+}
+
+const GRID_OFFSET_CAT = { '-1': 'entree', 0: 'plat', 1: 'garniture', 2: 'dessert', 3: 'dessert' };
+
+/** Parcourt toutes les feuilles « grille » et retourne { days, catalog } comme compute(). */
+function parseGridMenus(sheets) {
+  const days = {};   // date ISO -> { midi:Set, soir:Set }
+  const catalog = {}; // nom -> catégorie
+  let skipped = 0;
+
+  sheets.forEach(sheet => {
+    const rows = sheet.rows;
+    rows.forEach((row, n) => {
+      const dayName = String(row[0]).trim().toLowerCase();
+      const dayIdx = JOURS_SEMAINE.indexOf(dayName);
+      if (dayIdx === -1) return;
+
+      // Date du jour : cellule date en colonne A dans le bloc n−1 .. n+3,
+      // sinon reconstruite depuis la date de début de semaine de l'en-tête.
+      let iso = null;
+      for (let r = n - 1; r <= n + 3 && r < rows.length; r++) {
+        if (r >= 0 && rows[r]) { const d = parseDateCell(rows[r][0]); if (d) { iso = d; break; } }
+      }
+      if (!iso) {
+        for (const hr of rows.slice(0, 3)) {
+          for (const c of hr) { const d = parseDateCell(c); if (d) { iso = UI.addDays(d, dayIdx); break; } }
+          if (iso) break;
+        }
+      }
+      if (!iso) { skipped++; return; }
+
+      for (let off = -1; off <= 3; off++) {
+        const r = n + off;
+        if (r < 0 || r >= rows.length || !rows[r]) continue;
+        const cat = GRID_OFFSET_CAT[off];
+        [['midi', 1], ['soir', 3]].forEach(([service, col]) => {
+          const name = String(rows[r][col] == null ? '' : rows[r][col]).trim().replace(/\s+/g, ' ');
+          if (!name || parseDateCell(name)) return;
+          (days[iso] = days[iso] || { midi: new Set(), soir: new Set() })[service].add(name);
+          if (!catalog[name]) catalog[name] = cat;
+        });
+      }
+    });
+  });
+
+  return { days, catalog, skipped };
 }
 
 /** Assistant d'import : mapping des colonnes -> (date, colonnes de plats), aperçu, application. */
@@ -1126,15 +1269,55 @@ function openImportMenu(onDone) {
         const f = e.target.files[0];
         if (!f) return;
         step.innerHTML = '<p class="muted">Lecture du fichier…</p>';
-        let rows;
-        try { rows = await readSheetRows(f); }
+        let sheets;
+        try { sheets = await readWorkbook(f); }
         catch (err) { step.innerHTML = '<p class="pill bad">' + UI.esc(err.message) + '</p>'; return; }
-        rows = rows.filter(r => r.some(c => String(c).trim() !== ''));
+
+        // Format « grille hebdomadaire » de l'établissement : import direct, toutes les semaines
+        if (isGridMenuWorkbook(sheets)) {
+          const result = parseGridMenus(sheets);
+          showGridPreview(step, result, sheets.length, close, onDone);
+          return;
+        }
+
+        const rows = (sheets[0] ? sheets[0].rows : []).filter(r => r.some(c => String(c).trim() !== ''));
         if (rows.length < 2) { step.innerHTML = '<p class="pill bad">Fichier vide ou illisible.</p>'; return; }
         buildMapping(step, rows, close, onDone);
       });
     }
   );
+}
+
+/** Aperçu + application pour le format grille hebdomadaire (détecté automatiquement). */
+function showGridPreview(step, result, nSheets, close, onDone) {
+  const { days, catalog, skipped } = result;
+  const dates = Object.keys(days).sort();
+  if (!dates.length) {
+    step.innerHTML = '<p class="pill bad">Format « menu hebdomadaire » reconnu, mais aucune date lisible.</p>';
+    return;
+  }
+  const sample = dates.slice(0, 3).map(d =>
+    '<div class="rec-item"><div class="body"><div class="title">' + UI.frDate(d) + '</div>' +
+    '<div class="meta">Midi : ' + ([...days[d].midi].map(UI.esc).join(', ') || '—') + '<br>Soir : ' + ([...days[d].soir].map(UI.esc).join(', ') || '—') + '</div></div></div>'
+  ).join('');
+
+  step.innerHTML = '<hr class="sep">' +
+    '<p class="pill ok" style="margin-bottom:10px">✔ Format « menu hebdomadaire » reconnu (' + nSheets + ' semaines)</p>' +
+    '<p style="margin-bottom:10px"><b>' + dates.length + ' jours</b> de menus · <b>' + Object.keys(catalog).length + ' plats</b> différents · du ' +
+    UI.frDate(dates[0]) + ' au ' + UI.frDate(dates[dates.length - 1]) +
+    (skipped ? ' <span class="muted">(' + skipped + ' jour(s) sans date ignoré(s))</span>' : '') + '</p>' +
+    '<div class="rec-list" style="margin-bottom:10px">' + sample + '</div>' +
+    (dates.length > 3 ? '<p class="muted">… et ' + (dates.length - 3) + ' autres jours.</p>' : '') +
+    '<div class="spacer"></div><button class="btn block" data-act="apply">✅ Importer les ' + dates.length + ' jours</button>';
+
+  step.querySelector('[data-act="apply"]').addEventListener('click', async () => {
+    const btn = step.querySelector('[data-act="apply"]');
+    btn.disabled = true; btn.textContent = 'Import en cours…';
+    await applyImport({ days, catalog });
+    close();
+    UI.toast('Menu de l’année importé : ' + dates.length + ' jours ✔', 'ok');
+    if (onDone) onDone();
+  });
 }
 
 function buildMapping(step, rows, close, onDone) {
@@ -1854,7 +2037,12 @@ VIEWS.historique = async function (el) {
     '<button class="btn small" id="h-export">⬇️ Exporter ce registre (CSV)</button>' +
     '<button class="btn small" id="h-export-all">📁 Tout exporter (inspection)</button>' +
     '<button class="btn small secondary" id="h-print">🖨️ Imprimer</button>' +
-    '</div></div>' +
+    '</div>' +
+    '<hr class="sep"><div class="row">' +
+    '<div class="grow"><input type="text" id="h-search" placeholder="🔎 Rappel de lot : produit, n° de lot, fournisseur, plat…"></div>' +
+    '<button class="btn small" id="h-search-btn">Rechercher partout</button></div>' +
+    '<div id="h-search-results" style="margin-top:10px"></div>' +
+    '</div>' +
     '<div class="card"><div class="table-wrap" id="h-table"></div></div>';
 
   async function refreshTable() {
@@ -1879,6 +2067,36 @@ VIEWS.historique = async function (el) {
   el.querySelector('#h-from').addEventListener('change', e => { state.from = e.target.value; refreshTable(); });
   el.querySelector('#h-to').addEventListener('change', e => { state.to = e.target.value; refreshTable(); });
   el.querySelector('#h-print').addEventListener('click', () => window.print());
+
+  // Recherche multi-registres (traçabilité ascendante : « où est passé le lot X ? »)
+  const doSearch = async () => {
+    const q = el.querySelector('#h-search').value.trim().toLowerCase();
+    const box = el.querySelector('#h-search-results');
+    if (q.length < 2) { box.innerHTML = '<p class="muted">Saisis au moins 2 caractères.</p>'; return; }
+    box.innerHTML = '<p class="muted">Recherche…</p>';
+    const all = await DB.getAllRecords();
+    const FIELDS = ['produit', 'plat', 'lot', 'fournisseur', 'objet', 'equipName', 'taskName', 'description', 'categorie'];
+    const hits = all.filter(r => FIELDS.some(f => r[f] && String(r[f]).toLowerCase().includes(q)))
+      .sort((a, b) => (b.date + (b.time || '')).localeCompare(a.date + (a.time || '')));
+    const shown = hits.slice(0, 80);
+    if (!box.isConnected) return;
+    box.innerHTML = hits.length
+      ? '<p class="pill info" style="margin-bottom:10px">' + hits.length + ' résultat(s)' + (hits.length > 80 ? ' — 80 premiers affichés' : '') + '</p>' +
+        '<div class="rec-list">' + shown.map(r => {
+          const titre = r.produit || r.plat || r.objet || r.equipName || r.taskName || '—';
+          return '<div class="rec-item ' + (r.conforme === false ? 'bad' : '') + '"' + (r.type === 'etiquette' ? ' data-open-eti="' + r.id + '" style="cursor:pointer"' : '') + '>' +
+            '<div class="big" style="font-size:13px">' + UI.esc(TYPE_LABELS[r.type] || r.type).split(' ')[0] + '</div>' +
+            '<div class="body"><div class="title">' + UI.esc(titre) + (r.type === 'etiquette' && r.photo ? ' 📷' : '') + '</div>' +
+            '<div class="meta">' + UI.esc(TYPE_LABELS[r.type] || r.type) + ' — ' + UI.frDate(r.date) + ' ' + UI.esc(r.time || '') +
+            (r.lot ? ' — lot <b>' + UI.esc(r.lot) + '</b>' : '') +
+            (r.fournisseur ? ' — ' + UI.esc(r.fournisseur) : '') +
+            (r.agent ? ' — ' + UI.esc(r.agent) : '') + '</div></div></div>';
+        }).join('') + '</div>'
+      : '<p class="muted">Aucun résultat pour « ' + UI.esc(q) + ' ».</p>';
+    box.querySelectorAll('[data-open-eti]').forEach(c => c.addEventListener('click', () => openEtiquetteDetail(Number(c.dataset.openEti))));
+  };
+  el.querySelector('#h-search-btn').addEventListener('click', doSearch);
+  el.querySelector('#h-search').addEventListener('keydown', e => { if (e.key === 'Enter') doSearch(); });
 
   // Raccourcis de période
   el.querySelectorAll('[data-range]').forEach(b => b.addEventListener('click', () => {
@@ -1982,14 +2200,35 @@ VIEWS.parametres = async function (el) {
       '<button class="btn small ghost" data-del-task="' + i + '">🗑️</button></div>').join('') + '</div>' +
     '<button class="btn small" id="s-task-add">➕ Ajouter une tâche</button></div>' +
 
-    '<div class="card"><h2>☁️ Sauvegarde automatique Google Drive</h2>' +
-    '<p class="muted" style="margin-bottom:12px">La tablette étant connectée à Internet, l’application peut déposer chaque jour une sauvegarde dans ton Google Drive. Il faut une seule fois coller l’adresse du script (voir la notice <b>GOOGLE-DRIVE.md</b>).</p>' +
-    '<label class="field"><span class="lbl">Adresse du script Google Drive</span>' +
-    '<input type="text" id="s-drive-url" value="' + UI.esc(SETTINGS.driveUrl || '') + '" placeholder="https://script.google.com/macros/s/.../exec"></label>' +
+    '<div class="card"><h2>☁️ Sauvegardes cloud & serveur</h2>' +
+    '<p class="muted" style="margin-bottom:12px">Chaque jour, l’application peut déposer une sauvegarde complète (registres + photos) vers une ou plusieurs destinations. Notices pas-à-pas : <b>GOOGLE-DRIVE.md</b> et <b>SAUVEGARDES-CLOUD.md</b> (Dropbox, Nextcloud, serveur).</p>' +
+
     '<label class="field" style="display:flex;align-items:center;gap:12px"><input type="checkbox" id="s-drive-auto" ' + (SETTINGS.driveAuto ? 'checked' : '') + ' style="width:26px;height:26px;min-height:0">' +
-    '<span class="lbl" style="margin:0;text-transform:none;letter-spacing:0;font-size:15px">Sauvegarde automatique quotidienne</span></label>' +
-    '<div class="row"><button class="btn small" id="s-drive-save">Enregistrer</button>' +
-    '<button class="btn small secondary" id="s-drive-now">☁️ Sauvegarder maintenant</button></div>' +
+    '<span class="lbl" style="margin:0;text-transform:none;letter-spacing:0;font-size:15px">Sauvegarde automatique quotidienne (vers toutes les destinations actives)</span></label>' +
+
+    '<hr class="sep"><div class="lbl" style="margin-bottom:8px">🟢 Google Drive <span class="muted">(photos déposées aussi en fichiers images)</span></div>' +
+    '<label class="field"><span class="lbl">Adresse du script (…/exec)</span>' +
+    '<input type="text" id="s-drive-url" value="' + UI.esc(SETTINGS.driveUrl || '') + '" placeholder="https://script.google.com/macros/s/.../exec"></label>' +
+
+    '<hr class="sep"><div class="row" style="margin-bottom:8px"><input type="checkbox" id="s-dbx-on" ' + (SETTINGS.dropbox && SETTINGS.dropbox.on ? 'checked' : '') + ' style="width:26px;height:26px;min-height:0">' +
+    '<div class="lbl" style="margin:0">🔵 Dropbox</div></div>' +
+    '<label class="field"><span class="lbl">Jeton d’accès (voir notice)</span>' +
+    '<input type="text" id="s-dbx-token" value="' + UI.esc((SETTINGS.dropbox && SETTINGS.dropbox.token) || '') + '" placeholder="sl.xxxxxxxx…"></label>' +
+
+    '<hr class="sep"><div class="row" style="margin-bottom:8px"><input type="checkbox" id="s-wd-on" ' + (SETTINGS.webdav && SETTINGS.webdav.on ? 'checked' : '') + ' style="width:26px;height:26px;min-height:0">' +
+    '<div class="lbl" style="margin:0">🟠 Nextcloud / ownCloud / WebDAV</div></div>' +
+    '<label class="field"><span class="lbl">URL du dossier WebDAV</span>' +
+    '<input type="text" id="s-wd-url" value="' + UI.esc((SETTINGS.webdav && SETTINGS.webdav.url) || '') + '" placeholder="https://cloud.exemple.fr/remote.php/dav/files/UTILISATEUR/HACCP/"></label>' +
+    '<div class="row"><div class="grow"><label class="field"><span class="lbl">Utilisateur</span><input type="text" id="s-wd-user" value="' + UI.esc((SETTINGS.webdav && SETTINGS.webdav.user) || '') + '"></label></div>' +
+    '<div class="grow"><label class="field"><span class="lbl">Mot de passe d’application</span><input type="password" id="s-wd-pass" value="' + UI.esc((SETTINGS.webdav && SETTINGS.webdav.pass) || '') + '"></label></div></div>' +
+
+    '<hr class="sep"><div class="row" style="margin-bottom:8px"><input type="checkbox" id="s-http-on" ' + (SETTINGS.httpPost && SETTINGS.httpPost.on ? 'checked' : '') + ' style="width:26px;height:26px;min-height:0">' +
+    '<div class="lbl" style="margin:0">⚫ Serveur maison (HTTP POST)</div></div>' +
+    '<label class="field"><span class="lbl">Adresse du point de dépôt</span>' +
+    '<input type="text" id="s-http-url" value="' + UI.esc((SETTINGS.httpPost && SETTINGS.httpPost.url) || '') + '" placeholder="https://mon-serveur.fr/haccp-backup.php"></label>' +
+
+    '<div class="row" style="margin-top:6px"><button class="btn small" id="s-drive-save">Enregistrer</button>' +
+    '<button class="btn small secondary" id="s-drive-now">☁️ Sauvegarder maintenant (test)</button></div>' +
     (lastAutoBackupDate() ? '<p class="muted" style="margin-top:10px">Dernière sauvegarde auto : ' + UI.frDate(lastAutoBackupDate()) + '</p>' : '') +
     '</div>' +
 
@@ -2005,22 +2244,36 @@ VIEWS.parametres = async function (el) {
     await saveSettings(); UI.toast('Enregistré ✔', 'ok');
   });
 
-  // Google Drive
-  el.querySelector('#s-drive-save').addEventListener('click', async () => {
+  // Sauvegardes cloud
+  const readCloudForm = () => {
     SETTINGS.driveUrl = el.querySelector('#s-drive-url').value.trim();
     SETTINGS.driveAuto = el.querySelector('#s-drive-auto').checked;
+    SETTINGS.dropbox = { on: el.querySelector('#s-dbx-on').checked, token: el.querySelector('#s-dbx-token').value.trim() };
+    SETTINGS.webdav = {
+      on: el.querySelector('#s-wd-on').checked,
+      url: el.querySelector('#s-wd-url').value.trim(),
+      user: el.querySelector('#s-wd-user').value.trim(),
+      pass: el.querySelector('#s-wd-pass').value,
+    };
+    SETTINGS.httpPost = { on: el.querySelector('#s-http-on').checked, url: el.querySelector('#s-http-url').value.trim() };
+  };
+  el.querySelector('#s-drive-save').addEventListener('click', async () => {
+    readCloudForm();
     await saveSettings();
-    UI.toast('Réglages Drive enregistrés ✔', 'ok');
+    UI.toast('Réglages de sauvegarde enregistrés ✔', 'ok');
   });
   el.querySelector('#s-drive-now').addEventListener('click', async () => {
-    SETTINGS.driveUrl = el.querySelector('#s-drive-url').value.trim();
-    SETTINGS.driveAuto = el.querySelector('#s-drive-auto').checked;
+    readCloudForm();
     await saveSettings();
-    if (!SETTINGS.driveUrl) { UI.toast('Colle d’abord l’adresse du script', 'bad'); return; }
+    if (!backupTargets().length) { UI.toast('Configure au moins une destination (Drive, Dropbox, WebDAV ou serveur)', 'bad'); return; }
     UI.toast('Envoi en cours…');
-    const res = await sendToDrive();
-    if (res.ok) { setLastAutoBackupDate(UI.todayISO()); UI.toast('Sauvegarde envoyée sur Drive ✔', 'ok'); render(); }
-    else UI.toast(res.message, 'bad');
+    const res = await sendBackupAll();
+    if (res.results.length) {
+      res.results.forEach(r => UI.toast((r.ok ? '✔ ' : '✘ ') + r.name + (r.ok ? ' : sauvegarde envoyée' : ' : ' + r.message), r.ok ? 'ok' : 'bad'));
+    } else if (res.message) {
+      UI.toast(res.message, 'bad');
+    }
+    if (res.ok) { setLastAutoBackupDate(UI.todayISO()); render(); }
   });
 
   // Agents

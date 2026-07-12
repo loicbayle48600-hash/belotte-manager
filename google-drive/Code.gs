@@ -25,12 +25,44 @@ function doPost(e) {
 
     var dossier = getDossier_();
     dossier.createFile(nom, contenu, 'application/json');
+    var photos = extrairePhotos_(dossier, data);
     nettoyer_(dossier);
 
-    return json_({ ok: true, fichier: nom });
+    return json_({ ok: true, fichier: nom, photos: photos });
   } catch (err) {
     return json_({ ok: false, erreur: String(err) });
   }
+}
+
+/**
+ * Enregistre les photos d'étiquettes comme VRAIS fichiers images dans le
+ * sous-dossier « Photos étiquettes » (visibles/consultables directement dans
+ * Drive). Chaque photo n'est enregistrée qu'une fois (nom basé sur son id).
+ */
+function extrairePhotos_(dossier, data) {
+  if (!data.records) return 0;
+  var it = dossier.getFoldersByName('Photos étiquettes');
+  var sousDossier = it.hasNext() ? it.next() : dossier.createFolder('Photos étiquettes');
+
+  // noms déjà présents (pour ne pas dupliquer d'une sauvegarde à l'autre)
+  var existants = {};
+  var files = sousDossier.getFiles();
+  while (files.hasNext()) existants[files.next().getName()] = true;
+
+  var ajoutees = 0;
+  data.records.forEach(function (r) {
+    if (r.type !== 'etiquette' || !r.photo) return;
+    var m = String(r.photo).match(/^data:image\/(jpeg|jpg|png|webp);base64,(.+)$/);
+    if (!m) return;
+    var produit = String(r.produit || 'etiquette').replace(/[^\w\-À-ÿ ]+/g, '').trim().replace(/\s+/g, '-').slice(0, 40) || 'etiquette';
+    var nom = (r.date || 'sans-date') + '_' + String(r.time || '').replace(':', 'h') + '_' + produit + '_' + (r.id || '') + '.jpg';
+    if (existants[nom]) return;
+    var blob = Utilities.newBlob(Utilities.base64Decode(m[2]), 'image/jpeg', nom);
+    sousDossier.createFile(blob);
+    existants[nom] = true;
+    ajoutees++;
+  });
+  return ajoutees;
 }
 
 // Permet de vérifier que le script répond (ouverture de l'URL dans un navigateur).
