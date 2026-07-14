@@ -257,6 +257,8 @@ hr.sep { border: none; border-top: 1px solid var(--border); margin: 14px 0; }
   }
   .logo { display: none; }
   .nav-btn { flex-direction: column; gap: 2px; font-size: 10.5px; min-width: 74px; padding: 8px 4px; text-align: center; align-items: center; }
+  /* espaceur final : le dernier onglet peut sortir de la zone fondue du mask */
+  #sidebar::after { content: ''; flex: 0 0 36px; }
   #main { padding: 14px 14px 20px; }
 }
 

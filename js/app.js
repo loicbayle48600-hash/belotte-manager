@@ -888,9 +888,11 @@ async function openRefroidFinishModal(id) {
 VIEWS.service = async function (el) {
   const today = UI.todayISO();
   const state = VIEWS.service._state || (VIEWS.service._state = {});
-  // Service courant : midi avant 14 h, soir ensuite (modifiable d'un tap)
+  // Le choix explicite midi/soir n'est mémorisé que pour la journée en cours ;
+  // sans choix, le service suit l'heure (midi avant 14 h). Ne PAS écrire
+  // state.svc ici : sinon le service resterait figé d'un jour sur l'autre.
+  if (state.date !== today) { state.date = today; state.svc = null; }
   const svc = state.svc || (new Date().getHours() < 14 ? 'midi' : 'soir');
-  state.svc = svc;
 
   const [recs, menus] = await Promise.all([
     DB.getByTypeAndRange('service', today, today),
@@ -949,10 +951,10 @@ VIEWS.service = async function (el) {
   UI.segWire(el);
   el.querySelector('.seg[data-seg="svc"]').addEventListener('click', () => setTimeout(() => {
     const v = UI.segValue(el, 'svc');
-    if (v && v !== state.svc) { state.svc = v; render(); }
+    if (v && v !== svc) { state.svc = v; render(); }
   }, 30));
-  el.querySelector('#new-serv').addEventListener('click', () => openServiceModal('', state.svc));
-  el.querySelectorAll('[data-ctrl]').forEach(b => b.addEventListener('click', () => openServiceModal(b.dataset.ctrl, state.svc)));
+  el.querySelector('#new-serv').addEventListener('click', () => openServiceModal('', svc));
+  el.querySelectorAll('[data-ctrl]').forEach(b => b.addEventListener('click', () => openServiceModal(b.dataset.ctrl, svc)));
 };
 
 async function openServiceModal(prefillPlat, svc) {
@@ -2104,6 +2106,13 @@ function ensureJsPDF() {
   return _pdfPromise;
 }
 
+/** Les polices standard des PDF ne couvrent que l'alphabet latin (WinAnsi) :
+ *  un emoji ou symbole exotique rendrait la ligne entière illisible — on le
+ *  remplace par « ? » en conservant tous les caractères français. */
+function pdfSafe(s) {
+  return String(s == null ? '' : s).replace(/\u2212/g, '-').replace(/[^\x20-\x7E -ÿŒœ€–—‘’“”…•]/g, '?');
+}
+
 /** Génère un PDF (A4 paysage) pour un ou plusieurs registres : en-tête officiel
  *  (établissement, registre, période, visa) + tableau, lignes non conformes en rouge. */
 async function exportPDF(types, from, to, filename) {
@@ -2123,22 +2132,22 @@ async function exportPDF(types, from, to, filename) {
 
     doc.setFontSize(14);
     doc.setFont(undefined, 'bold');
-    doc.text(SETTINGS.etablissement, 14, 13);
+    doc.text(pdfSafe(SETTINGS.etablissement), 14, 13);
     doc.setFont(undefined, 'normal');
     doc.setFontSize(11);
-    doc.text('Registre : ' + TYPE_LABELS[type] + ' — période du ' + UI.frDate(from) + ' au ' + UI.frDate(to), 14, 20);
+    doc.text(pdfSafe('Registre : ' + TYPE_LABELS[type] + ' — période du ' + UI.frDate(from) + ' au ' + UI.frDate(to)), 14, 20);
     doc.setFontSize(9);
-    doc.text('Édité le ' + UI.frDate(UI.todayISO()) + ' à ' + UI.nowHM() + ' — ' + recs.length + ' enregistrement(s) — Visa du responsable : ____________________', 14, 26);
+    doc.text(pdfSafe('Édité le ' + UI.frDate(UI.todayISO()) + ' à ' + UI.nowHM() + ' — ' + recs.length + ' enregistrement(s) — Visa du responsable : ____________________'), 14, 26);
 
     const cols = EXPORT_COLUMNS[type];
     const ncRows = new Set();
     const body = recs.map((r, i) => {
       if (r.conforme === false) ncRows.add(i);
-      return cols.map(c => { const v = c[1](r); return v == null ? '' : String(v); });
+      return cols.map(c => pdfSafe(c[1](r)));
     });
     doc.autoTable({
       startY: 30,
-      head: [cols.map(c => c[0])],
+      head: [cols.map(c => pdfSafe(c[0]))],
       body,
       styles: { fontSize: 8, cellPadding: 1.5 },
       headStyles: { fillColor: [26, 127, 90] },
