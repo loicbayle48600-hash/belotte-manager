@@ -408,13 +408,15 @@ async function maybeAutoBackup() {
   const today = UI.todayISO();
   if (lastAutoBackupDate() === today) return;
   const res = await sendBackupAll();
-  if (res.ok) {
+  if (res.allOk) {
+    // Toutes les destinations ont réussi : plus de tentative aujourd'hui.
     setLastAutoBackupDate(today);
-    if (res.allOk) {
-      UI.toast('Sauvegarde cloud effectuée ✔', 'ok');
-    } else {
-      UI.toast('Sauvegarde cloud PARTIELLE — échec : ' + res.results.filter(r => !r.ok).map(r => r.name).join(', '), 'bad');
-    }
+    UI.toast('Sauvegarde cloud effectuée ✔', 'ok');
+  } else if (res.ok) {
+    // Succès partiel : on NE pose PAS la date du jour, le retry horaire
+    // repassera (ré-envoyer vers une destination déjà réussie est inoffensif :
+    // le fichier du jour est simplement remplacé).
+    UI.toast('Sauvegarde cloud PARTIELLE — échec : ' + res.results.filter(r => !r.ok).map(r => r.name).join(', ') + ' (nouvel essai dans 1 h)', 'bad');
   }
 }
 
@@ -2437,7 +2439,12 @@ VIEWS.historique = async function (el) {
     '<div class="card"><div class="table-wrap" id="h-table"></div></div>';
 
   async function refreshTable() {
+    // Jeton de séquence : si une requête plus récente est partie entre-temps
+    // (changement de registre pendant un chargement lent), celle-ci s'abandonne.
+    state._seq = (state._seq || 0) + 1;
+    const seq = state._seq;
     const recs = (await DB.getByTypeAndRange(state.type, state.from, state.to)).sort((a, b) => (b.date + (b.time || '')).localeCompare(a.date + (a.time || '')));
+    if (seq !== state._seq) return;
     const cols = EXPORT_COLUMNS[state.type];
     const box = document.getElementById('h-table');
     if (!box) return; // l'utilisateur a quitté la vue pendant la requête
@@ -2952,14 +2959,11 @@ VIEWS.parametres = async function (el) {
 
   // Sauvegarde / restauration
   el.querySelector('#s-backup').addEventListener('click', async () => {
-    const records = await DB.getAllRecords();
-    const blob = new Blob([JSON.stringify({ app: 'haccp-cuisine', version: 1, exportedAt: new Date().toISOString(), settings: SETTINGS, records })], { type: 'application/json' });
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(blob);
-    a.download = 'sauvegarde-haccp-' + UI.todayISO() + '.json';
-    a.click();
-    setTimeout(() => URL.revokeObjectURL(a.href), 5000);
-    UI.toast('Sauvegarde exportée ✔', 'ok');
+    const blob = new Blob([JSON.stringify(await buildBackup())], { type: 'application/json' });
+    // UI.saveFile gère l'APK (écriture + partage natif) ET le navigateur —
+    // un simple lien blob ne fonctionne pas dans une WebView Capacitor.
+    const ok = await UI.saveFile('sauvegarde-haccp-' + UI.todayISO() + '.json', 'application/json', blob);
+    if (ok) UI.toast('Sauvegarde exportée ✔', 'ok');
   });
   el.querySelector('#s-restore').addEventListener('click', () => el.querySelector('#s-restore-file').click());
   el.querySelector('#s-restore-file').addEventListener('change', async e => {
@@ -2969,7 +2973,10 @@ VIEWS.parametres = async function (el) {
       const data = JSON.parse(await f.text());
       if (data.app !== 'haccp-cuisine' || !Array.isArray(data.records)) throw new Error('fichier invalide');
       UI.confirm('Restaurer ' + data.records.length + ' enregistrements ? Ils s’ajoutent aux données actuelles.', async () => {
-        SETTINGS = Object.assign({}, DEFAULT_SETTINGS, data.settings);
+        // Clone profond des défauts : une sauvegarde ancienne (sans plats,
+        // thermometres…) ne doit pas faire pointer SETTINGS sur les tableaux
+        // de DEFAULT_SETTINGS eux-mêmes (qui seraient ensuite mutés).
+        SETTINGS = Object.assign({}, JSON.parse(JSON.stringify(DEFAULT_SETTINGS)), data.settings);
         await saveSettings();
         for (const r of data.records) {
           delete r.id;
@@ -2986,6 +2993,9 @@ VIEWS.parametres = async function (el) {
           }
           await DB.addRecord(r);
         }
+        // Invalider les états de vues qui cachent des données désormais périmées
+        if (VIEWS.menu._state) VIEWS.menu._state.items = null;
+        if (VIEWS.historique._state) VIEWS.historique._state._searchIndex = null;
         UI.toast('Sauvegarde restaurée ✔', 'ok');
         render();
       });
@@ -3037,7 +3047,16 @@ async function refroidTick() {
   const tryBackup = () => maybeAutoBackup().catch(e => console.warn('backup auto', e));
   setTimeout(tryBackup, 2500);
   setInterval(tryBackup, 60 * 60 * 1000);
-  document.addEventListener('visibilitychange', () => { if (!document.hidden) tryBackup(); });
   // chronomètre des refroidissements (compteurs vivants + alerte de dépassement)
   setInterval(() => { refroidTick().catch(() => {}); }, 30 * 1000);
+  // La tablette reste allumée en continu : au passage de minuit (ou au retour
+  // au premier plan un autre jour), re-rendre pour afficher la nouvelle journée.
+  let renderedDay = UI.todayISO();
+  const checkNewDay = () => {
+    if (UI.todayISO() !== renderedDay) { renderedDay = UI.todayISO(); render(); }
+  };
+  setInterval(checkNewDay, 60 * 1000);
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) { checkNewDay(); tryBackup(); }
+  });
 })();
