@@ -1,5 +1,5 @@
 /* Service worker — mode hors ligne (cache d'abord, mise à jour en arrière-plan) */
-const CACHE = 'haccp-v8';
+const CACHE = 'haccp-v9';
 const ASSETS = [
   './',
   './index.html',
@@ -8,6 +8,8 @@ const ASSETS = [
   './js/ui.js',
   './js/app.js',
   './js/vendor/xlsx.full.min.js',
+  './js/vendor/jspdf.umd.min.js',
+  './js/vendor/jspdf.plugin.autotable.min.js',
   './manifest.webmanifest',
   './icons/icon-192.png',
   './icons/icon-512.png',

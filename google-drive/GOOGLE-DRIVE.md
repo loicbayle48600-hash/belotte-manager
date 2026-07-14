@@ -40,10 +40,22 @@ Avec beaucoup de photos, le fichier peut atteindre plusieurs Mo — c'est normal
 les 60 sauvegardes conservées tournent automatiquement.
 
 En plus du fichier JSON, le script dépose chaque photo d'étiquette en **vrai fichier
-image** dans le sous-dossier **« Photos étiquettes »** (nommée
-`date_heure_produit_empreinte.jpg`), consultable directement dans Drive. Chaque photo
-n'est déposée qu'une seule fois ; au maximum 100 nouvelles photos par sauvegarde (le
-reste part avec la suivante).
+image**, rangée **par semaine** — la même organisation que le classeur de traçabilité :
+
+```
+📁 Sauvegardes HACCP
+├── haccp_…_2026-07-13_07-32.json          ← une sauvegarde complète par jour (60 conservées)
+├── haccp_…_2026-07-12_07-30.json
+└── 📁 Photos étiquettes
+    ├── 📁 Semaine du 06-07-2026
+    │   ├── 2026-07-07_09h12_escalopes-de-dinde_a3f19c42.jpg
+    │   └── …
+    └── 📁 Semaine du 13-07-2026
+        └── …
+```
+
+Chaque photo n'est déposée qu'une seule fois ; au maximum 100 nouvelles photos par
+sauvegarde (le reste part avec la suivante).
 
 > ⚠️ **Si tu avais déjà installé le script** : recopie le nouveau `Code.gs`, puis
 > **Déployer → Gérer les déploiements → ✏️ Modifier → Version : Nouvelle version →

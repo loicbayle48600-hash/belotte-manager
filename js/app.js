@@ -530,7 +530,7 @@ VIEWS.temperatures = async function (el) {
         '<div class="name">' + (eq.type === 'negatif' ? '🧊' : '❄️') + ' ' + UI.esc(eq.name) + '</div>' +
         '<div class="range">' + (eq.cible != null ? 'Cible ' + eq.cible + ' °C · ' : '') + 'limites ' + eq.min + ' à ' + eq.max + ' °C</div>' +
         '<div class="last">' + (rEq.length
-          ? rEq.map(r => '<span class="pill ' + (r.conforme === false ? 'bad' : 'ok') + '">' + UI.esc(r.moment) + ' ' + UI.fmtTemp(r.temp) + '</span>').join(' ')
+          ? rEq.map(r => '<span class="pill ' + (r.conforme === false ? 'bad' : 'ok') + '">' + UI.esc(r.time || r.moment || '') + ' ' + UI.fmtTemp(r.temp) + '</span>').join(' ')
           : '<span class="pill warn">Aucun relevé aujourd’hui</span>') + '</div>' +
         '</button>';
     }).join('') + '</div>' +
@@ -545,17 +545,13 @@ VIEWS.temperatures = async function (el) {
 function openTempModal(equipId, queue) {
   const eq = SETTINGS.equipements.find(e => e.id === equipId);
   if (!eq) { if (queue && queue.length) openTempModal(queue[0], queue.slice(1)); return; }
-  const hour = new Date().getHours();
-  const defMoment = hour < 14 ? 'matin' : 'soir';
   const hasNext = queue && queue.length > 0;
 
   UI.modal(
     '<h2>' + UI.esc(eq.name) + (queue ? ' <span class="pill info">' + (queue.length + 1) + ' restante' + (queue.length ? 's' : '') + '</span>' : '') + '</h2>' +
-    '<p class="muted" style="margin-bottom:14px">' + (eq.cible != null ? 'Valeur cible : ' + eq.cible + ' °C · ' : '') + 'Limites critiques : ' + eq.min + ' à ' + eq.max + ' °C</p>' +
+    '<p class="muted" style="margin-bottom:14px">' + (eq.cible != null ? 'Valeur cible : ' + eq.cible + ' °C · ' : '') + 'Limites critiques : ' + eq.min + ' à ' + eq.max + ' °C — relevé quotidien du matin (PMS)</p>' +
     '<label class="field"><span class="lbl">Température relevée (°C)</span>' +
     UI.tempInputHTML('temp', { placeholder: eq.type === 'negatif' ? '-18.0' : '3.0', hint: eq.type === 'negatif' ? 'Enceinte négative : pense au signe − (bouton ±)' : '' }) + '</label>' +
-    '<label class="field"><span class="lbl">Moment</span>' +
-    UI.segHTML('moment', [{ value: 'matin', label: '🌅 Matin' }, { value: 'soir', label: '🌇 Soir' }], defMoment) + '</label>' +
     agentField() +
     '<div data-verdict></div>' +
     actionFieldHTML() +
@@ -592,7 +588,6 @@ function openTempModal(equipId, queue) {
         await DB.addRecord({
           type: 'temp', date: UI.todayISO(), time: UI.nowHM(),
           equipId: eq.id, equipName: eq.name, temp: v,
-          moment: UI.segValue(m, 'moment') || defMoment,
           conforme: ok, action: ok ? '' : action, agent,
         });
         close();
@@ -892,32 +887,77 @@ async function openRefroidFinishModal(id) {
 ================================================================ */
 VIEWS.service = async function (el) {
   const today = UI.todayISO();
-  const recs = (await DB.getByTypeAndRange('service', today, today)).sort((a, b) => b.time.localeCompare(a.time));
+  const state = VIEWS.service._state || (VIEWS.service._state = {});
+  // Service courant : midi avant 14 h, soir ensuite (modifiable d'un tap)
+  const svc = state.svc || (new Date().getHours() < 14 ? 'midi' : 'soir');
+  state.svc = svc;
+
+  const [recs, menus] = await Promise.all([
+    DB.getByTypeAndRange('service', today, today),
+    DB.getByTypeAndRange('menu', today, today),
+  ]);
+  recs.sort((a, b) => b.time.localeCompare(a.time));
+
+  // Plats prévus au menu de ce service, rapprochés des contrôles déjà faits
+  const menu = menus.find(mn => mn.service === svc);
+  const items = menu ? (menu.items || []) : [];
+  const doneByPlat = {};
+  recs.forEach(r => { const k = (r.plat || '').trim().toLowerCase(); if (!doneByPlat[k]) doneByPlat[k] = r; });
 
   const temoinsToday = recs.filter(r => r.platTemoin).length;
-  el.innerHTML = headerHTML('Températures de service', 'Avant chaque service (midi et soir) : chaude ≥ 63 °C · froide cible 3 °C, limite 6 °C (10 °C si conso < 2 h) — ' + UI.frDate(today),
-      '<button class="btn" id="new-serv">➕ Nouveau contrôle</button>') +
+
+  el.innerHTML = headerHTML('Températures de service', 'Avant chaque service : chaude ≥ 63 °C · froide cible 3 °C, limite 6 °C (10 °C si conso < 2 h) — ' + UI.frDate(today),
+      '<button class="btn" id="new-serv">➕ Contrôle libre</button>') +
+
+    '<div class="card"><div class="row" style="margin-bottom:10px">' +
+    '<h2 style="margin:0">🍲 Plats du jour à contrôler</h2>' +
+    '<div class="grow"></div>' +
+    UI.segHTML('svc', [{ value: 'midi', label: '🌞 Midi' }, { value: 'soir', label: '🌙 Soir' }], svc) +
+    '</div>' +
+    (items.length
+      ? '<div class="rec-list">' + items.map(name => {
+          const r = doneByPlat[name.trim().toLowerCase()];
+          if (r) {
+            return '<div class="rec-item ' + (r.conforme === false ? 'bad' : 'ok') + '"><div class="big">' + UI.fmtTemp(r.temp) + '</div>' +
+              '<div class="body"><div class="title">' + UI.esc(name) + '</div>' +
+              '<div class="meta">' + (r.liaison === 'chaude' ? '🔥 chaude' : '❄️ froide') + ' — ' + UI.esc(r.time) + ' — ' + UI.esc(r.agent) + '</div></div>' +
+              '<span class="pill ' + (r.conforme === false ? 'bad' : (r.tolere ? 'warn' : 'ok')) + '">' + (r.conforme === false ? 'Non conforme' : (r.tolere ? 'Toléré < 2 h' : '✔')) + '</span></div>';
+          }
+          return '<div class="rec-item"><div class="big">—</div>' +
+            '<div class="body"><div class="title">' + UI.esc(name) + '</div><div class="meta">pas encore contrôlé</div></div>' +
+            '<button class="btn small" data-ctrl="' + UI.esc(name) + '">🌡️ Prendre la T°</button></div>';
+        }).join('') + '</div>'
+      : '<div class="empty" style="padding:14px">Aucun menu enregistré pour le ' + (svc === 'midi' ? 'midi' : 'soir') + ' — complète le module 🍲 Menu (ou importe ton fichier de l’année).</div>') +
+    '</div>' +
+
     '<div class="card" style="padding:12px 18px"><div class="row">' +
     '<span class="pill ' + (temoinsToday ? 'ok' : 'warn') + '">🥡 Plats témoins du jour : ' + temoinsToday + '</span>' +
-    '<span class="muted" style="font-size:13px">PMS : une portion ≥ 100 g de chaque plat (entrée, viande, légumes, dessert) avant chaque service, conservée 5 jours à 3 °C au frigo plats témoins.</span>' +
+    '<span class="muted" style="font-size:13px">PMS : une portion ≥ 100 g de chaque plat avant chaque service, conservée 5 jours à 3 °C au frigo plats témoins.</span>' +
     '</div></div>' +
-    (recs.length ? '<div class="rec-list">' + recs.map(r =>
+
+    (recs.length ? '<div class="card"><h2>Contrôles du jour</h2><div class="rec-list">' + recs.map(r =>
       '<div class="rec-item ' + (r.conforme === false ? 'bad' : 'ok') + '">' +
       '<div class="big">' + UI.fmtTemp(r.temp) + '</div>' +
       '<div class="body"><div class="title">' + UI.esc(r.plat) + (r.platTemoin ? ' <span class="pill info">Plat témoin ✔</span>' : '') + '</div>' +
       '<div class="meta">' + (r.liaison === 'chaude' ? '🔥 Liaison chaude' : '❄️ Liaison froide') + ' — ' + UI.esc(r.time) + ' — ' + UI.esc(r.agent) +
       (r.conforme === false ? ' — ⚠️ ' + UI.esc(r.action || '') : '') + '</div></div>' +
       '<span class="pill ' + (r.conforme === false ? 'bad' : (r.tolere ? 'warn' : 'ok')) + '">' + (r.conforme === false ? 'Non conforme' : (r.tolere ? 'Toléré < 2 h' : 'Conforme')) + '</span></div>'
-    ).join('') + '</div>' : '<div class="empty"><span class="e-ico">🍽️</span>Aucun contrôle aujourd’hui.</div>');
+    ).join('') + '</div></div>' : '');
 
-  el.querySelector('#new-serv').addEventListener('click', openServiceModal);
+  UI.segWire(el);
+  el.querySelector('.seg[data-seg="svc"]').addEventListener('click', () => setTimeout(() => {
+    const v = UI.segValue(el, 'svc');
+    if (v && v !== state.svc) { state.svc = v; render(); }
+  }, 30));
+  el.querySelector('#new-serv').addEventListener('click', () => openServiceModal());
+  el.querySelectorAll('[data-ctrl]').forEach(b => b.addEventListener('click', () => openServiceModal(b.dataset.ctrl)));
 };
 
-async function openServiceModal() {
+async function openServiceModal(prefillPlat) {
   const menuNames = await getTodayMenuNames();
   UI.modal(
     '<h2>🍽️ Contrôle au service</h2>' +
-    dishInputHTML('plat', 'Plat', 'Ex. : purée, salade de betteraves…', menuNames) +
+    dishInputHTML('plat', 'Plat', 'Ex. : purée, salade de betteraves…', menuNames, prefillPlat || '') +
     '<label class="field"><span class="lbl">Liaison</span>' +
     UI.segHTML('liaison', [
       { value: 'chaude', label: '🔥 Chaude (≥ 63 °C)' },
@@ -2030,7 +2070,7 @@ function openNCModal() {
    HISTORIQUE & EXPORT
 ================================================================ */
 const EXPORT_COLUMNS = {
-  temp: [['Date', r => UI.frDate(r.date)], ['Heure', r => r.time], ['Équipement', r => r.equipName], ['Moment', r => r.moment], ['Température (°C)', r => r.temp], ['Conforme', r => r.conforme === false ? 'NON' : 'OUI'], ['Action corrective', r => r.action], ['Agent', r => r.agent]],
+  temp: [['Date', r => UI.frDate(r.date)], ['Heure', r => r.time], ['Équipement', r => r.equipName], ['Température (°C)', r => r.temp], ['Conforme', r => r.conforme === false ? 'NON' : 'OUI'], ['Action corrective', r => r.action], ['Agent', r => r.agent]],
   reception: [['Date', r => UI.frDate(r.date)], ['Heure', r => r.time], ['Fournisseur', r => r.fournisseur], ['Produit', r => r.produit], ['Lot / BL', r => r.lot], ['Famille', r => r.famille], ['Température (°C)', r => r.temp], ['État', r => r.etat === 'bad' ? 'Défaut' : 'Correct'], ['Conforme', r => r.conforme === false ? 'NON' : (r.tolere ? 'Contrôle à cœur' : 'OUI')], ['Action corrective', r => r.action], ['Agent', r => r.agent]],
   refroid: [['Date', r => UI.frDate(r.date)], ['Type', r => r.mode === 'remise' ? 'Remise en T°' : 'Refroidissement'], ['Préparation', r => r.produit], ['T° départ', r => r.tempStart], ['Heure départ', r => r.timeStart], ['T° fin', r => r.tempEnd], ['Heure fin', r => r.timeEnd], ['Durée (min)', r => r.durationMin], ['Conforme', r => r.status === 'encours' ? 'En cours' : (r.conforme === false ? 'NON' : 'OUI')], ['Action corrective', r => r.action], ['Agent', r => r.agent]],
   service: [['Date', r => UI.frDate(r.date)], ['Heure', r => r.time], ['Plat', r => r.plat], ['Liaison', r => r.liaison], ['Température (°C)', r => r.temp], ['Plat témoin', r => r.platTemoin ? 'OUI' : 'NON'], ['Conforme', r => r.conforme === false ? 'NON' : (r.tolere ? 'Toléré <2h' : 'OUI')], ['Action corrective', r => r.action], ['Agent', r => r.agent]],
@@ -2041,6 +2081,74 @@ const EXPORT_COLUMNS = {
   huile: [['Date', r => UI.frDate(r.date)], ['Heure', r => r.time], ['Friteuse', r => r.friteuse], ['Opération', r => r.action], ['État huile', r => r.etat], ['Température (°C)', r => r.temp], ['Remarque', r => r.remarque], ['Agent', r => r.agent]],
   nonconf: [['Date', r => UI.frDate(r.date)], ['Heure', r => r.time], ['Objet', r => r.objet], ['Lieu', r => r.lieu], ['Lot', r => r.lot], ['Péremption', r => r.peremption ? UI.frDate(r.peremption) : ''], ['Description', r => r.description], ['Action corrective', r => r.action], ['Statut', r => r.statut], ['Agent', r => r.agent]],
 };
+
+/* ---------- Export PDF des registres (jsPDF, chargé à la demande) ---------- */
+let _pdfPromise = null;
+function ensureJsPDF() {
+  if (window.jspdf && window.jspdf.jsPDF && window.jspdf.jsPDF.API.autoTable) return Promise.resolve(window.jspdf.jsPDF);
+  if (_pdfPromise) return _pdfPromise;
+  const loadScript = src => new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = src;
+    s.onload = resolve;
+    s.onerror = () => { s.remove(); reject(new Error('Impossible de charger le générateur PDF — réessaie')); };
+    document.head.appendChild(s);
+  });
+  _pdfPromise = loadScript('js/vendor/jspdf.umd.min.js')
+    .then(() => loadScript('js/vendor/jspdf.plugin.autotable.min.js'))
+    .then(() => window.jspdf.jsPDF)
+    .catch(e => { _pdfPromise = null; throw e; });
+  return _pdfPromise;
+}
+
+/** Génère un PDF (A4 paysage) pour un ou plusieurs registres : en-tête officiel
+ *  (établissement, registre, période, visa) + tableau, lignes non conformes en rouge. */
+async function exportPDF(types, from, to, filename) {
+  let jsPDF;
+  try { jsPDF = await ensureJsPDF(); }
+  catch (e) { UI.toast(e.message, 'bad'); return; }
+  const doc = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
+  let first = true;
+  let total = 0;
+
+  for (const type of types) {
+    const recs = (await DB.getByTypeAndRange(type, from, to)).sort((a, b) => (a.date + (a.time || '')).localeCompare(b.date + (b.time || '')));
+    if (!recs.length) continue;
+    if (!first) doc.addPage();
+    first = false;
+    total += recs.length;
+
+    doc.setFontSize(14);
+    doc.setFont(undefined, 'bold');
+    doc.text(SETTINGS.etablissement, 14, 13);
+    doc.setFont(undefined, 'normal');
+    doc.setFontSize(11);
+    doc.text('Registre : ' + TYPE_LABELS[type] + ' — période du ' + UI.frDate(from) + ' au ' + UI.frDate(to), 14, 20);
+    doc.setFontSize(9);
+    doc.text('Édité le ' + UI.frDate(UI.todayISO()) + ' à ' + UI.nowHM() + ' — ' + recs.length + ' enregistrement(s) — Visa du responsable : ____________________', 14, 26);
+
+    const cols = EXPORT_COLUMNS[type];
+    const ncRows = new Set();
+    const body = recs.map((r, i) => {
+      if (r.conforme === false) ncRows.add(i);
+      return cols.map(c => { const v = c[1](r); return v == null ? '' : String(v); });
+    });
+    doc.autoTable({
+      startY: 30,
+      head: [cols.map(c => c[0])],
+      body,
+      styles: { fontSize: 8, cellPadding: 1.5 },
+      headStyles: { fillColor: [26, 127, 90] },
+      didParseCell: d => {
+        if (d.section === 'body' && ncRows.has(d.row.index)) d.cell.styles.fillColor = [253, 220, 218];
+      },
+    });
+  }
+
+  if (first) { UI.toast('Rien à exporter sur cette période', 'bad'); return; }
+  await UI.saveFile(filename, 'application/pdf', doc.output('blob'));
+  UI.toast('PDF généré (' + total + ' enregistrements) ✔', 'ok');
+}
 
 VIEWS.historique = async function (el) {
   const today = UI.todayISO();
@@ -2060,8 +2168,10 @@ VIEWS.historique = async function (el) {
     '<button class="btn small ghost" data-range="mois">Mois dernier</button>' +
     '<button class="btn small ghost" data-range="90">Trimestre</button>' +
     '</div><div class="spacer"></div><div class="row">' +
-    '<button class="btn small" id="h-export">⬇️ Exporter ce registre (CSV)</button>' +
-    '<button class="btn small" id="h-export-all">📁 Tout exporter (inspection)</button>' +
+    '<button class="btn small" id="h-export">⬇️ CSV de ce registre</button>' +
+    '<button class="btn small" id="h-pdf">🧾 PDF de ce registre</button>' +
+    '<button class="btn small" id="h-export-all">📁 CSV inspection (tous)</button>' +
+    '<button class="btn small" id="h-pdf-all">🧾 PDF inspection (tous)</button>' +
     '<button class="btn small secondary" id="h-print">🖨️ Imprimer</button>' +
     '</div>' +
     '<hr class="sep"><div class="row">' +
@@ -2093,6 +2203,10 @@ VIEWS.historique = async function (el) {
   el.querySelector('#h-from').addEventListener('change', e => { state.from = e.target.value; refreshTable(); });
   el.querySelector('#h-to').addEventListener('change', e => { state.to = e.target.value; refreshTable(); });
   el.querySelector('#h-print').addEventListener('click', () => window.print());
+  el.querySelector('#h-pdf').addEventListener('click', () =>
+    exportPDF([state.type], state.from, state.to, 'haccp-' + state.type + '-' + state.from + '-' + state.to + '.pdf'));
+  el.querySelector('#h-pdf-all').addEventListener('click', () =>
+    exportPDF(Object.keys(EXPORT_COLUMNS), state.from, state.to, 'haccp-inspection-' + state.from + '-' + state.to + '.pdf'));
 
   // Recherche multi-registres (traçabilité ascendante : « où est passé le lot X ? »).
   // Index léger construit par curseur (sans matérialiser les photos), une fois par visite.

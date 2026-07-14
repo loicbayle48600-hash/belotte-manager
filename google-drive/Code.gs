@@ -39,20 +39,34 @@ function doPost(e) {
 var MAX_PHOTOS_PAR_ENVOI = 100;
 
 /**
- * Enregistre les photos d'étiquettes comme VRAIS fichiers images dans le
- * sous-dossier « Photos étiquettes » (visibles/consultables directement dans
- * Drive). Chaque photo n'est enregistrée qu'une fois : le nom contient une
- * empreinte du contenu, stable même après restauration d'une sauvegarde.
+ * Enregistre les photos d'étiquettes comme VRAIS fichiers images, rangées par
+ * semaine : « Photos étiquettes / Semaine du JJ-MM-AAAA / … » (comme le
+ * classeur hebdomadaire de traçabilité). Chaque photo n'est enregistrée
+ * qu'une fois : le nom contient une empreinte du contenu, stable même après
+ * restauration d'une sauvegarde.
  */
 function extrairePhotos_(dossier, data) {
   if (!data.records) return 0;
   var it = dossier.getFoldersByName('Photos étiquettes');
-  var sousDossier = it.hasNext() ? it.next() : dossier.createFolder('Photos étiquettes');
+  var racinePhotos = it.hasNext() ? it.next() : dossier.createFolder('Photos étiquettes');
 
-  // noms déjà présents (pour ne pas dupliquer d'une sauvegarde à l'autre)
-  var existants = {};
-  var files = sousDossier.getFiles();
-  while (files.hasNext()) existants[files.next().getName()] = true;
+  // caches par semaine : dossier + noms de fichiers déjà présents
+  var dossiersSemaine = {};
+  var existantsSemaine = {};
+
+  function dossierDeLaSemaine(dateISO) {
+    var nomSemaine = 'Semaine du ' + lundiDe_(dateISO);
+    if (!dossiersSemaine[nomSemaine]) {
+      var itS = racinePhotos.getFoldersByName(nomSemaine);
+      var d = itS.hasNext() ? itS.next() : racinePhotos.createFolder(nomSemaine);
+      dossiersSemaine[nomSemaine] = d;
+      var noms = {};
+      var files = d.getFiles();
+      while (files.hasNext()) noms[files.next().getName()] = true;
+      existantsSemaine[nomSemaine] = noms;
+    }
+    return { dossier: dossiersSemaine[nomSemaine], existants: existantsSemaine[nomSemaine] };
+  }
 
   var ajoutees = 0;
   for (var i = 0; i < data.records.length; i++) {
@@ -63,13 +77,25 @@ function extrairePhotos_(dossier, data) {
     if (!m) continue;
     var produit = String(r.produit || 'etiquette').replace(/[^\w\-À-ÿ ]+/g, '').trim().replace(/\s+/g, '-').slice(0, 40) || 'etiquette';
     var nom = (r.date || 'sans-date') + '_' + String(r.time || '').replace(':', 'h') + '_' + produit + '_' + empreinte_(m[2]) + '.jpg';
-    if (existants[nom]) continue;
+    var sem = dossierDeLaSemaine(r.date || '');
+    if (sem.existants[nom]) continue;
     var blob = Utilities.newBlob(Utilities.base64Decode(m[2]), 'image/jpeg', nom);
-    sousDossier.createFile(blob);
-    existants[nom] = true;
+    sem.dossier.createFile(blob);
+    sem.existants[nom] = true;
     ajoutees++;
   }
   return ajoutees;
+}
+
+// Lundi de la semaine d'une date AAAA-MM-JJ, au format JJ-MM-AAAA (nom de dossier).
+function lundiDe_(dateISO) {
+  var m = String(dateISO).match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!m) return 'date-inconnue';
+  var d = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]), 12, 0, 0);
+  d.setDate(d.getDate() - ((d.getDay() + 6) % 7));
+  var jj = ('0' + d.getDate()).slice(-2);
+  var mm = ('0' + (d.getMonth() + 1)).slice(-2);
+  return jj + '-' + mm + '-' + d.getFullYear();
 }
 
 // Empreinte courte (8 hexa) du contenu d'une photo, indépendante des ids.

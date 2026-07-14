@@ -150,6 +150,45 @@ const UI = (() => {
     });
   }
 
+  /** Enregistre un fichier côté utilisateur.
+   *  - APK (Capacitor) : écrit dans le cache de l'appli puis ouvre la feuille de
+   *    partage Android (Enregistrer dans Fichiers/Drive, envoyer par mail…) —
+   *    le téléchargement direct de blob ne fonctionne pas dans une WebView.
+   *  - Navigateur : téléchargement classique. */
+  async function saveFile(filename, mime, content) {
+    const blob = content instanceof Blob ? content : new Blob([content], { type: mime });
+    const cap = window.Capacitor;
+    const plugins = cap && cap.Plugins;
+    if (cap && cap.isNativePlatform && cap.isNativePlatform() && plugins && plugins.Filesystem) {
+      try {
+        const b64 = await new Promise((res, rej) => {
+          const fr = new FileReader();
+          fr.onload = () => res(String(fr.result).split(',')[1]);
+          fr.onerror = () => rej(fr.error || new Error('lecture impossible'));
+          fr.readAsDataURL(blob);
+        });
+        const w = await plugins.Filesystem.writeFile({ path: filename, data: b64, directory: 'CACHE' });
+        if (plugins.Share) {
+          try {
+            await plugins.Share.share({ title: filename, files: [w.uri] });
+            return true;
+          } catch { /* partage annulé par l'utilisateur : pas une erreur */ return true; }
+        }
+        toast('Fichier prêt : ' + filename, 'ok');
+        return true;
+      } catch (e) {
+        toast('Impossible d’enregistrer le fichier : ' + (e.message || e), 'bad');
+        return false;
+      }
+    }
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = filename;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+    return true;
+  }
+
   /** Export CSV (séparateur ; pour Excel FR) et téléchargement. */
   function downloadCSV(filename, headers, rows) {
     const escCell = v => {
@@ -160,13 +199,8 @@ const UI = (() => {
       return /[;"\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
     };
     const csv = '﻿' + [headers, ...rows].map(r => r.map(escCell).join(';')).join('\r\n');
-    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(blob);
-    a.download = filename;
-    a.click();
-    setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+    return saveFile(filename, 'text/csv;charset=utf-8', new Blob([csv], { type: 'text/csv;charset=utf-8' }));
   }
 
-  return { esc, toast, modal, confirm, todayISO, nowHM, frDate, addDays, fmtTemp, segHTML, segWire, segValue, agentSelectHTML, tempInputHTML, signWire, shrinkImage, downloadCSV };
+  return { esc, toast, modal, confirm, todayISO, nowHM, frDate, addDays, fmtTemp, segHTML, segWire, segValue, agentSelectHTML, tempInputHTML, signWire, shrinkImage, saveFile, downloadCSV };
 })();
