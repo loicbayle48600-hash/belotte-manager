@@ -59,6 +59,7 @@ const DEFAULT_SETTINGS = {
     { id: 'e12', name: 'Congélateur (réception)', ...NEG },
   ],
   friteuses: ['Friteuse'],
+  thermometres: ['Thermomètre à sonde', 'Thermomètre infrarouge (réception)'],
   fournisseurs: [
     { name: 'Languedoc Lozère Viande', produits: 'Viandes fraîches sous vide', jours: 'Mercredi' },
     { name: 'Saveurs d\'Antoine', produits: 'Charcuterie, produits frais', jours: 'Mardi' },
@@ -150,6 +151,8 @@ const TYPE_LABELS = {
   service: 'Température de service / expédition',
   decongel: 'Décongélation',
   entame: 'Produit entamé',
+  verif: 'Vérification thermomètre',
+  fermeture: 'Jour de fermeture',
   etiquette: 'Étiquette produit',
   nettoyage: 'Nettoyage',
   huile: 'Huile de friture',
@@ -239,6 +242,15 @@ function actionFieldHTML(value) {
   return '<label class="field" data-action-field style="display:none">' +
     '<span class="lbl">Action corrective (obligatoire si non conforme)</span>' +
     '<textarea data-f="action" placeholder="Ex. : produit isolé/jeté, maintenance appelée, nouveau contrôle prévu…">' + UI.esc(value || '') + '</textarea></label>';
+}
+
+/** Fournisseurs dont c'est le jour de livraison aujourd'hui (d'après le PMS). */
+function fournisseursAttendusAujourdhui() {
+  const jourNom = new Date().toLocaleDateString('fr-FR', { weekday: 'long' }).toLowerCase();
+  return (SETTINGS.fournisseurs || []).filter(f => {
+    const j = (f.jours || '').toLowerCase();
+    return j.includes(jourNom) || j.includes('tous les jours');
+  }).map(f => f.name);
 }
 
 /* ---------- Menu : plats & suggestions ---------- */
@@ -411,8 +423,7 @@ async function maybeAutoBackup() {
 ================================================================ */
 VIEWS.dashboard = async function (el) {
   const today = UI.todayISO();
-  const j5 = UI.addDays(today, -5);
-  const [temps, receptions, services, nettoyages, refroids, decongels, entames, nonconfs, servicesJ5] = await Promise.all([
+  const [temps, receptions, services, nettoyages, refroids, decongels, entames, nonconfs, servicesJ5, verifs] = await Promise.all([
     DB.getByTypeAndRange('temp', today, today),
     DB.getByTypeAndRange('reception', today, today),
     DB.getByTypeAndRange('service', today, today),
@@ -421,14 +432,27 @@ VIEWS.dashboard = async function (el) {
     DB.getByType('decongel'),
     DB.getByType('entame'),
     DB.getByType('nonconf'),
-    DB.getByTypeAndRange('service', j5, j5),
+    DB.getByTypeAndRange('service', UI.addDays(today, -8), UI.addDays(today, -5)),
+    DB.getByType('verif'),
   ]);
   const decDepasse = decongels.filter(isDecongelDepasse);
   const entPerimes = entames.filter(r => r.statut !== 'termine' && r.dlc && r.dlc < today);
   const entAujourdhui = entames.filter(r => r.statut !== 'termine' && r.dlc === today);
   const ncOuvertes = nonconfs.filter(r => r.statut === 'ouverte');
-  // Plats témoins prélevés il y a exactement 5 jours : fin de conservation PMS, à retirer du frigo
+  // Plats témoins en fin de conservation (J−5 à J−8, tant que non retirés le rappel reste)
   const temoinsARetirer = servicesJ5.filter(r => r.platTemoin);
+
+  // Thermomètres jamais vérifiés ou vérifiés il y a plus d'un an
+  const lastVerifByInstr = {};
+  verifs.forEach(v => { if (!lastVerifByInstr[v.instrument] || v.date > lastVerifByInstr[v.instrument]) lastVerifByInstr[v.instrument] = v.date; });
+  const thermosEnRetard = (SETTINGS.thermometres || []).filter(t => {
+    const last = lastVerifByInstr[t];
+    return !last || last < UI.addDays(today, -365);
+  });
+
+  // Fournisseurs attendus aujourd'hui (jour de livraison PMS) sans réception saisie
+  const dejaRecus = new Set(receptions.map(r => (r.fournisseur || '').toLowerCase()));
+  const attendusSansReception = fournisseursAttendusAujourdhui().filter(f => !dejaRecus.has(f.toLowerCase()));
 
   const dailyTasks = SETTINGS.cleaningTasks.filter(t => t.freq === 'quotidien');
   const doneTasks = new Set(nettoyages.map(n => n.taskId));
@@ -477,7 +501,8 @@ VIEWS.dashboard = async function (el) {
     (enCours.length ? '<div class="card"><h2>⏱️ En cours</h2><div class="rec-list">' + enCours.map(r => {
       const mins = Math.round((Date.now() - new Date(r.startISO).getTime()) / 60000);
       const limit = r.mode === 'remise' ? RULES.remiseMinutes : RULES.refroidMinutes;
-      return '<div class="rec-item ' + (mins > limit ? 'bad' : '') + '"><div class="big">' + mins + ' min</div>' +
+      return '<div class="rec-item ' + (mins > limit ? 'bad' : '') + '" data-refroid-item="' + r.id + '">' +
+        '<div class="big" data-refroid-mins="' + r.id + '">' + mins + ' min</div>' +
         '<div class="body"><div class="title">' + UI.esc(r.produit) + '</div>' +
         '<div class="meta">' + (r.mode === 'remise' ? 'Remise en température' : 'Refroidissement') + ' — départ ' + UI.esc(r.timeStart) + ' à ' + UI.fmtTemp(r.tempStart) + (mins > limit ? ' — ⚠️ délai dépassé !' : '') + '</div></div>' +
         '<button class="btn small" data-go="refroidissement">Terminer</button></div>';
@@ -489,12 +514,20 @@ VIEWS.dashboard = async function (el) {
       entPerimes.map(r => '<div class="rec-item bad"><div class="big">📦</div><div class="body"><div class="title">' + UI.esc(r.produit) + '</div><div class="meta">Produit entamé : DLC interne dépassée (' + UI.frDate(r.dlc) + ') — à jeter</div></div><button class="btn small danger" data-go="entames">Traiter</button></div>').join('') +
       entAujourdhui.map(r => '<div class="rec-item"><div class="big">📦</div><div class="body"><div class="title">' + UI.esc(r.produit) + '</div><div class="meta">Produit entamé : à consommer aujourd’hui</div></div><button class="btn small secondary" data-go="entames">Voir</button></div>').join('') +
       ncOuvertes.map(r => '<div class="rec-item bad"><div class="big">⚠️</div><div class="body"><div class="title">' + UI.esc(r.objet) + '</div><div class="meta">Non-conformité ouverte depuis le ' + UI.frDate(r.date) + (r.lieu ? ' — ' + UI.esc(r.lieu) : '') + '</div></div><button class="btn small secondary" data-go="nonconformites">Traiter</button></div>').join('') +
-      (temoinsARetirer.length ? '<div class="rec-item"><div class="big">🥡</div><div class="body"><div class="title">Plats témoins du ' + UI.frDate(j5) + ' à retirer</div><div class="meta">Fin des 5 jours de conservation : ' + temoinsARetirer.map(r => UI.esc(r.plat)).join(', ') + '</div></div></div>' : '') +
+      (temoinsARetirer.length ? '<div class="rec-item"><div class="big">🥡</div><div class="body"><div class="title">Plats témoins en fin de conservation (5 jours) à retirer</div><div class="meta">' + temoinsARetirer.map(r => UI.esc(r.plat) + ' (' + UI.frDate(r.date) + ')').join(', ') + '</div></div></div>' : '') +
       '</div></div>' : '') +
 
-    (equipsMissing.length ? '<div class="card"><h2>À faire</h2><p class="muted" style="margin-bottom:10px">Enceintes sans relevé aujourd’hui :</p><div class="row">' +
-      equipsMissing.map(e => '<span class="pill warn">🌡️ ' + UI.esc(e.name) + '</span>').join('') +
-      '</div><div class="spacer"></div><button class="btn" data-go="temperatures">Faire les relevés</button></div>' : '') +
+    ((equipsMissing.length || attendusSansReception.length || thermosEnRetard.length) ? '<div class="card"><h2>À faire</h2>' +
+      (equipsMissing.length ? '<p class="muted" style="margin-bottom:10px">Enceintes sans relevé aujourd’hui :</p><div class="row">' +
+        equipsMissing.map(e => '<span class="pill warn">🌡️ ' + UI.esc(e.name) + '</span>').join('') +
+        '</div><div class="spacer"></div><button class="btn" data-go="temperatures">Faire les relevés</button>' : '') +
+      (attendusSansReception.length ? '<div class="spacer"></div><div class="row"><span class="muted" style="font-size:13.5px">🚚 Livraison prévue aujourd’hui, pas encore contrôlée :</span>' +
+        attendusSansReception.map(f => '<span class="pill info">' + UI.esc(f) + '</span>').join('') +
+        '<button class="btn small secondary" data-go="reception">Réception</button></div>' : '') +
+      (thermosEnRetard.length ? '<div class="spacer"></div><div class="row"><span class="muted" style="font-size:13.5px">🌡️ Vérification annuelle des thermomètres à faire :</span>' +
+        thermosEnRetard.map(t => '<span class="pill warn">' + UI.esc(t) + '</span>').join('') +
+        '<button class="btn small secondary" data-go="parametres">Vérifier</button></div>' : '') +
+      '</div>' : '') +
 
     '<div class="card"><h2>Accès rapide</h2><div class="grid cols-3">' +
     '<button class="btn secondary" data-go="temperatures">❄️ Relevé température</button>' +
@@ -530,7 +563,9 @@ VIEWS.temperatures = async function (el) {
         '<div class="name">' + (eq.type === 'negatif' ? '🧊' : '❄️') + ' ' + UI.esc(eq.name) + '</div>' +
         '<div class="range">' + (eq.cible != null ? 'Cible ' + eq.cible + ' °C · ' : '') + 'limites ' + eq.min + ' à ' + eq.max + ' °C</div>' +
         '<div class="last">' + (rEq.length
-          ? rEq.map(r => '<span class="pill ' + (r.conforme === false ? 'bad' : 'ok') + '">' + UI.esc(r.time || r.moment || '') + ' ' + UI.fmtTemp(r.temp) + '</span>').join(' ')
+          ? rEq.map(r => r.statut === 'hs'
+              ? '<span class="pill">⏸ ' + UI.esc(r.motif || 'à l’arrêt') + '</span>'
+              : '<span class="pill ' + (r.conforme === false ? 'bad' : 'ok') + '">' + UI.esc(r.time || r.moment || '') + ' ' + UI.fmtTemp(r.temp) + '</span>').join(' ')
           : '<span class="pill warn">Aucun relevé aujourd’hui</span>') + '</div>' +
         '</button>';
     }).join('') + '</div>' +
@@ -556,12 +591,53 @@ function openTempModal(equipId, queue) {
     '<div data-verdict></div>' +
     actionFieldHTML() +
     '<div class="actions"><button class="btn ghost" data-x="cancel">' + (queue ? 'Arrêter' : 'Annuler') + '</button>' +
+    '<button class="btn ghost" data-x="hs">⏸ À l’arrêt</button>' +
     '<button class="btn" data-x="save">' + (hasNext ? 'Enregistrer → suivante' : 'Enregistrer') + '</button></div>',
     (m, close) => {
       UI.segWire(m);
       const tempInput = m.querySelector('[data-f="temp"]');
       const verdict = m.querySelector('[data-verdict]');
       const actionField = m.querySelector('[data-action-field]');
+
+      // Enceinte à l'arrêt aujourd'hui (dégivrage, vide, panne) : trace un
+      // relevé « HS » qui compte comme fait, sans température.
+      m.querySelector('[data-x="hs"]').onclick = () => {
+        const agent = requireAgent(m); if (!agent) return;
+        UI.modal(
+          '<h2>⏸ ' + UI.esc(eq.name) + ' à l’arrêt</h2>' +
+          '<label class="field"><span class="lbl">Motif</span>' +
+          UI.segHTML('motif', [
+            { value: 'dégivrage', label: '❄️ Dégivrage' },
+            { value: 'vide / non utilisée', label: '📭 Vide' },
+            { value: 'panne', label: '🔧 Panne', bad: true },
+          ], 'dégivrage') + '</label>' +
+          '<div class="actions"><button class="btn ghost" data-x="c2">Annuler</button><button class="btn" data-x="s2">Enregistrer</button></div>',
+          (m2, close2) => {
+            UI.segWire(m2);
+            m2.querySelector('[data-x="c2"]').onclick = close2;
+            m2.querySelector('[data-x="s2"]').onclick = async () => {
+              const motif = UI.segValue(m2, 'motif') || 'dégivrage';
+              await DB.addRecord({
+                type: 'temp', date: UI.todayISO(), time: UI.nowHM(),
+                equipId: eq.id, equipName: eq.name, statut: 'hs', motif, agent,
+              });
+              if (motif === 'panne') {
+                await DB.addRecord({
+                  type: 'nonconf', date: UI.todayISO(), time: UI.nowHM(),
+                  objet: 'Panne : ' + eq.name, lieu: '', lot: '', peremption: '',
+                  description: 'Enceinte à l’arrêt (panne) — denrées à contrôler et déplacer (IN rupture de froid)',
+                  action: '', statut: 'ouverte', agent,
+                });
+                UI.toast('Panne signalée — non-conformité ouverte', 'bad');
+              } else {
+                UI.toast(eq.name + ' : à l’arrêt (' + motif + ') ✔', 'ok');
+              }
+              close2(); close(); render();
+              if (hasNext) openTempModal(queue[0], queue.slice(1));
+            };
+          }
+        );
+      };
 
       const check = () => {
         const v = parseFloat(tempInput.value);
@@ -733,7 +809,8 @@ VIEWS.refroidissement = async function (el) {
     (enCours.length ? '<div class="card"><h2>⏱️ En cours</h2><div class="rec-list">' + enCours.map(r => {
       const mins = Math.round((Date.now() - new Date(r.startISO).getTime()) / 60000);
       const limit = r.mode === 'remise' ? RULES.remiseMinutes : RULES.refroidMinutes;
-      return '<div class="rec-item ' + (mins > limit ? 'bad' : '') + '"><div class="big">' + mins + ' min</div>' +
+      return '<div class="rec-item ' + (mins > limit ? 'bad' : '') + '" data-refroid-item="' + r.id + '">' +
+        '<div class="big" data-refroid-mins="' + r.id + '">' + mins + ' min</div>' +
         '<div class="body"><div class="title">' + UI.esc(r.produit) + '</div>' +
         '<div class="meta">' + (r.mode === 'remise' ? '🔥 Remise en température' : '📉 Refroidissement') + ' — départ ' + UI.esc(r.timeStart) + ' à ' + UI.fmtTemp(r.tempStart) +
         (mins > limit ? ' — ⚠️ délai dépassé' : ' (limite ' + limit + ' min)') + '</div></div>' +
@@ -1066,9 +1143,52 @@ VIEWS.decongel = async function (el) {
   el.querySelector('#new-dec').addEventListener('click', openDecongelModal);
   el.querySelectorAll('[data-fin]').forEach(b => b.addEventListener('click', async () => {
     const rec = await DB.getRecord(Number(b.dataset.fin));
-    if (rec) { rec.statut = 'termine'; rec.sortieDate = UI.todayISO(); rec.sortieTime = UI.nowHM(); await DB.updateRecord(rec); UI.toast('Produit sorti de décongélation ✔', 'ok'); render(); }
+    if (!rec) return;
+    openIssueModal(rec, isDecongelDepasse(rec), 'délai de décongélation (48 h) dépassé');
   }));
 };
+
+/** Clôture qualifiée d'un produit suivi (décongélation / entamé) : Utilisé ou
+ *  Jeté. Si le délai était dépassé, seul « Jeté » est possible et une
+ *  non-conformité clôturée est tracée automatiquement (preuve de destruction). */
+function openIssueModal(rec, depasse, motifDepasse) {
+  UI.modal(
+    '<h2>' + UI.esc(rec.produit) + '</h2>' +
+    (depasse ? '<p class="pill bad" style="margin-bottom:12px">⚠ ' + UI.esc(motifDepasse) + ' — le produit doit être jeté</p>' : '') +
+    agentField() +
+    '<div class="actions">' +
+    '<button class="btn ghost" data-x="cancel">Annuler</button>' +
+    (depasse ? '' : '<button class="btn" data-x="utilise">✔ Utilisé</button>') +
+    '<button class="btn danger" data-x="jete">🗑️ Jeté</button></div>',
+    (m, close) => {
+      m.querySelector('[data-x="cancel"]').onclick = close;
+      const finish = async issue => {
+        const agent = requireAgent(m); if (!agent) return;
+        rec.statut = 'termine';
+        rec.issue = issue;
+        rec.sortieDate = UI.todayISO();
+        rec.sortieTime = UI.nowHM();
+        if (rec.type === 'entame') rec.finDate = UI.todayISO();
+        await DB.updateRecord(rec);
+        if (issue === 'jete' && depasse) {
+          await DB.addRecord({
+            type: 'nonconf', date: UI.todayISO(), time: UI.nowHM(),
+            objet: 'Produit détruit — ' + rec.produit,
+            lieu: '', lot: rec.lot || '', peremption: rec.dlc || rec.limite || '',
+            description: motifDepasse,
+            action: 'Produit jeté (destruction tracée)', statut: 'cloturee', agent,
+          });
+        }
+        close();
+        UI.toast(issue === 'jete' ? 'Produit jeté — tracé ✔' : 'Produit utilisé ✔', 'ok');
+        render();
+      };
+      const btnU = m.querySelector('[data-x="utilise"]');
+      if (btnU) btnU.onclick = () => finish('utilise');
+      m.querySelector('[data-x="jete"]').onclick = () => finish('jete');
+    }
+  );
+}
 
 function openDecongelModal() {
   const connus = (SETTINGS.fournisseurs || []).map(f => f.name);
@@ -1156,7 +1276,9 @@ VIEWS.entames = async function (el) {
   el.querySelector('#new-ent').addEventListener('click', openEntameModal);
   el.querySelectorAll('[data-fin]').forEach(b => b.addEventListener('click', async () => {
     const rec = await DB.getRecord(Number(b.dataset.fin));
-    if (rec) { rec.statut = 'termine'; rec.finDate = UI.todayISO(); await DB.updateRecord(rec); UI.toast('Produit clôturé ✔', 'ok'); render(); }
+    if (!rec) return;
+    const depasse = rec.dlc && rec.dlc < UI.todayISO();
+    openIssueModal(rec, depasse, 'DLC interne dépassée (' + UI.frDate(rec.dlc) + ')');
   }));
 };
 
@@ -1927,13 +2049,16 @@ VIEWS.huiles = async function (el) {
   el.innerHTML = headerHTML('Huiles de friture', 'Contrôle visuel quotidien · friture ≤ 175 °C · changer une huile foncée ou moussante',
       '<button class="btn" id="new-huile">➕ Nouveau contrôle</button>') +
     (recs.length ? '<div class="rec-list">' + recs.map(r =>
-      '<div class="rec-item ' + (r.etat === 'a-changer' && r.action !== 'changement' ? 'bad' : 'ok') + '">' +
+      '<div class="rec-item ' + (r.conforme === false || (r.etat === 'a-changer' && r.action !== 'changement') ? 'bad' : 'ok') + '">' +
       '<div class="big">🍟</div>' +
       '<div class="body"><div class="title">' + UI.esc(r.friteuse) + ' — ' + (ACTION_LABEL[r.action] || r.action) + '</div>' +
       '<div class="meta">' + UI.frDate(r.date) + ' ' + UI.esc(r.time) + ' — huile : ' + (ETAT_LABEL[r.etat] || r.etat) +
+      (r.polaires === 'nok' ? ' — polaires > 25 % ⚠️' : (r.polaires === 'ok' ? ' — polaires ≤ 25 % ✔' : '')) +
+      (r.polairesPct != null ? ' (' + r.polairesPct + ' %)' : '') +
+      (r.volume != null || r.destination ? ' — usagée : ' + (r.volume != null ? r.volume + ' L ' : '') + UI.esc(r.destination || '') + (r.bon ? ' (bon ' + UI.esc(r.bon) + ')' : '') : '') +
       (r.temp != null ? ' — ' + UI.fmtTemp(r.temp) : '') + ' — ' + UI.esc(r.agent) +
       (r.remarque ? ' — ' + UI.esc(r.remarque) : '') + '</div></div>' +
-      '<span class="pill ' + (r.etat === 'a-changer' ? 'warn' : 'ok') + '">' + (ETAT_LABEL[r.etat] || '') + '</span></div>'
+      '<span class="pill ' + (r.conforme === false ? 'bad' : (r.etat === 'a-changer' ? 'warn' : 'ok')) + '">' + (r.conforme === false ? 'Non conforme' : (ETAT_LABEL[r.etat] || '')) + '</span></div>'
     ).join('') + '</div>' : '<div class="empty"><span class="e-ico">🍟</span>Aucun contrôle d’huile enregistré ce mois-ci.</div>');
 
   el.querySelector('#new-huile').addEventListener('click', openHuileModal);
@@ -1956,27 +2081,73 @@ function openHuileModal() {
       { value: 'moyen', label: '≈ À surveiller' },
       { value: 'a-changer', label: '✘ À changer', bad: true },
     ], 'bon') + '</label>' +
+    '<label class="field"><span class="lbl">Test composés polaires (critère réglementaire : ≤ 25 %)</span>' +
+    UI.segHTML('polaires', [
+      { value: '', label: 'Non testé' },
+      { value: 'ok', label: '✔ ≤ 25 %' },
+      { value: 'nok', label: '✘ > 25 %', bad: true },
+    ], '') + '</label>' +
+    '<label class="field"><span class="lbl">Valeur mesurée (%, optionnel)</span>' +
+    '<input type="number" step="0.5" inputmode="decimal" data-f="polairesPct" placeholder="Ex. : 18"></label>' +
+    '<div data-elimination style="display:none">' +
+    '<hr class="sep"><div class="lbl" style="margin-bottom:8px">Traçabilité de l’huile usagée (changement)</div>' +
+    '<div class="row"><div class="grow"><label class="field"><span class="lbl">Volume (L)</span><input type="number" step="0.5" inputmode="decimal" data-f="volume"></label></div>' +
+    '<div class="grow"><label class="field"><span class="lbl">Destination / collecteur</span><input type="text" data-f="destination" placeholder="Ex. : bac de récupération, Oleovia…"></label></div></div>' +
+    '<label class="field"><span class="lbl">N° de bon d’enlèvement (optionnel)</span><input type="text" data-f="bon"></label>' +
+    '</div>' +
     '<label class="field"><span class="lbl">Température de friture (°C, optionnel)</span>' +
     '<input type="number" step="1" inputmode="numeric" data-f="temp" placeholder="≤ 175"></label>' +
     '<label class="field"><span class="lbl">Remarque (optionnel)</span><input type="text" data-f="remarque"></label>' +
     agentField() +
+    '<div data-verdict></div>' +
+    actionFieldHTML() +
     '<div class="actions"><button class="btn ghost" data-x="cancel">Annuler</button><button class="btn" data-x="save">Enregistrer</button></div>',
     (m, close) => {
       UI.segWire(m);
+      const verdict = m.querySelector('[data-verdict]');
+      const actionField = m.querySelector('[data-action-field]');
+      const elimination = m.querySelector('[data-elimination]');
+
+      // Verdict : > 25 % de composés polaires (ou % saisi > 25) = huile impropre
+      const evalHuile = () => {
+        const pct = parseFloat(m.querySelector('[data-f="polairesPct"]').value);
+        const seg = UI.segValue(m, 'polaires') || '';
+        const nok = seg === 'nok' || (!isNaN(pct) && pct > 25);
+        verdict.innerHTML = nok
+          ? '<p class="pill bad" style="margin-bottom:12px">✘ NON CONFORME — huile impropre (&gt; 25 % de composés polaires) : changement obligatoire</p>'
+          : (seg === 'ok' || !isNaN(pct) ? '<p class="pill ok" style="margin-bottom:12px">✔ Polarité conforme</p>' : '');
+        actionField.style.display = nok ? 'block' : 'none';
+        elimination.style.display = UI.segValue(m, 'action') === 'changement' ? 'block' : 'none';
+        return nok;
+      };
+      m.addEventListener('click', () => setTimeout(evalHuile, 30));
+      m.querySelector('[data-f="polairesPct"]').addEventListener('input', evalHuile);
+
       m.querySelector('[data-x="cancel"]').onclick = close;
       m.querySelector('[data-x="save"]').onclick = async () => {
         const agent = requireAgent(m); if (!agent) return;
+        const nok = evalHuile();
+        const action = m.querySelector('[data-f="action"]').value.trim();
+        if (nok && !action) { UI.toast('Indique l’action corrective (changement de l’huile…)', 'bad'); return; }
         const t = parseFloat(m.querySelector('[data-f="temp"]').value);
+        const pct = parseFloat(m.querySelector('[data-f="polairesPct"]').value);
+        const vol = parseFloat(m.querySelector('[data-f="volume"]').value);
         await DB.addRecord({
           type: 'huile', date: UI.todayISO(), time: UI.nowHM(),
           friteuse: m.querySelector('[data-f="friteuse"]').value,
           action: UI.segValue(m, 'action'), etat: UI.segValue(m, 'etat'),
+          polaires: UI.segValue(m, 'polaires') || '',
+          polairesPct: isNaN(pct) ? null : pct,
+          volume: isNaN(vol) ? null : vol,
+          destination: m.querySelector('[data-f="destination"]').value.trim(),
+          bon: m.querySelector('[data-f="bon"]').value.trim(),
           temp: isNaN(t) ? null : t,
           remarque: m.querySelector('[data-f="remarque"]').value.trim(),
+          conforme: !nok, actionCorrective: nok ? action : '',
           agent,
         });
         close();
-        UI.toast('Contrôle enregistré ✔', 'ok');
+        UI.toast(nok ? 'Non-conformité huile enregistrée' : 'Contrôle enregistré ✔', nok ? 'bad' : 'ok');
         render();
       };
     }
@@ -1989,23 +2160,25 @@ function openHuileModal() {
 VIEWS.nonconformites = async function (el) {
   const today = UI.todayISO();
   const from = UI.addDays(today, -30);
-  const [manual, temps, receptions, services, refroids] = await Promise.all([
+  const [manual, temps, receptions, services, refroids, huiles] = await Promise.all([
     DB.getByType('nonconf'),
     DB.getByTypeAndRange('temp', from, today),
     DB.getByTypeAndRange('reception', from, today),
     DB.getByTypeAndRange('service', from, today),
     DB.getByTypeAndRange('refroid', from, today),
+    DB.getByTypeAndRange('huile', from, today),
   ]);
 
-  const autos = [...temps, ...receptions, ...services, ...refroids]
+  const autos = [...temps, ...receptions, ...services, ...refroids, ...huiles]
     .filter(r => r.conforme === false)
     .map(r => ({
       date: r.date, time: r.time || r.timeEnd || '',
-      objet: TYPE_LABELS[r.type] + ' — ' + (r.equipName || r.produit || r.plat || ''),
+      objet: TYPE_LABELS[r.type] + ' — ' + (r.equipName || r.friteuse || r.produit || r.plat || ''),
       description: r.type === 'temp' ? 'Relevé ' + UI.fmtTemp(r.temp)
         : r.type === 'refroid' ? UI.fmtTemp(r.tempStart) + ' → ' + UI.fmtTemp(r.tempEnd) + ' en ' + r.durationMin + ' min'
+        : r.type === 'huile' ? 'Composés polaires > 25 %' + (r.polairesPct != null ? ' (' + r.polairesPct + ' %)' : '')
         : 'Relevé ' + UI.fmtTemp(r.temp),
-      action: r.action, agent: r.agent, auto: true,
+      action: r.actionCorrective || r.action, agent: r.agent, auto: true,
     }));
 
   const rows = [
@@ -2075,16 +2248,18 @@ function openNCModal() {
    HISTORIQUE & EXPORT
 ================================================================ */
 const EXPORT_COLUMNS = {
-  temp: [['Date', r => UI.frDate(r.date)], ['Heure', r => r.time], ['Équipement', r => r.equipName], ['Température (°C)', r => r.temp], ['Conforme', r => r.conforme === false ? 'NON' : 'OUI'], ['Action corrective', r => r.action], ['Agent', r => r.agent]],
+  temp: [['Date', r => UI.frDate(r.date)], ['Heure', r => r.time], ['Équipement', r => r.equipName], ['Température (°C)', r => r.statut === 'hs' ? 'À l’arrêt (' + (r.motif || '') + ')' : r.temp], ['Conforme', r => r.statut === 'hs' ? '—' : (r.conforme === false ? 'NON' : 'OUI')], ['Action corrective', r => r.action], ['Agent', r => r.agent]],
   reception: [['Date', r => UI.frDate(r.date)], ['Heure', r => r.time], ['Fournisseur', r => r.fournisseur], ['Produit', r => r.produit], ['Lot / BL', r => r.lot], ['Famille', r => r.famille], ['Température (°C)', r => r.temp], ['État', r => r.etat === 'bad' ? 'Défaut' : 'Correct'], ['Conforme', r => r.conforme === false ? 'NON' : (r.tolere ? 'Contrôle à cœur' : 'OUI')], ['Action corrective', r => r.action], ['Agent', r => r.agent]],
   refroid: [['Date', r => UI.frDate(r.date)], ['Type', r => r.mode === 'remise' ? 'Remise en T°' : 'Refroidissement'], ['Préparation', r => r.produit], ['T° départ', r => r.tempStart], ['Heure départ', r => r.timeStart], ['T° fin', r => r.tempEnd], ['Heure fin', r => r.timeEnd], ['Durée (min)', r => r.durationMin], ['Conforme', r => r.status === 'encours' ? 'En cours' : (r.conforme === false ? 'NON' : 'OUI')], ['Action corrective', r => r.action], ['Agent', r => r.agent]],
   service: [['Date', r => UI.frDate(r.date)], ['Heure', r => r.time], ['Service', r => r.service || ''], ['Plat', r => r.plat], ['Liaison', r => r.liaison], ['Température (°C)', r => r.temp], ['Plat témoin', r => r.platTemoin ? 'OUI' : 'NON'], ['Conforme', r => r.conforme === false ? 'NON' : (r.tolere ? 'Toléré <2h' : 'OUI')], ['Action corrective', r => r.action], ['Agent', r => r.agent]],
-  decongel: [['Date mise en décongélation', r => UI.frDate(r.date)], ['Heure', r => r.time], ['Produit', r => r.produit], ['Fournisseur', r => r.fournisseur], ['Lot', r => r.lot], ['À utiliser avant', r => UI.frDate(r.limite)], ['Sorti le', r => r.sortieDate ? UI.frDate(r.sortieDate) + ' ' + (r.sortieTime || '') : ''], ['Statut', r => r.statut === 'termine' ? 'Terminé' : 'En cours'], ['Agent', r => r.agent]],
-  entame: [['Date ouverture', r => UI.frDate(r.date)], ['Heure', r => r.time], ['Produit', r => r.produit], ['Type', r => r.categorie], ['DLC interne', r => UI.frDate(r.dlc)], ['Clôturé le', r => r.finDate ? UI.frDate(r.finDate) : ''], ['Statut', r => r.statut === 'termine' ? 'Terminé' : 'En cours'], ['Agent', r => r.agent]],
+  decongel: [['Date mise en décongélation', r => UI.frDate(r.date)], ['Heure', r => r.time], ['Produit', r => r.produit], ['Fournisseur', r => r.fournisseur], ['Lot', r => r.lot], ['À utiliser avant', r => UI.frDate(r.limite)], ['Sorti le', r => r.sortieDate ? UI.frDate(r.sortieDate) + ' ' + (r.sortieTime || '') : ''], ['Devenir', r => r.issue === 'jete' ? 'JETÉ' : (r.issue === 'utilise' ? 'Utilisé' : '')], ['Statut', r => r.statut === 'termine' ? 'Terminé' : 'En cours'], ['Agent', r => r.agent]],
+  entame: [['Date ouverture', r => UI.frDate(r.date)], ['Heure', r => r.time], ['Produit', r => r.produit], ['Type', r => r.categorie], ['DLC interne', r => UI.frDate(r.dlc)], ['Clôturé le', r => r.finDate ? UI.frDate(r.finDate) : ''], ['Devenir', r => r.issue === 'jete' ? 'JETÉ' : (r.issue === 'utilise' ? 'Consommé' : '')], ['Statut', r => r.statut === 'termine' ? 'Terminé' : 'En cours'], ['Agent', r => r.agent]],
   etiquette: [['Date', r => UI.frDate(r.date)], ['Heure', r => r.time], ['Produit', r => r.produit], ['Lot', r => r.lot], ['DLC', r => r.dlc ? UI.frDate(r.dlc) : ''], ['Photo', r => r.photo ? 'OUI' : 'NON'], ['Agent', r => r.agent]],
   nettoyage: [['Date', r => UI.frDate(r.date)], ['Heure', r => r.time], ['Tâche', r => r.taskName], ['Zone', r => r.zone], ['Fréquence', r => r.freq], ['Agent', r => r.agent]],
-  huile: [['Date', r => UI.frDate(r.date)], ['Heure', r => r.time], ['Friteuse', r => r.friteuse], ['Opération', r => r.action], ['État huile', r => r.etat], ['Température (°C)', r => r.temp], ['Remarque', r => r.remarque], ['Agent', r => r.agent]],
+  huile: [['Date', r => UI.frDate(r.date)], ['Heure', r => r.time], ['Friteuse', r => r.friteuse], ['Opération', r => r.action], ['État huile', r => r.etat], ['Polarité', r => r.polaires === 'nok' ? '> 25 % NON CONFORME' : (r.polaires === 'ok' ? '≤ 25 %' : '') + (r.polairesPct != null ? ' (' + r.polairesPct + ' %)' : '')], ['Huile usagée', r => r.volume != null || r.destination ? (r.volume != null ? r.volume + ' L' : '') + (r.destination ? ' → ' + r.destination : '') + (r.bon ? ' (bon ' + r.bon + ')' : '') : ''], ['Température (°C)', r => r.temp], ['Action corrective', r => r.actionCorrective], ['Remarque', r => r.remarque], ['Agent', r => r.agent]],
   nonconf: [['Date', r => UI.frDate(r.date)], ['Heure', r => r.time], ['Objet', r => r.objet], ['Lieu', r => r.lieu], ['Lot', r => r.lot], ['Péremption', r => r.peremption ? UI.frDate(r.peremption) : ''], ['Description', r => r.description], ['Action corrective', r => r.action], ['Statut', r => r.statut], ['Agent', r => r.agent]],
+  verif: [['Date', r => UI.frDate(r.date)], ['Heure', r => r.time], ['Instrument', r => r.instrument], ['Méthode', r => r.methode], ['Écart constaté (°C)', r => r.ecart], ['Conforme (|écart| ≤ 1 °C)', r => r.conforme === false ? 'NON' : 'OUI'], ['Action corrective', r => r.action], ['Agent', r => r.agent]],
+  fermeture: [['Date', r => UI.frDate(r.date)], ['Motif', r => r.motif], ['Agent', r => r.agent]],
 };
 
 /* ---------- Export PDF des registres (jsPDF, chargé à la demande) ---------- */
@@ -2139,6 +2314,22 @@ async function exportPDF(types, from, to, filename) {
     doc.setFontSize(9);
     doc.text(pdfSafe('Édité le ' + UI.frDate(UI.todayISO()) + ' à ' + UI.nowHM() + ' — ' + recs.length + ' enregistrement(s) — Visa du responsable : ____________________'), 14, 26);
 
+    // Registre des enceintes : preuve de la régularité (jours sans relevé vs fermetures déclarées)
+    let startY = 30;
+    if (type === 'temp') {
+      const fermetures = await DB.getByTypeAndRange('fermeture', from, to);
+      const fermesSet = new Set(fermetures.map(f => f.date));
+      const joursAvecReleve = new Set(recs.map(r => r.date));
+      const today0 = UI.todayISO();
+      let manques = 0, jours = 0;
+      for (let d = from; d <= to && d <= today0; d = UI.addDays(d, 1)) {
+        jours++;
+        if (!joursAvecReleve.has(d) && !fermesSet.has(d)) manques++;
+      }
+      doc.text(pdfSafe('Régularité : ' + jours + ' jour(s) sur la période, ' + manques + ' sans relevé non justifié, ' + fermesSet.size + ' déclaré(s) fermé(s).'), 14, 30);
+      startY = 34;
+    }
+
     const cols = EXPORT_COLUMNS[type];
     const ncRows = new Set();
     const body = recs.map((r, i) => {
@@ -2146,7 +2337,7 @@ async function exportPDF(types, from, to, filename) {
       return cols.map(c => pdfSafe(c[1](r)));
     });
     doc.autoTable({
-      startY: 30,
+      startY,
       head: [cols.map(c => pdfSafe(c[0]))],
       body,
       styles: { fontSize: 8, cellPadding: 1.5 },
@@ -2165,8 +2356,60 @@ async function exportPDF(types, from, to, filename) {
 VIEWS.historique = async function (el) {
   const today = UI.todayISO();
   const state = VIEWS.historique._state || (VIEWS.historique._state = { type: 'temp', from: UI.addDays(today, -6), to: today });
+  state.calMonth = state.calMonth || today.slice(0, 7); // AAAA-MM affiché dans le calendrier
 
-  el.innerHTML = headerHTML('Historique & export', 'Consultation des enregistrements et export CSV pour les contrôles sanitaires') +
+  // --- Calendrier de complétude : chaque jour doit porter les relevés d'enceintes ---
+  const moisDebut = state.calMonth + '-01';
+  const joursDansMois = new Date(Number(state.calMonth.slice(0, 4)), Number(state.calMonth.slice(5, 7)), 0).getDate();
+  const moisFin = state.calMonth + '-' + String(joursDansMois).padStart(2, '0');
+  const [calTemps, calFermetures] = await Promise.all([
+    DB.getByTypeAndRange('temp', moisDebut, moisFin),
+    DB.getByTypeAndRange('fermeture', moisDebut, moisFin),
+  ]);
+  const relevesParJour = {};
+  calTemps.forEach(r => { (relevesParJour[r.date] = relevesParJour[r.date] || new Set()).add(r.equipId); });
+  const fermes = {};
+  calFermetures.forEach(f => { fermes[f.date] = f; });
+  const nbEquips = SETTINGS.equipements.length || 1;
+
+  const moisNom = new Date(moisDebut + 'T12:00:00').toLocaleDateString('fr-FR', { month: 'long', year: 'numeric' });
+  const premierJourSemaine = (new Date(moisDebut + 'T12:00:00').getDay() + 6) % 7; // 0 = lundi
+  let calCells = '';
+  for (let i = 0; i < premierJourSemaine; i++) calCells += '<div class="cal-day empty"></div>';
+  for (let d = 1; d <= joursDansMois; d++) {
+    const iso = state.calMonth + '-' + String(d).padStart(2, '0');
+    let cls = 'future', label = '';
+    if (iso <= today) {
+      if (fermes[iso]) { cls = 'closed'; label = '🚪'; }
+      else {
+        const n = relevesParJour[iso] ? relevesParJour[iso].size : 0;
+        cls = n >= nbEquips ? 'full' : (n > 0 ? 'part' : 'miss');
+      }
+    }
+    calCells += '<div class="cal-day ' + cls + '" data-cal-day="' + iso + '">' + d + (label ? '<span>' + label + '</span>' : '') + '</div>';
+  }
+  const joursVides = Object.keys(fermes).length;
+  const joursManques = (() => {
+    let n = 0;
+    for (let d = 1; d <= joursDansMois; d++) {
+      const iso = state.calMonth + '-' + String(d).padStart(2, '0');
+      if (iso > today) break;
+      if (!fermes[iso] && !(relevesParJour[iso] && relevesParJour[iso].size)) n++;
+    }
+    return n;
+  })();
+
+  el.innerHTML = headerHTML('Historique & export', 'Consultation des enregistrements et export CSV/PDF pour les contrôles sanitaires') +
+
+    '<div class="card no-print"><div class="row" style="margin-bottom:10px">' +
+    '<h2 style="margin:0">📅 Complétude des relevés — ' + UI.esc(moisNom) + '</h2><div class="grow"></div>' +
+    '<button class="btn small ghost" id="cal-prev">‹</button><button class="btn small ghost" id="cal-next">›</button></div>' +
+    '<div class="cal-grid">' + ['L', 'M', 'M', 'J', 'V', 'S', 'D'].map(j => '<div class="cal-head">' + j + '</div>').join('') + calCells + '</div>' +
+    '<div class="row" style="margin-top:10px;font-size:12.5px" class="muted">' +
+    '<span class="pill ok">Complet</span><span class="pill warn">Partiel</span><span class="pill bad">Aucun relevé</span><span class="pill">🚪 Fermé</span>' +
+    (joursManques ? '<span class="muted">— ' + joursManques + ' jour(s) sans aucun relevé ce mois-ci : touche le jour pour le justifier (fermeture)</span>' : '<span class="muted">— touche un jour pour le détail</span>') +
+    '</div></div>' +
+
     '<div class="card no-print"><div class="row">' +
     '<div class="grow"><label class="field" style="margin:0"><span class="lbl">Registre</span><select id="h-type">' +
     Object.keys(TYPE_LABELS).map(t => '<option value="' + t + '"' + (t === state.type ? ' selected' : '') + '>' + TYPE_LABELS[t] + '</option>').join('') +
@@ -2210,6 +2453,60 @@ VIEWS.historique = async function (el) {
         '</tbody></table>'
       : '<div class="empty">Aucun enregistrement sur cette période.</div>');
   }
+
+  // Calendrier : navigation et détail/justification d'un jour
+  const shiftMonth = delta => {
+    const d = new Date(state.calMonth + '-15T12:00:00');
+    d.setMonth(d.getMonth() + delta);
+    state.calMonth = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0');
+    render();
+  };
+  el.querySelector('#cal-prev').addEventListener('click', () => shiftMonth(-1));
+  el.querySelector('#cal-next').addEventListener('click', () => shiftMonth(1));
+  el.querySelectorAll('[data-cal-day]').forEach(c => c.addEventListener('click', async () => {
+    const iso = c.dataset.calDay;
+    if (iso > today) return;
+    const ferme = fermes[iso];
+    const n = relevesParJour[iso] ? relevesParJour[iso].size : 0;
+    const [nett, recep] = await Promise.all([
+      DB.getByTypeAndRange('nettoyage', iso, iso),
+      DB.getByTypeAndRange('reception', iso, iso),
+    ]);
+    UI.modal(
+      '<h2>📅 ' + UI.frDate(iso) + '</h2>' +
+      (ferme
+        ? '<p class="pill" style="margin-bottom:12px">🚪 Jour déclaré fermé : ' + UI.esc(ferme.motif || '') + ' (' + UI.esc(ferme.agent || '') + ')</p>'
+        : '<div class="rec-list" style="margin-bottom:12px">' +
+          '<div class="rec-item ' + (n >= nbEquips ? 'ok' : 'bad') + '"><div class="body"><div class="title">Relevés d’enceintes : ' + n + '/' + nbEquips + '</div></div></div>' +
+          '<div class="rec-item"><div class="body"><div class="title">Nettoyage : ' + nett.length + ' tâche(s) · Réceptions : ' + recep.length + '</div></div></div>' +
+          '</div>') +
+      (!ferme && n === 0
+        ? '<label class="field"><span class="lbl">Justifier ce jour vide : motif de fermeture</span>' +
+          '<input type="text" data-f="motif" placeholder="Ex. : cuisine fermée, week-end sous-traité, férié…"></label>' + agentField()
+        : '') +
+      '<div class="actions"><button class="btn ghost" data-x="close">Fermer</button>' +
+      (ferme ? '<button class="btn danger" data-x="unclose">Annuler la fermeture</button>' : '') +
+      (!ferme && n === 0 ? '<button class="btn" data-x="declare">🚪 Déclarer fermé</button>' : '') +
+      '</div>',
+      (m, close) => {
+        m.querySelector('[data-x="close"]').onclick = close;
+        const btnD = m.querySelector('[data-x="declare"]');
+        if (btnD) btnD.onclick = async () => {
+          const agent = requireAgent(m); if (!agent) return;
+          await DB.addRecord({
+            type: 'fermeture', date: iso, time: UI.nowHM(),
+            motif: m.querySelector('[data-f="motif"]').value.trim() || 'fermeture',
+            agent,
+          });
+          close(); UI.toast('Jour déclaré fermé ✔', 'ok'); render();
+        };
+        const btnU = m.querySelector('[data-x="unclose"]');
+        if (btnU) btnU.onclick = () => UI.confirm('Annuler la déclaration de fermeture du ' + UI.frDate(iso) + ' ?', async () => {
+          await DB.deleteRecord(ferme.id); close(); render();
+        });
+      }
+    );
+  }));
 
   el.querySelector('#h-type').addEventListener('change', e => { state.type = e.target.value; refreshTable(); });
   el.querySelector('#h-from').addEventListener('change', e => { state.from = e.target.value; refreshTable(); });
@@ -2322,8 +2619,66 @@ VIEWS.historique = async function (el) {
 /* ================================================================
    RÉGLAGES
 ================================================================ */
+/** Modale de vérification d'un thermomètre (méthode 0 °C / 100 °C / étalon). */
+function openVerifModal(instrument) {
+  UI.modal(
+    '<h2>🌡️ Vérification : ' + UI.esc(instrument) + '</h2>' +
+    '<p class="muted" style="margin-bottom:12px">GBPH : vérification périodique. Conforme si l’écart constaté est ≤ 1 °C en valeur absolue.</p>' +
+    '<label class="field"><span class="lbl">Méthode</span>' +
+    UI.segHTML('methode', [
+      { value: 'eau glacée (0 °C)', label: '🧊 Eau glacée (0 °C)' },
+      { value: 'eau bouillante (100 °C)', label: '♨️ Eau bouillante (100 °C)' },
+      { value: 'comparaison sonde étalon', label: '⚖️ Sonde étalon' },
+    ], 'eau glacée (0 °C)') + '</label>' +
+    '<label class="field"><span class="lbl">Écart constaté (°C)</span>' +
+    UI.tempInputHTML('ecart', { placeholder: '0.0', hint: 'Valeur lue − valeur attendue (peut être négatif)' }) + '</label>' +
+    agentField() +
+    '<div data-verdict></div>' +
+    actionFieldHTML() +
+    '<div class="actions"><button class="btn ghost" data-x="cancel">Annuler</button><button class="btn" data-x="save">Enregistrer</button></div>',
+    (m, close) => {
+      UI.segWire(m);
+      const input = m.querySelector('[data-f="ecart"]');
+      const verdict = m.querySelector('[data-verdict]');
+      const actionField = m.querySelector('[data-action-field]');
+      const check = () => {
+        const v = parseFloat(input.value);
+        if (isNaN(v)) { verdict.innerHTML = ''; actionField.style.display = 'none'; return null; }
+        const ok = Math.abs(v) <= 1;
+        verdict.innerHTML = '<p class="pill ' + (ok ? 'ok' : 'bad') + '" style="margin-bottom:12px">' +
+          (ok ? '✔ Conforme (écart ≤ 1 °C)' : '✘ NON CONFORME — instrument à ajuster ou remplacer') + '</p>';
+        actionField.style.display = ok ? 'none' : 'block';
+        return ok;
+      };
+      input.addEventListener('input', check);
+      m.querySelector('[data-x="cancel"]').onclick = close;
+      m.querySelector('[data-x="save"]').onclick = async () => {
+        const v = parseFloat(input.value);
+        if (isNaN(v)) { UI.toast('Saisis l’écart constaté', 'bad'); return; }
+        const agent = requireAgent(m); if (!agent) return;
+        const ok = Math.abs(v) <= 1;
+        const action = m.querySelector('[data-f="action"]').value.trim();
+        if (!ok && !action) { UI.toast('Indique l’action corrective (remplacement, ajustage…)', 'bad'); return; }
+        await DB.addRecord({
+          type: 'verif', date: UI.todayISO(), time: UI.nowHM(),
+          instrument, methode: UI.segValue(m, 'methode'),
+          ecart: v, conforme: ok, action: ok ? '' : action, agent,
+        });
+        close();
+        UI.toast('Vérification enregistrée ✔', 'ok');
+        render();
+      };
+    }
+  );
+}
+
 VIEWS.parametres = async function (el) {
   const FREQ_LABEL = { quotidien: 'Quotidien', hebdomadaire: 'Hebdomadaire', mensuel: 'Mensuel' };
+
+  // dernières vérifications par instrument
+  const verifs = await DB.getByType('verif');
+  const lastVerif = {};
+  verifs.forEach(v => { if (!lastVerif[v.instrument] || v.date > lastVerif[v.instrument].date) lastVerif[v.instrument] = v; });
 
   el.innerHTML = headerHTML('Réglages', 'Configuration de l’établissement') +
 
@@ -2354,6 +2709,20 @@ VIEWS.parametres = async function (el) {
     '<div class="grow"><input type="text" id="s-fourn-prod" placeholder="Produits livrés"></div>' +
     '<div class="grow"><input type="text" id="s-fourn-jours" placeholder="Jours de livraison"></div>' +
     '<button class="btn small" id="s-fourn-add">Ajouter</button></div></div>' +
+
+    '<div class="card"><h2>🌡️ Instruments de mesure (' + (SETTINGS.thermometres || []).length + ')</h2>' +
+    '<p class="muted" style="margin-bottom:12px">Vérification périodique des thermomètres (eau glacée 0 °C / eau bouillante 100 °C) — à présenter en inspection. Conforme si écart ≤ 1 °C.</p>' +
+    '<div class="rec-list" style="margin-bottom:12px">' + (SETTINGS.thermometres || []).map((t, i) => {
+      const lv = lastVerif[t];
+      const age = lv ? Math.round((new Date() - new Date(lv.date + 'T12:00:00')) / 86400000) : null;
+      return '<div class="rec-item ' + (lv && lv.conforme === false ? 'bad' : '') + '"><div class="body"><div class="title">' + UI.esc(t) + '</div>' +
+        '<div class="meta">' + (lv ? 'Dernière vérification : ' + UI.frDate(lv.date) + ' (' + (lv.conforme === false ? '⚠️ non conforme' : 'écart ' + lv.ecart + ' °C ✔') + ')' +
+        (age > 365 ? ' — <b>plus d’un an !</b>' : '') : 'Jamais vérifié') + '</div></div>' +
+        '<button class="btn small" data-verif-th="' + i + '">✅ Vérifier</button>' +
+        '<button class="btn small ghost" data-del-th="' + i + '">🗑️</button></div>';
+    }).join('') + '</div>' +
+    '<div class="row"><div class="grow"><input type="text" id="s-th-new" placeholder="Nom de l’instrument"></div>' +
+    '<button class="btn small" id="s-th-add">Ajouter</button></div></div>' +
 
     '<div class="card"><h2>🍟 Friteuses (' + SETTINGS.friteuses.length + ')</h2>' +
     '<div class="row" style="margin-bottom:12px">' + SETTINGS.friteuses.map((f, i) =>
@@ -2514,6 +2883,24 @@ VIEWS.parametres = async function (el) {
     });
   }));
 
+  // Instruments de mesure
+  el.querySelector('#s-th-add').addEventListener('click', async () => {
+    const v = el.querySelector('#s-th-new').value.trim();
+    if (!v) return;
+    SETTINGS.thermometres = SETTINGS.thermometres || [];
+    if (!SETTINGS.thermometres.includes(v)) SETTINGS.thermometres.push(v);
+    await saveSettings(); render();
+  });
+  el.querySelectorAll('[data-verif-th]').forEach(b => b.addEventListener('click', () =>
+    openVerifModal(SETTINGS.thermometres[Number(b.dataset.verifTh)])));
+  el.querySelectorAll('[data-del-th]').forEach(b => b.addEventListener('click', () => {
+    const i = Number(b.dataset.delTh);
+    UI.confirm('Supprimer « ' + SETTINGS.thermometres[i] + ' » ? L’historique de ses vérifications est conservé.', async () => {
+      SETTINGS.thermometres.splice(i, 1);
+      await saveSettings(); render();
+    });
+  }));
+
   // Friteuses
   el.querySelector('#s-frit-add').addEventListener('click', async () => {
     const v = el.querySelector('#s-frit-new').value.trim();
@@ -2608,6 +2995,37 @@ VIEWS.parametres = async function (el) {
   });
 };
 
+/* ---------- Chronomètre des refroidissements en cours ---------- */
+const _refroidAlerted = new Set();
+
+/** Toutes les 30 s : rafraîchit les compteurs affichés, alerte (bip + vibration
+ *  + toast) au dépassement de la limite, badge rouge sur l'onglet. */
+async function refroidTick() {
+  let encours = [];
+  try { encours = (await DB.getByType('refroid')).filter(r => r.status === 'encours'); }
+  catch { return; }
+  let depasse = false;
+  encours.forEach(r => {
+    const limit = r.mode === 'remise' ? RULES.remiseMinutes : RULES.refroidMinutes;
+    const mins = Math.round((Date.now() - new Date(r.startISO).getTime()) / 60000);
+    if (mins > limit) depasse = true;
+    // compteur visible à l'écran, sans re-render complet
+    const el = document.querySelector('[data-refroid-mins="' + r.id + '"]');
+    if (el) {
+      el.textContent = mins + ' min';
+      const item = document.querySelector('[data-refroid-item="' + r.id + '"]');
+      if (item && mins > limit) item.classList.add('bad');
+    }
+    if (mins > limit && !_refroidAlerted.has(r.id)) {
+      _refroidAlerted.add(r.id);
+      UI.beep();
+      UI.toast('⏰ ' + (r.mode === 'remise' ? 'Remise en T°' : 'Refroidissement') + ' « ' + r.produit + ' » : délai de ' + limit + ' min DÉPASSÉ !', 'bad');
+    }
+  });
+  const navBtn = document.querySelector('.nav-btn[data-view="refroidissement"]');
+  if (navBtn) navBtn.classList.toggle('has-alert', depasse);
+}
+
 /* ---------- Démarrage ---------- */
 (async function init() {
   await loadSettings();
@@ -2620,4 +3038,6 @@ VIEWS.parametres = async function (el) {
   setTimeout(tryBackup, 2500);
   setInterval(tryBackup, 60 * 60 * 1000);
   document.addEventListener('visibilitychange', () => { if (!document.hidden) tryBackup(); });
+  // chronomètre des refroidissements (compteurs vivants + alerte de dépassement)
+  setInterval(() => { refroidTick().catch(() => {}); }, 30 * 1000);
 })();

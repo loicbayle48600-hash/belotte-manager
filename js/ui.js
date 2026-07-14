@@ -131,6 +131,25 @@ const UI = (() => {
     });
   }
 
+  /** Triple bip d'alerte (WebAudio, aucune dépendance) + vibration si disponible. */
+  function beep() {
+    try {
+      const ctx = new (window.AudioContext || window.webkitAudioContext)();
+      for (let i = 0; i < 3; i++) {
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.connect(gain); gain.connect(ctx.destination);
+        osc.frequency.value = 880;
+        gain.gain.setValueAtTime(0.4, ctx.currentTime + i * 0.45);
+        gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + i * 0.45 + 0.3);
+        osc.start(ctx.currentTime + i * 0.45);
+        osc.stop(ctx.currentTime + i * 0.45 + 0.32);
+      }
+      setTimeout(() => ctx.close(), 2000);
+    } catch { /* audio indisponible : la vibration et le toast restent */ }
+    if (navigator.vibrate) navigator.vibrate([300, 150, 300, 150, 300]);
+  }
+
   /** Réduit une image (fichier) en dataURL JPEG max 900 px. */
   function shrinkImage(file, maxDim) {
     return new Promise((resolve, reject) => {
@@ -202,5 +221,5 @@ const UI = (() => {
     return saveFile(filename, 'text/csv;charset=utf-8', new Blob([csv], { type: 'text/csv;charset=utf-8' }));
   }
 
-  return { esc, toast, modal, confirm, todayISO, nowHM, frDate, addDays, fmtTemp, segHTML, segWire, segValue, agentSelectHTML, tempInputHTML, signWire, shrinkImage, saveFile, downloadCSV };
+  return { esc, toast, modal, confirm, todayISO, nowHM, frDate, addDays, fmtTemp, segHTML, segWire, segValue, agentSelectHTML, tempInputHTML, signWire, beep, shrinkImage, saveFile, downloadCSV };
 })();

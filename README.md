@@ -7,16 +7,16 @@ C'est une **PWA** (application web progressive) : elle s'installe comme une vrai
 
 | Module | Contenu |
 |---|---|
-| ❄️ **Enceintes froides** | Relevés matin/soir des frigos, chambres froides, congélateurs — conformité automatique selon les consignes de chaque équipement |
+| ❄️ **Enceintes froides** | Relevé quotidien du matin (frigos, chambres froides, congélateurs) — conformité automatique, relevés « à la chaîne », enceinte à l'arrêt traçable |
 | 🚚 **Réceptions** | Contrôle à la livraison : fournisseur, produit, T°, état — seuils frais ≤ 4 °C / surgelé ≤ −15 °C |
 | 📉 **Refroidissement / remise en T°** | Suivi chronométré : +63 → +10 °C en 2 h max, +10 → +63 °C en 1 h max, alerte si délai dépassé |
 | 🍽️ **Températures de service** | Liaison chaude ≥ 63 °C, liaison froide ≤ 10 °C, suivi des plats témoins |
 | 🍲 **Menu** | Catalogue de plats + menu du jour (midi/soir) ; **import Excel/CSV** du menu à l'année (le format « grille hebdomadaire » de l'établissement — une feuille par semaine — est reconnu automatiquement) ; les plats alimentent les listes de Refroidissement, Remise en T° et Service |
 | 🏷️ **Traçabilité étiquettes** | Photo des étiquettes avec l'appareil photo de la tablette (produit, lot, DLC) |
 | 🧽 **Plan de nettoyage** | Checklist quotidienne / hebdomadaire / mensuelle, traçabilité date + agent |
-| 🍟 **Huiles de friture** | Contrôle visuel, filtration, changement |
+| 🍟 **Huiles de friture** | Contrôle visuel, test de composés polaires (≤ 25 %), traçabilité de l'huile usagée (volume, collecteur, bon) |
 | ⚠️ **Non-conformités** | Signalement manuel + remontée automatique de tous les relevés non conformes, actions correctives obligatoires |
-| 📋 **Historique & export** | Consultation par registre et par période, **export CSV** (Excel) pour les contrôles sanitaires, impression |
+| 📋 **Historique & export** | Calendrier de complétude (jours vides justifiables par fermeture), recherche de lot multi-registres, **exports CSV et PDF** avec en-tête officiel, impression |
 | ⚙️ **Réglages** | Équipements, agents, fournisseurs, plan de nettoyage personnalisables + **sauvegarde/restauration JSON** et **sauvegarde cloud automatique** (Google Drive avec photos en fichiers images, Dropbox, Nextcloud/WebDAV, serveur maison — voir `google-drive/`) |
 
 Chaque enregistrement trace l'**agent**, la **date** et l'**heure**. Toute mesure hors consigne exige une **action corrective** avant enregistrement.
