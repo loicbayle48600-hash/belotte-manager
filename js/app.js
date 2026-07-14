@@ -899,10 +899,12 @@ VIEWS.service = async function (el) {
   recs.sort((a, b) => b.time.localeCompare(a.time));
 
   // Plats prévus au menu de ce service, rapprochés des contrôles déjà faits
+  // POUR CE SERVICE (un plat contrôlé au midi doit être re-contrôlé au soir).
   const menu = menus.find(mn => mn.service === svc);
   const items = menu ? (menu.items || []) : [];
+  const svcOf = r => r.service || ((r.time || '') < '14:00' ? 'midi' : 'soir'); // anciens records : déduit de l'heure
   const doneByPlat = {};
-  recs.forEach(r => { const k = (r.plat || '').trim().toLowerCase(); if (!doneByPlat[k]) doneByPlat[k] = r; });
+  recs.filter(r => svcOf(r) === svc).forEach(r => { const k = (r.plat || '').trim().toLowerCase(); if (!doneByPlat[k]) doneByPlat[k] = r; });
 
   const temoinsToday = recs.filter(r => r.platTemoin).length;
 
@@ -949,11 +951,12 @@ VIEWS.service = async function (el) {
     const v = UI.segValue(el, 'svc');
     if (v && v !== state.svc) { state.svc = v; render(); }
   }, 30));
-  el.querySelector('#new-serv').addEventListener('click', () => openServiceModal());
-  el.querySelectorAll('[data-ctrl]').forEach(b => b.addEventListener('click', () => openServiceModal(b.dataset.ctrl)));
+  el.querySelector('#new-serv').addEventListener('click', () => openServiceModal('', state.svc));
+  el.querySelectorAll('[data-ctrl]').forEach(b => b.addEventListener('click', () => openServiceModal(b.dataset.ctrl, state.svc)));
 };
 
-async function openServiceModal(prefillPlat) {
+async function openServiceModal(prefillPlat, svc) {
+  const service = svc || (new Date().getHours() < 14 ? 'midi' : 'soir');
   const menuNames = await getTodayMenuNames();
   UI.modal(
     '<h2>🍽️ Contrôle au service</h2>' +
@@ -1011,7 +1014,7 @@ async function openServiceModal(prefillPlat) {
         if (!ok && !action) { UI.toast('Indique l’action corrective', 'bad'); return; }
         await DB.addRecord({
           type: 'service', date: UI.todayISO(), time: UI.nowHM(),
-          plat, liaison, temp: v, platTemoin: UI.segValue(m, 'temoin') === 'oui',
+          plat, liaison, service, temp: v, platTemoin: UI.segValue(m, 'temoin') === 'oui',
           tolere: liaison === 'froide' && ok && v > RULES.froidLimite,
           conforme: ok, action: ok ? '' : action, agent,
         });
@@ -2073,7 +2076,7 @@ const EXPORT_COLUMNS = {
   temp: [['Date', r => UI.frDate(r.date)], ['Heure', r => r.time], ['Équipement', r => r.equipName], ['Température (°C)', r => r.temp], ['Conforme', r => r.conforme === false ? 'NON' : 'OUI'], ['Action corrective', r => r.action], ['Agent', r => r.agent]],
   reception: [['Date', r => UI.frDate(r.date)], ['Heure', r => r.time], ['Fournisseur', r => r.fournisseur], ['Produit', r => r.produit], ['Lot / BL', r => r.lot], ['Famille', r => r.famille], ['Température (°C)', r => r.temp], ['État', r => r.etat === 'bad' ? 'Défaut' : 'Correct'], ['Conforme', r => r.conforme === false ? 'NON' : (r.tolere ? 'Contrôle à cœur' : 'OUI')], ['Action corrective', r => r.action], ['Agent', r => r.agent]],
   refroid: [['Date', r => UI.frDate(r.date)], ['Type', r => r.mode === 'remise' ? 'Remise en T°' : 'Refroidissement'], ['Préparation', r => r.produit], ['T° départ', r => r.tempStart], ['Heure départ', r => r.timeStart], ['T° fin', r => r.tempEnd], ['Heure fin', r => r.timeEnd], ['Durée (min)', r => r.durationMin], ['Conforme', r => r.status === 'encours' ? 'En cours' : (r.conforme === false ? 'NON' : 'OUI')], ['Action corrective', r => r.action], ['Agent', r => r.agent]],
-  service: [['Date', r => UI.frDate(r.date)], ['Heure', r => r.time], ['Plat', r => r.plat], ['Liaison', r => r.liaison], ['Température (°C)', r => r.temp], ['Plat témoin', r => r.platTemoin ? 'OUI' : 'NON'], ['Conforme', r => r.conforme === false ? 'NON' : (r.tolere ? 'Toléré <2h' : 'OUI')], ['Action corrective', r => r.action], ['Agent', r => r.agent]],
+  service: [['Date', r => UI.frDate(r.date)], ['Heure', r => r.time], ['Service', r => r.service || ''], ['Plat', r => r.plat], ['Liaison', r => r.liaison], ['Température (°C)', r => r.temp], ['Plat témoin', r => r.platTemoin ? 'OUI' : 'NON'], ['Conforme', r => r.conforme === false ? 'NON' : (r.tolere ? 'Toléré <2h' : 'OUI')], ['Action corrective', r => r.action], ['Agent', r => r.agent]],
   decongel: [['Date mise en décongélation', r => UI.frDate(r.date)], ['Heure', r => r.time], ['Produit', r => r.produit], ['Fournisseur', r => r.fournisseur], ['Lot', r => r.lot], ['À utiliser avant', r => UI.frDate(r.limite)], ['Sorti le', r => r.sortieDate ? UI.frDate(r.sortieDate) + ' ' + (r.sortieTime || '') : ''], ['Statut', r => r.statut === 'termine' ? 'Terminé' : 'En cours'], ['Agent', r => r.agent]],
   entame: [['Date ouverture', r => UI.frDate(r.date)], ['Heure', r => r.time], ['Produit', r => r.produit], ['Type', r => r.categorie], ['DLC interne', r => UI.frDate(r.dlc)], ['Clôturé le', r => r.finDate ? UI.frDate(r.finDate) : ''], ['Statut', r => r.statut === 'termine' ? 'Terminé' : 'En cours'], ['Agent', r => r.agent]],
   etiquette: [['Date', r => UI.frDate(r.date)], ['Heure', r => r.time], ['Produit', r => r.produit], ['Lot', r => r.lot], ['DLC', r => r.dlc ? UI.frDate(r.dlc) : ''], ['Photo', r => r.photo ? 'OUI' : 'NON'], ['Agent', r => r.agent]],
