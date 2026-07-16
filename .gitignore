@@ -1,0 +1,10 @@
+# Ne JAMAIS versionner les vrais identifiants
+credentials.txt
+*.credentials.txt
+
+# Sorties de débogage du script
+fameswap_debug.png
+fameswap_debug.html
+
+# Dépendances
+node_modules/
