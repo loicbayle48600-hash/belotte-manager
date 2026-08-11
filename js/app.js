@@ -1894,12 +1894,102 @@ VIEWS.tracabilite = async function (el) {
   el.querySelectorAll('.photo-card').forEach(c => c.addEventListener('click', () => openEtiquetteDetail(Number(c.dataset.id))));
 };
 
+/* ---------- OCR des étiquettes (Tesseract.js, 100 % hors ligne) ---------- */
+let _ocrWorkerPromise = null;
+function ensureOCR() {
+  if (_ocrWorkerPromise) return _ocrWorkerPromise;
+  _ocrWorkerPromise = (async () => {
+    if (!window.Tesseract) {
+      await new Promise((resolve, reject) => {
+        const s = document.createElement('script');
+        s.src = 'js/vendor/ocr/tesseract.min.js';
+        s.onload = resolve;
+        s.onerror = () => { s.remove(); reject(new Error('Lecteur OCR indisponible')); };
+        document.head.appendChild(s);
+      });
+    }
+    return Tesseract.createWorker('fra', 1, {
+      workerPath: 'js/vendor/ocr/worker.min.js',
+      corePath: 'js/vendor/ocr',
+      langPath: 'js/vendor/ocr',
+      gzip: true,
+    });
+  })().catch(e => { _ocrWorkerPromise = null; throw e; });
+  return _ocrWorkerPromise;
+}
+
+/** Extrait produit / n° de lot / DLC du texte OCR d'une étiquette alimentaire. */
+function parseEtiquetteOCR(texte) {
+  const brut = String(texte || '');
+  const lignes = brut.split(/\n+/).map(l => l.trim()).filter(l => l.length > 1);
+  const res = { produit: '', lot: '', dlc: '' };
+
+  // --- Dates candidates : JJ/MM/AAAA, JJ.MM.AA, JJ-MM-AAAA, AAAA-MM-JJ ---
+  const today = UI.todayISO();
+  const dates = [];
+  const reDate = /(\d{1,2})[\/.\-](\d{1,2})[\/.\-](\d{2,4})|(\d{4})-(\d{2})-(\d{2})/g;
+  const KW_DLC = /(dlc|ddm|[aà] consommer|consommer (jusqu|avant)|exp|use by|best before|bbd|p[ée]remption)/i;
+  lignes.forEach(l => {
+    let m;
+    reDate.lastIndex = 0;
+    while ((m = reDate.exec(l))) {
+      let iso = null;
+      if (m[4]) {
+        iso = m[4] + '-' + m[5] + '-' + m[6];
+      } else {
+        let [, j, mo, a] = m;
+        if (Number(mo) > 12 && Number(j) <= 12) { const t = j; j = mo; mo = t; } // format inversé
+        if (a.length === 2) a = (Number(a) > 70 ? '19' : '20') + a;
+        if (Number(mo) >= 1 && Number(mo) <= 12 && Number(j) >= 1 && Number(j) <= 31) {
+          iso = a + '-' + String(mo).padStart(2, '0') + '-' + String(j).padStart(2, '0');
+        }
+      }
+      // plausible : entre il y a 1 an et dans 5 ans
+      if (iso && iso > UI.addDays(today, -365) && iso < UI.addDays(today, 5 * 365)) {
+        dates.push({ iso, kw: KW_DLC.test(l), future: iso >= today });
+      }
+    }
+  });
+  // priorité : date future près d'un mot-clé DLC > future la plus proche > n'importe laquelle
+  dates.sort((a, b) => (b.kw - a.kw) || (b.future - a.future) || a.iso.localeCompare(b.iso));
+  if (dates.length) res.dlc = dates[0].iso;
+
+  // --- N° de lot : après un mot-clé LOT/BATCH, ou motif L+chiffres ---
+  const reLotKw = /(?:lot|batch|n[°o]\s*lot)\s*[:n°o.]*\s*([A-Z0-9][A-Z0-9\-\/.]{2,15})/i;
+  const reLotL = /\bL[ :.]?([0-9][0-9A-Z\-\/]{3,12})\b/;
+  for (const l of lignes) {
+    const m1 = reLotKw.exec(l);
+    if (m1) { res.lot = m1[1].replace(/[.,:]+$/, ''); break; }
+  }
+  if (!res.lot) {
+    for (const l of lignes) {
+      const m2 = reLotL.exec(l);
+      if (m2) { res.lot = 'L' + m2[1]; break; }
+    }
+  }
+
+  // --- Produit : parmi les premières lignes, la plus « riche en lettres » qui
+  // ne ressemble ni à une date, ni à un lot, ni à un poids/prix ---
+  const REJET = /(dlc|ddm|lot|batch|exp|kg\b|\bg\b|€|\bpoids|net|conserver|consommer|ingr[ée]dients|\d{1,2}[\/.\-]\d{1,2})/i;
+  let best = '', bestScore = 0;
+  lignes.slice(0, 8).forEach((l, i) => {
+    const lettres = (l.match(/[A-Za-zÀ-ÿ]/g) || []).length;
+    if (lettres < 4 || REJET.test(l)) return;
+    const score = lettres * (i < 3 ? 2 : 1); // les premières lignes sont souvent le nom
+    if (score > bestScore) { bestScore = score; best = l; }
+  });
+  res.produit = best.replace(/\s+/g, ' ').trim().slice(0, 60);
+
+  return res;
+}
+
 function openEtiquetteModal() {
   UI.modal(
     '<h2>🏷️ Nouvelle étiquette <span class="pill info" data-count style="display:none"></span></h2>' +
     '<label class="field"><span class="lbl">Photo de l’étiquette</span>' +
     '<input type="file" accept="image/*" capture="environment" data-f="photo" style="min-height:52px;padding:12px;border:1.5px dashed var(--border);border-radius:12px;width:100%"></label>' +
-    '<div data-preview style="margin-bottom:12px"></div>' +
+    '<div data-preview style="margin-bottom:8px"></div>' +
+    '<div data-ocr style="margin-bottom:12px"></div>' +
     '<label class="field"><span class="lbl">Produit</span><input type="text" data-f="produit" placeholder="Ex. : escalope de dinde"></label>' +
     '<div class="row"><div class="grow"><label class="field"><span class="lbl">N° de lot (optionnel)</span><input type="text" data-f="lot"></label></div>' +
     '<div class="grow"><label class="field"><span class="lbl">DLC / DDM (optionnel)</span><input type="date" data-f="dlc"></label></div></div>' +
@@ -1910,13 +2000,43 @@ function openEtiquetteModal() {
     (m, close) => {
       let photoData = null;
       let saved = 0;
+      let ocrSeq = 0; // ignore le résultat d'une photo remplacée entre-temps
       const photoInput = m.querySelector('[data-f="photo"]');
+      const ocrStatus = m.querySelector('[data-ocr]');
+
+      // Lecture automatique de l'étiquette (OCR hors ligne) : pré-remplit les
+      // champs vides — l'agent vérifie et corrige.
+      const runOCR = async () => {
+        if (!photoData) return;
+        const seq = ++ocrSeq;
+        ocrStatus.innerHTML = '<span class="pill info">🔍 Lecture de l’étiquette en cours…</span>';
+        try {
+          const worker = await ensureOCR();
+          const { data } = await worker.recognize(photoData);
+          if (seq !== ocrSeq || !m.isConnected) return;
+          const found = parseEtiquetteOCR(data.text);
+          const filled = [];
+          const fProduit = m.querySelector('[data-f="produit"]');
+          const fLot = m.querySelector('[data-f="lot"]');
+          const fDlc = m.querySelector('[data-f="dlc"]');
+          if (found.produit && !fProduit.value.trim()) { fProduit.value = found.produit; filled.push('produit'); }
+          if (found.lot && !fLot.value.trim()) { fLot.value = found.lot; filled.push('lot'); }
+          if (found.dlc && !fDlc.value) { fDlc.value = found.dlc; filled.push('DLC'); }
+          ocrStatus.innerHTML = filled.length
+            ? '<span class="pill ok">✔ OCR : ' + filled.join(', ') + ' pré-rempli(s) — vérifie avant d’enregistrer</span>'
+            : '<span class="pill warn">OCR : rien de lisible détecté — saisis les champs à la main</span>';
+        } catch (e) {
+          if (seq === ocrSeq && m.isConnected) ocrStatus.innerHTML = '<span class="pill warn">OCR indisponible (' + UI.esc(e.message) + ')</span>';
+        }
+      };
+
       photoInput.addEventListener('change', async e => {
         const f = e.target.files[0];
         if (!f) return;
         try {
           photoData = await UI.shrinkImage(f, 1000);
           m.querySelector('[data-preview]').innerHTML = '<img src="' + photoData + '" class="photo-full" style="max-height:220px">';
+          runOCR();
         } catch { UI.toast('Impossible de lire la photo', 'bad'); }
       });
 
@@ -1946,7 +2066,9 @@ function openEtiquetteModal() {
       m.querySelector('[data-x="next"]').onclick = async () => {
         if (!(await save())) return;
         photoData = null;
+        ocrSeq++; // un OCR encore en cours sur l'ancienne photo est abandonné
         m.querySelector('[data-preview]').innerHTML = '';
+        ocrStatus.innerHTML = '';
         m.querySelector('[data-f="produit"]').value = '';
         m.querySelector('[data-f="lot"]').value = '';
         m.querySelector('[data-f="dlc"]').value = '';
