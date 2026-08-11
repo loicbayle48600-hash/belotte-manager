@@ -44,6 +44,7 @@ const DEFAULT_SETTINGS = {
   dropbox: { on: false, token: '' },
   webdav: { on: false, url: '', user: '', pass: '' },
   httpPost: { on: false, url: '' },
+  pin: '', // vide = Réglages non protégés
   equipements: [
     { id: 'e1', name: 'Chambre froide négative', ...NEG },
     { id: 'e2', name: 'Chambre froide fruits et légumes', ...POS },
@@ -200,10 +201,38 @@ function uid() { return 'x' + Date.now().toString(36) + Math.random().toString(3
 const VIEWS = {};
 let currentView = 'dashboard';
 
+let _pinOkUntil = 0; // déverrouillage des Réglages valable 5 min
+
 function navigate(view) {
+  // Réglages protégeables par PIN (tablette partagée en cuisine)
+  if (view === 'parametres' && SETTINGS.pin && Date.now() > _pinOkUntil) {
+    openPinModal(() => { _pinOkUntil = Date.now() + 5 * 60 * 1000; navigate('parametres'); });
+    return;
+  }
   currentView = view;
   document.querySelectorAll('.nav-btn').forEach(b => b.classList.toggle('active', b.dataset.view === view));
   render();
+}
+
+function openPinModal(onOk) {
+  UI.modal(
+    '<h2>🔒 Réglages protégés</h2>' +
+    '<label class="field"><span class="lbl">Code PIN (4 chiffres)</span>' +
+    '<input type="password" inputmode="numeric" maxlength="4" data-f="pin" class="temp-input" placeholder="••••" autocomplete="off"></label>' +
+    '<p class="muted" style="font-size:12.5px">PIN oublié ? Il est lisible dans le fichier de sauvegarde JSON (champ « pin »).</p>' +
+    '<div class="actions"><button class="btn ghost" data-x="cancel">Annuler</button><button class="btn" data-x="ok">Déverrouiller</button></div>',
+    (m, close) => {
+      const input = m.querySelector('[data-f="pin"]');
+      setTimeout(() => input.focus(), 80);
+      const tryPin = () => {
+        if (input.value === SETTINGS.pin) { close(); onOk(); }
+        else { UI.toast('Code incorrect', 'bad'); input.value = ''; input.focus(); }
+      };
+      input.addEventListener('input', () => { if (input.value.length === 4) tryPin(); });
+      m.querySelector('[data-x="ok"]').onclick = tryPin;
+      m.querySelector('[data-x="cancel"]').onclick = close;
+    }
+  );
 }
 
 async function render() {
@@ -243,6 +272,10 @@ function actionFieldHTML(value) {
     '<span class="lbl">Action corrective (obligatoire si non conforme)</span>' +
     '<textarea data-f="action" placeholder="Ex. : produit isolé/jeté, maintenance appelée, nouveau contrôle prévu…">' + UI.esc(value || '') + '</textarea></label>';
 }
+
+/** Service (midi/soir) d'un contrôle : champ dédié, ou déduit de l'heure pour
+ *  les anciens enregistrements. */
+function svcOf(r) { return r.service || ((r.time || '') < '14:00' ? 'midi' : 'soir'); }
 
 /** Fournisseurs dont c'est le jour de livraison aujourd'hui (d'après le PMS). */
 function fournisseursAttendusAujourdhui() {
@@ -425,7 +458,7 @@ async function maybeAutoBackup() {
 ================================================================ */
 VIEWS.dashboard = async function (el) {
   const today = UI.todayISO();
-  const [temps, receptions, services, nettoyages, refroids, decongels, entames, nonconfs, servicesJ5, verifs] = await Promise.all([
+  const [temps, receptions, services, nettoyages, refroids, decongels, entames, nonconfs, servicesJ5, verifs, menusJour] = (await Promise.all([
     DB.getByTypeAndRange('temp', today, today),
     DB.getByTypeAndRange('reception', today, today),
     DB.getByTypeAndRange('service', today, today),
@@ -436,7 +469,8 @@ VIEWS.dashboard = async function (el) {
     DB.getByType('nonconf'),
     DB.getByTypeAndRange('service', UI.addDays(today, -8), UI.addDays(today, -5)),
     DB.getByType('verif'),
-  ]);
+    DB.getByTypeAndRange('menu', today, today),
+  ])).map(alive);
   const decDepasse = decongels.filter(isDecongelDepasse);
   const entPerimes = entames.filter(r => r.statut !== 'termine' && r.dlc && r.dlc < today);
   const entAujourdhui = entames.filter(r => r.statut !== 'termine' && r.dlc === today);
@@ -464,6 +498,34 @@ VIEWS.dashboard = async function (el) {
 
   const equipsDone = new Set(temps.map(t => t.equipId));
   const equipsMissing = SETTINGS.equipements.filter(e => !equipsDone.has(e.id));
+
+  // ---- Bilan de la journée (mis en avant après 16 h) ----
+  const bilanLignes = [];
+  const ligne = (ok, texte, go) => bilanLignes.push({ ok, texte, go });
+  ligne(equipsMissing.length === 0 && SETTINGS.equipements.length > 0,
+    'Enceintes relevées : ' + (SETTINGS.equipements.length - equipsMissing.length) + '/' + SETTINGS.equipements.length, 'temperatures');
+  ligne(dailyTasks.length > 0 && dailyDone === dailyTasks.length,
+    'Nettoyage quotidien : ' + dailyDone + '/' + dailyTasks.length, 'nettoyage');
+  ['midi', 'soir'].forEach(sv => {
+    const menu = menusJour.find(mn => mn.service === sv);
+    if (!menu || !(menu.items || []).length) return;
+    const faits = new Set(services.filter(r => svcOf(r) === sv).map(r => (r.plat || '').trim().toLowerCase()));
+    const n = menu.items.filter(it => faits.has(it.trim().toLowerCase())).length;
+    ligne(n >= menu.items.length, 'Service ' + sv + ' : ' + n + '/' + menu.items.length + ' plats du menu contrôlés', 'service');
+    const temoin = services.some(r => svcOf(r) === sv && r.platTemoin);
+    ligne(temoin, 'Plat témoin du ' + sv + ' : ' + (temoin ? 'prélevé' : 'à prélever'), 'service');
+  });
+  if (enCours.length) ligne(false, enCours.length + ' refroidissement(s) encore en cours à clôturer', 'refroidissement');
+  if (ncOuvertes.length) ligne(false, ncOuvertes.length + ' non-conformité(s) ouverte(s) à traiter', 'nonconformites');
+  const bilanOk = bilanLignes.every(l => l.ok);
+  const apres16h = new Date().getHours() >= 16;
+  const bilanHTML = '<div class="card"' + (apres16h && !bilanOk ? ' style="border-color:var(--orange)"' : '') + '>' +
+    '<h2>' + (bilanOk ? '✅' : '🌙') + ' Bilan de la journée ' + (bilanOk ? '<span class="pill ok">tout est fait !</span>' : (apres16h ? '<span class="pill warn">à terminer avant la fin de journée</span>' : '')) + '</h2>' +
+    '<div class="rec-list">' + bilanLignes.map(l =>
+      '<div class="rec-item ' + (l.ok ? 'ok' : '') + '"><div class="big">' + (l.ok ? '✔' : '·') + '</div>' +
+      '<div class="body"><div class="title" style="font-weight:600">' + UI.esc(l.texte) + '</div></div>' +
+      (l.ok ? '' : '<button class="btn small secondary" data-go="' + l.go + '">Y aller</button>') + '</div>').join('') +
+    '</div></div>';
 
   // Sauvegarde cloud en échec silencieux ? — vérifiée destination par destination
   let driveWarn = '';
@@ -499,6 +561,7 @@ VIEWS.dashboard = async function (el) {
     '<div class="stat ' + (ncToday ? 'bad' : 'ok') + '"><div class="n">' + ncToday + '</div><div class="t">Non-conformités du jour</div></div>' +
     '</div>' +
     driveWarn +
+    bilanHTML +
 
     (enCours.length ? '<div class="card"><h2>⏱️ En cours</h2><div class="rec-list">' + enCours.map(r => {
       const mins = Math.round((Date.now() - new Date(r.startISO).getTime()) / 60000);
@@ -549,7 +612,7 @@ VIEWS.dashboard = async function (el) {
 ================================================================ */
 VIEWS.temperatures = async function (el) {
   const today = UI.todayISO();
-  const recs = await DB.getByTypeAndRange('temp', today, today);
+  const recs = alive(await DB.getByTypeAndRange('temp', today, today));
 
   const doneIds = new Set(recs.map(r => r.equipId));
   const missing = SETTINGS.equipements.filter(e => !doneIds.has(e.id)).map(e => e.id);
@@ -683,7 +746,7 @@ function openTempModal(equipId, queue) {
 ================================================================ */
 VIEWS.reception = async function (el) {
   const today = UI.todayISO();
-  const recs = (await DB.getByTypeAndRange('reception', UI.addDays(today, -6), today)).sort((a, b) => (b.date + b.time).localeCompare(a.date + a.time));
+  const recs = alive(await DB.getByTypeAndRange('reception', UI.addDays(today, -6), today)).sort((a, b) => (b.date + b.time).localeCompare(a.date + a.time));
 
   el.innerHTML = headerHTML('Réceptions de marchandises', '7 derniers jours', '<button class="btn" id="new-rec">➕ Nouvelle réception</button>') +
     (recs.length ? '<div class="rec-list">' + recs.map(r =>
@@ -801,7 +864,7 @@ async function openReceptionModal() {
 VIEWS.refroidissement = async function (el) {
   const today = UI.todayISO();
   // Les suivis « en cours » restent visibles quel que soit leur âge (sinon inclôturables) ; historique borné à 7 jours.
-  const all = (await DB.getByType('refroid')).sort((a, b) => (b.date + b.timeStart).localeCompare(a.date + a.timeStart));
+  const all = alive(await DB.getByType('refroid')).sort((a, b) => (b.date + b.timeStart).localeCompare(a.date + a.timeStart));
   const enCours = all.filter(r => r.status === 'encours');
   const finis = all.filter(r => r.status !== 'encours' && r.date >= UI.addDays(today, -6));
 
@@ -973,17 +1036,17 @@ VIEWS.service = async function (el) {
   if (state.date !== today) { state.date = today; state.svc = null; }
   const svc = state.svc || (new Date().getHours() < 14 ? 'midi' : 'soir');
 
-  const [recs, menus] = await Promise.all([
+  const [recsAll, menus] = await Promise.all([
     DB.getByTypeAndRange('service', today, today),
     DB.getByTypeAndRange('menu', today, today),
   ]);
+  const recs = alive(recsAll);
   recs.sort((a, b) => b.time.localeCompare(a.time));
 
   // Plats prévus au menu de ce service, rapprochés des contrôles déjà faits
   // POUR CE SERVICE (un plat contrôlé au midi doit être re-contrôlé au soir).
   const menu = menus.find(mn => mn.service === svc);
   const items = menu ? (menu.items || []) : [];
-  const svcOf = r => r.service || ((r.time || '') < '14:00' ? 'midi' : 'soir'); // anciens records : déduit de l'heure
   const doneByPlat = {};
   recs.filter(r => svcOf(r) === svc).forEach(r => { const k = (r.plat || '').trim().toLowerCase(); if (!doneByPlat[k]) doneByPlat[k] = r; });
 
@@ -1120,7 +1183,7 @@ function isDecongelDepasse(r) {
 VIEWS.decongel = async function (el) {
   const today = UI.todayISO();
   // Les « en cours » restent visibles quel que soit leur âge (à traiter) ; historique limité à 14 jours.
-  const recs = (await DB.getByType('decongel')).sort((a, b) => (b.date + b.time).localeCompare(a.date + a.time));
+  const recs = alive(await DB.getByType('decongel')).sort((a, b) => (b.date + b.time).localeCompare(a.date + a.time));
   const enCours = recs.filter(r => r.statut !== 'termine');
   const finis = recs.filter(r => r.statut === 'termine' && r.date >= UI.addDays(today, -14));
 
@@ -1253,7 +1316,7 @@ const ENTAME_TYPES = [
 VIEWS.entames = async function (el) {
   const today = UI.todayISO();
   // Les produits en cours restent visibles quel que soit leur âge ; historique limité à 45 jours.
-  const recs = (await DB.getByType('entame')).sort((a, b) => (a.dlc || '').localeCompare(b.dlc || ''));
+  const recs = alive(await DB.getByType('entame')).sort((a, b) => (a.dlc || '').localeCompare(b.dlc || ''));
   const actifs = recs.filter(r => r.statut !== 'termine');
   const inactifs = recs.filter(r => r.statut === 'termine' && r.date >= UI.addDays(today, -45));
 
@@ -1919,7 +1982,7 @@ async function openEtiquetteDetail(id) {
 ================================================================ */
 VIEWS.nettoyage = async function (el) {
   const today = UI.todayISO();
-  const recent = await DB.getByTypeAndRange('nettoyage', UI.addDays(today, -31), today);
+  const recent = alive(await DB.getByTypeAndRange('nettoyage', UI.addDays(today, -31), today));
   const FREQ_LABEL = { quotidien: 'Quotidien', hebdomadaire: 'Hebdo', mensuel: 'Mensuel' };
   const FREQ_DAYS = { quotidien: 0, hebdomadaire: 6, mensuel: 30 };
 
@@ -2044,7 +2107,7 @@ VIEWS.nettoyage = async function (el) {
 ================================================================ */
 VIEWS.huiles = async function (el) {
   const today = UI.todayISO();
-  const recs = (await DB.getByTypeAndRange('huile', UI.addDays(today, -30), today)).sort((a, b) => (b.date + b.time).localeCompare(a.date + a.time));
+  const recs = alive(await DB.getByTypeAndRange('huile', UI.addDays(today, -30), today)).sort((a, b) => (b.date + b.time).localeCompare(a.date + a.time));
   const ACTION_LABEL = { controle: 'Contrôle visuel', filtration: 'Filtration', changement: 'Changement d’huile' };
   const ETAT_LABEL = { bon: 'Bonne', moyen: 'À surveiller', 'a-changer': 'À changer' };
 
@@ -2171,7 +2234,7 @@ VIEWS.nonconformites = async function (el) {
     DB.getByTypeAndRange('huile', from, today),
   ]);
 
-  const autos = [...temps, ...receptions, ...services, ...refroids, ...huiles]
+  const autos = alive([...temps, ...receptions, ...services, ...refroids, ...huiles])
     .filter(r => r.conforme === false)
     .map(r => ({
       date: r.date, time: r.time || r.timeEnd || '',
@@ -2184,7 +2247,7 @@ VIEWS.nonconformites = async function (el) {
     }));
 
   const rows = [
-    ...manual.map(r => Object.assign({ auto: false }, r)),
+    ...alive(manual).map(r => Object.assign({ auto: false }, r)),
     ...autos,
   ].sort((a, b) => (b.date + (b.time || '')).localeCompare(a.date + (a.time || '')));
 
@@ -2249,6 +2312,46 @@ function openNCModal() {
 /* ================================================================
    HISTORIQUE & EXPORT
 ================================================================ */
+/** Écarte les enregistrements annulés (ils restent visibles dans l'Historique,
+ *  barrés, mais ne comptent plus nulle part ailleurs). */
+function alive(recs) { return recs.filter(r => !r.annule); }
+
+/** Colonnes d'export d'un registre + colonne Annulé (traçabilité des corrections). */
+function exportCols(type) {
+  return [...EXPORT_COLUMNS[type],
+    ['Annulé', r => r.annule ? 'ANNULÉ le ' + UI.frDate((r.annuleQuand || '').slice(0, 10)) + ' par ' + (r.annulePar || '') + ' — motif : ' + (r.annuleMotif || '') : '']];
+}
+
+/** Annulation tracée d'un enregistrement erroné : jamais de suppression, une
+ *  ligne barrée avec motif, auteur et horodatage (valeur probante du registre). */
+function openAnnulModal(rec, onDone) {
+  UI.modal(
+    '<h2>🚫 Annuler cet enregistrement</h2>' +
+    '<p class="muted" style="margin-bottom:12px">' + UI.esc(TYPE_LABELS[rec.type] || rec.type) + ' du ' + UI.frDate(rec.date) + ' ' + UI.esc(rec.time || '') +
+    ' — l’enregistrement restera visible barré dans le registre (comme une rature sur le papier). Ressaisis ensuite la bonne valeur dans le module concerné.</p>' +
+    '<label class="field"><span class="lbl">Motif de l’annulation (obligatoire)</span>' +
+    '<input type="text" data-f="motif" placeholder="Ex. : erreur de saisie — 63 au lieu de 6,3"></label>' +
+    agentField() +
+    '<div class="actions"><button class="btn ghost" data-x="cancel">Retour</button><button class="btn danger" data-x="ok">Annuler l’enregistrement</button></div>',
+    (m, close) => {
+      m.querySelector('[data-x="cancel"]').onclick = close;
+      m.querySelector('[data-x="ok"]').onclick = async () => {
+        const motif = m.querySelector('[data-f="motif"]').value.trim();
+        if (!motif) { UI.toast('Le motif est obligatoire', 'bad'); return; }
+        const agent = requireAgent(m); if (!agent) return;
+        rec.annule = true;
+        rec.annuleMotif = motif;
+        rec.annulePar = agent;
+        rec.annuleQuand = new Date().toISOString();
+        await DB.updateRecord(rec);
+        close();
+        UI.toast('Enregistrement annulé (tracé) ✔', 'ok');
+        if (onDone) onDone(); else render();
+      };
+    }
+  );
+}
+
 const EXPORT_COLUMNS = {
   temp: [['Date', r => UI.frDate(r.date)], ['Heure', r => r.time], ['Équipement', r => r.equipName], ['Température (°C)', r => r.statut === 'hs' ? 'À l’arrêt (' + (r.motif || '') + ')' : r.temp], ['Conforme', r => r.statut === 'hs' ? '—' : (r.conforme === false ? 'NON' : 'OUI')], ['Action corrective', r => r.action], ['Agent', r => r.agent]],
   reception: [['Date', r => UI.frDate(r.date)], ['Heure', r => r.time], ['Fournisseur', r => r.fournisseur], ['Produit', r => r.produit], ['Lot / BL', r => r.lot], ['Famille', r => r.famille], ['Température (°C)', r => r.temp], ['État', r => r.etat === 'bad' ? 'Défaut' : 'Correct'], ['Conforme', r => r.conforme === false ? 'NON' : (r.tolere ? 'Contrôle à cœur' : 'OUI')], ['Action corrective', r => r.action], ['Agent', r => r.agent]],
@@ -2332,7 +2435,7 @@ async function exportPDF(types, from, to, filename) {
       startY = 34;
     }
 
-    const cols = EXPORT_COLUMNS[type];
+    const cols = exportCols(type);
     const ncRows = new Set();
     const body = recs.map((r, i) => {
       if (r.conforme === false) ncRows.add(i);
@@ -2369,7 +2472,7 @@ VIEWS.historique = async function (el) {
     DB.getByTypeAndRange('fermeture', moisDebut, moisFin),
   ]);
   const relevesParJour = {};
-  calTemps.forEach(r => { (relevesParJour[r.date] = relevesParJour[r.date] || new Set()).add(r.equipId); });
+  alive(calTemps).forEach(r => { (relevesParJour[r.date] = relevesParJour[r.date] || new Set()).add(r.equipId); });
   const fermes = {};
   calFermetures.forEach(f => { fermes[f.date] = f; });
   const nbEquips = SETTINGS.equipements.length || 1;
@@ -2445,20 +2548,28 @@ VIEWS.historique = async function (el) {
     const seq = state._seq;
     const recs = (await DB.getByTypeAndRange(state.type, state.from, state.to)).sort((a, b) => (b.date + (b.time || '')).localeCompare(a.date + (a.time || '')));
     if (seq !== state._seq) return;
-    const cols = EXPORT_COLUMNS[state.type];
+    const cols = exportCols(state.type);
     const box = document.getElementById('h-table');
     if (!box) return; // l'utilisateur a quitté la vue pendant la requête
+    const annulable = !['menu', 'fermeture'].includes(state.type);
     // En-tête officiel, visible uniquement à l'impression (classeur PMS)
     const printHeader = '<div class="print-header"><h2>' + UI.esc(SETTINGS.etablissement) + '</h2>' +
       'Registre : <b>' + UI.esc(TYPE_LABELS[state.type]) + '</b> — Période : du ' + UI.frDate(state.from) + ' au ' + UI.frDate(state.to) +
       ' — Édité le ' + UI.frDate(UI.todayISO()) + ' à ' + UI.nowHM() +
       '<div class="visa">Visa du responsable : ______________________</div></div>';
     box.innerHTML = printHeader + (recs.length
-      ? '<table><thead><tr>' + cols.map(c => '<th>' + UI.esc(c[0]) + '</th>').join('') + '</tr></thead><tbody>' +
-        recs.map(r => '<tr' + (r.conforme === false ? ' style="background:var(--red-light)"' : '') + '>' +
-          cols.map(c => '<td>' + UI.esc(c[1](r) == null ? '' : c[1](r)) + '</td>').join('') + '</tr>').join('') +
+      ? '<table><thead><tr>' + cols.map(c => '<th>' + UI.esc(c[0]) + '</th>').join('') +
+        (annulable ? '<th class="no-print"></th>' : '') + '</tr></thead><tbody>' +
+        recs.map(r => '<tr' + (r.annule ? ' class="annule"' : (r.conforme === false ? ' style="background:var(--red-light)"' : '')) + '>' +
+          cols.map(c => '<td>' + UI.esc(c[1](r) == null ? '' : c[1](r)) + '</td>').join('') +
+          (annulable ? '<td class="no-print">' + (r.annule ? '' : '<button class="btn small ghost" data-annul="' + r.id + '" title="Annuler cet enregistrement (tracé)">🚫</button>') + '</td>' : '') +
+          '</tr>').join('') +
         '</tbody></table>'
       : '<div class="empty">Aucun enregistrement sur cette période.</div>');
+    box.querySelectorAll('[data-annul]').forEach(b => b.addEventListener('click', async () => {
+      const rec = await DB.getRecord(Number(b.dataset.annul));
+      if (rec) openAnnulModal(rec, refreshTable);
+    }));
   }
 
   // Calendrier : navigation et détail/justification d'un jour
@@ -2594,7 +2705,7 @@ VIEWS.historique = async function (el) {
       const recs = (await DB.getByTypeAndRange(type, state.from, state.to)).sort((a, b) => (a.date + (a.time || '')).localeCompare(b.date + (b.time || '')));
       if (!recs.length) continue;
       total += recs.length;
-      const cols = EXPORT_COLUMNS[type];
+      const cols = exportCols(type);
       sections.push([['=== ' + TYPE_LABELS[type] + ' (' + recs.length + ') ===']]);
       sections.push([cols.map(c => c[0]), ...recs.map(r => cols.map(c => c[1](r)))]);
       sections.push([['']]);
@@ -2611,7 +2722,7 @@ VIEWS.historique = async function (el) {
   el.querySelector('#h-export').addEventListener('click', async () => {
     const recs = (await DB.getByTypeAndRange(state.type, state.from, state.to)).sort((a, b) => (a.date + (a.time || '')).localeCompare(b.date + (b.time || '')));
     if (!recs.length) { UI.toast('Rien à exporter sur cette période', 'bad'); return; }
-    const cols = EXPORT_COLUMNS[state.type];
+    const cols = exportCols(state.type);
     UI.downloadCSV(
       'haccp-' + state.type + '-' + state.from + '-' + state.to + '.csv',
       cols.map(c => c[0]),
@@ -2775,6 +2886,12 @@ VIEWS.parametres = async function (el) {
     '<button class="btn small secondary" id="s-drive-now">☁️ Sauvegarder maintenant (test)</button></div>' +
     (lastAutoBackupDate() ? '<p class="muted" style="margin-top:10px">Dernière sauvegarde auto : ' + UI.frDate(lastAutoBackupDate()) + '</p>' : '') +
     '</div>' +
+
+    '<div class="card"><h2>🔒 Code PIN des Réglages</h2>' +
+    '<p class="muted" style="margin-bottom:12px">' + (SETTINGS.pin ? 'Les Réglages sont protégés par un PIN.' : 'Optionnel : protège cet écran contre les fausses manipulations sur la tablette partagée.') + '</p>' +
+    '<div class="row"><div class="grow"><input type="password" inputmode="numeric" maxlength="4" id="s-pin" placeholder="' + (SETTINGS.pin ? 'Nouveau PIN (4 chiffres)' : 'PIN à 4 chiffres') + '" autocomplete="off"></div>' +
+    '<button class="btn small" id="s-pin-set">' + (SETTINGS.pin ? 'Changer' : 'Activer') + '</button>' +
+    (SETTINGS.pin ? '<button class="btn small ghost" id="s-pin-off">Désactiver</button>' : '') + '</div></div>' +
 
     '<div class="card"><h2>💾 Sauvegarde locale (fichier)</h2>' +
     '<p class="muted" style="margin-bottom:12px">Les données restent sur la tablette. Exporte aussi régulièrement une sauvegarde complète (JSON) et garde-la ailleurs (clé USB, ordinateur, mail).</p>' +
@@ -2958,6 +3075,22 @@ VIEWS.parametres = async function (el) {
   }));
 
   // Sauvegarde / restauration
+  // Code PIN
+  el.querySelector('#s-pin-set').addEventListener('click', async () => {
+    const v = el.querySelector('#s-pin').value.trim();
+    if (!/^\d{4}$/.test(v)) { UI.toast('Le PIN doit faire exactement 4 chiffres', 'bad'); return; }
+    SETTINGS.pin = v;
+    await saveSettings();
+    _pinOkUntil = Date.now() + 5 * 60 * 1000;
+    UI.toast('PIN activé ✔ (à retenir : il est aussi dans la sauvegarde JSON)', 'ok');
+    render();
+  });
+  const pinOff = el.querySelector('#s-pin-off');
+  if (pinOff) pinOff.addEventListener('click', () => UI.confirm('Désactiver le code PIN des Réglages ?', async () => {
+    SETTINGS.pin = '';
+    await saveSettings(); render();
+  }));
+
   el.querySelector('#s-backup').addEventListener('click', async () => {
     const blob = new Blob([JSON.stringify(await buildBackup())], { type: 'application/json' });
     // UI.saveFile gère l'APK (écriture + partage natif) ET le navigateur —

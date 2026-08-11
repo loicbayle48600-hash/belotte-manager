@@ -318,3 +318,6 @@ hr.sep { border: none; border-top: 1px solid var(--border); margin: 14px 0; }
   .print-header h2 { font-size: 17px; margin-bottom: 4px; }
   .print-header .visa { margin-top: 8px; font-weight: 700; }
 }
+
+/* Enregistrement annulé (rature tracée) */
+tr.annule td { text-decoration: line-through; color: var(--muted); background: #f4f4f2; }

@@ -16,8 +16,8 @@ C'est une **PWA** (application web progressive) : elle s'installe comme une vrai
 | 🧽 **Plan de nettoyage** | Checklist quotidienne / hebdomadaire / mensuelle, traçabilité date + agent |
 | 🍟 **Huiles de friture** | Contrôle visuel, test de composés polaires (≤ 25 %), traçabilité de l'huile usagée (volume, collecteur, bon) |
 | ⚠️ **Non-conformités** | Signalement manuel + remontée automatique de tous les relevés non conformes, actions correctives obligatoires |
-| 📋 **Historique & export** | Calendrier de complétude (jours vides justifiables par fermeture), recherche de lot multi-registres, **exports CSV et PDF** avec en-tête officiel, impression |
-| ⚙️ **Réglages** | Équipements, agents, fournisseurs, plan de nettoyage personnalisables + **sauvegarde/restauration JSON** et **sauvegarde cloud automatique** (Google Drive avec photos en fichiers images, Dropbox, Nextcloud/WebDAV, serveur maison — voir `google-drive/`) |
+| 📋 **Historique & export** | Calendrier de complétude (jours vides justifiables par fermeture), recherche de lot multi-registres, **annulation tracée** d'une erreur de saisie (ligne barrée avec motif, jamais de suppression), **exports CSV et PDF** avec en-tête officiel, impression |
+| ⚙️ **Réglages** | Équipements, agents, fournisseurs, plan de nettoyage, instruments de mesure personnalisables, **code PIN optionnel** + **sauvegarde/restauration JSON** et **sauvegarde cloud automatique** (Google Drive avec photos en fichiers images, Dropbox, Nextcloud/WebDAV, serveur maison — voir `google-drive/`) |
 
 Chaque enregistrement trace l'**agent**, la **date** et l'**heure**. Toute mesure hors consigne exige une **action corrective** avant enregistrement.
 
