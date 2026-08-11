@@ -12,6 +12,8 @@ const RULES = {
   fraisMax: 6,        // réception frais : tolérance jusqu'à 6 °C (cible 3) ; >10 °C = refus
   fraisRefus: 10,
   hacheMax: 2,        // viandes hachées ≤ 2 °C (abats ≤ 3 °C) — arrêté du 21/12/2009
+  lvLavageMin: 55, lvLavageMax: 65,   // lave-vaisselle : cycle de lavage
+  lvRincageMin: 82, lvRincageMax: 90, // lave-vaisselle : rinçage (désinfection)
   surgeleMax: -15,    // réception surgelés : tolérance jusqu'à −15 °C (cible −18)
   chaudMin: 63,       // liaison chaude : ≥ 63 °C, pas de tolérance
   froidCible: 3,      // liaison froide : cible 3 °C
@@ -158,13 +160,22 @@ const TYPE_LABELS = {
   nettoyage: 'Nettoyage',
   huile: 'Huile de friture',
   nonconf: 'Non-conformité',
+  lavevaisselle: 'Température lave-vaisselle',
   document: 'Document (PMS, labo…)',
 };
 
 let SETTINGS = null;
 
-function getCurrentAgent() { return localStorage.getItem('haccp-agent') || ''; }
-function setCurrentAgent(a) { localStorage.setItem('haccp-agent', a || ''); }
+/** Agent en poste, valable pour LA JOURNÉE : sur une tablette partagée avec
+ *  roulement, l'agent de lundi ne doit pas rester le visa par défaut mercredi. */
+function getCurrentAgent() {
+  if (localStorage.getItem('haccp-agent-date') !== UI.todayISO()) return '';
+  return localStorage.getItem('haccp-agent') || '';
+}
+function setCurrentAgent(a) {
+  localStorage.setItem('haccp-agent', a || '');
+  localStorage.setItem('haccp-agent-date', UI.todayISO());
+}
 
 async function loadSettings() {
   const saved = await DB.getSetting('config', null);
@@ -474,8 +485,8 @@ async function maybeAutoBackup() {
 ================================================================ */
 VIEWS.dashboard = async function (el) {
   const today = UI.todayISO();
-  const [temps, receptions, services, nettoyages, refroids, decongels, entames, nonconfs, servicesJ5, verifs, menusJour] = (await Promise.all([
-    DB.getByTypeAndRange('temp', today, today),
+  const [temps7, receptions, services, nettoyages, refroids, decongels, entames, nonconfs, servicesTem, verifs, menusJour] = (await Promise.all([
+    DB.getByTypeAndRange('temp', UI.addDays(today, -7), today),
     DB.getByTypeAndRange('reception', today, today),
     DB.getByTypeAndRange('service', today, today),
     DB.getByTypeAndRange('nettoyage', today, today),
@@ -483,16 +494,33 @@ VIEWS.dashboard = async function (el) {
     DB.getByType('decongel'),
     DB.getByType('entame'),
     DB.getByType('nonconf'),
-    DB.getByTypeAndRange('service', UI.addDays(today, -8), UI.addDays(today, -5)),
+    DB.getByTypeAndRange('service', UI.addDays(today, -30), UI.addDays(today, -5)),
     DB.getByType('verif'),
     DB.getByTypeAndRange('menu', today, today),
   ])).map(alive);
+  const temps = temps7.filter(r => r.date === today);
+
+  // Enceinte en panne larvée : ≥ 3 relevés hors limites sur 7 jours
+  const ncParEquip = {};
+  temps7.filter(r => r.conforme === false).forEach(r => { ncParEquip[r.equipId] = (ncParEquip[r.equipId] || 0) + 1; });
+  const equipsEnPanne = SETTINGS.equipements.filter(e => (ncParEquip[e.id] || 0) >= 3)
+    .map(e => ({ name: e.name, n: ncParEquip[e.id] }));
+
+  // Échéances de documents (analyses labo, contrats…) à moins de 30 jours ou dépassées
+  const docsEcheance = [];
+  await DB.eachRecord(r => {
+    if (r.type === 'document' && !r.annule && r.echeance && r.echeance <= UI.addDays(today, 30)) {
+      docsEcheance.push({ nom: r.nom, echeance: r.echeance, depassee: r.echeance < today });
+    }
+  });
+  docsEcheance.sort((a, b) => a.echeance.localeCompare(b.echeance));
   const decDepasse = decongels.filter(isDecongelDepasse);
   const entPerimes = entames.filter(r => r.statut !== 'termine' && r.dlc && r.dlc < today);
   const entAujourdhui = entames.filter(r => r.statut !== 'termine' && r.dlc === today);
   const ncOuvertes = nonconfs.filter(r => r.statut === 'ouverte');
-  // Plats témoins en fin de conservation (J−5 à J−8, tant que non retirés le rappel reste)
-  const temoinsARetirer = servicesJ5.filter(r => r.platTemoin);
+  // Plats témoins en fin de conservation (à partir de J−5) : le rappel reste
+  // affiché tant que le retrait n'est pas TRACÉ (bouton « Retiré »)
+  const temoinsARetirer = servicesTem.filter(r => r.platTemoin && !r.temoinRetireLe);
 
   // Thermomètres jamais vérifiés ou vérifiés il y a plus d'un an
   const lastVerifByInstr = {};
@@ -589,13 +617,16 @@ VIEWS.dashboard = async function (el) {
         '<button class="btn small" data-go="refroidissement">Terminer</button></div>';
     }).join('') + '</div></div>' : '') +
 
-    ((decDepasse.length || entPerimes.length || entAujourdhui.length || ncOuvertes.length || temoinsARetirer.length) ?
+    ((decDepasse.length || entPerimes.length || entAujourdhui.length || ncOuvertes.length || temoinsARetirer.length || equipsEnPanne.length || docsEcheance.length) ?
       '<div class="card" style="border-color:var(--red)"><h2>🚨 Alertes</h2><div class="rec-list">' +
       decDepasse.map(r => '<div class="rec-item bad"><div class="big">🧊</div><div class="body"><div class="title">' + UI.esc(r.produit) + '</div><div class="meta">Décongélation : délai de 48 h dépassé (limite ' + UI.frDate(r.limite) + ') — produit à détruire</div></div><button class="btn small danger" data-go="decongel">Traiter</button></div>').join('') +
       entPerimes.map(r => '<div class="rec-item bad"><div class="big">📦</div><div class="body"><div class="title">' + UI.esc(r.produit) + '</div><div class="meta">Produit entamé : DLC interne dépassée (' + UI.frDate(r.dlc) + ') — à jeter</div></div><button class="btn small danger" data-go="entames">Traiter</button></div>').join('') +
       entAujourdhui.map(r => '<div class="rec-item"><div class="big">📦</div><div class="body"><div class="title">' + UI.esc(r.produit) + '</div><div class="meta">Produit entamé : à consommer aujourd’hui</div></div><button class="btn small secondary" data-go="entames">Voir</button></div>').join('') +
       ncOuvertes.map(r => '<div class="rec-item bad"><div class="big">⚠️</div><div class="body"><div class="title">' + UI.esc(r.objet) + '</div><div class="meta">Non-conformité ouverte depuis le ' + UI.frDate(r.date) + (r.lieu ? ' — ' + UI.esc(r.lieu) : '') + '</div></div><button class="btn small secondary" data-go="nonconformites">Traiter</button></div>').join('') +
-      (temoinsARetirer.length ? '<div class="rec-item"><div class="big">🥡</div><div class="body"><div class="title">Plats témoins en fin de conservation (5 jours) à retirer</div><div class="meta">' + temoinsARetirer.map(r => UI.esc(r.plat) + ' (' + UI.frDate(r.date) + ')').join(', ') + '</div></div></div>' : '') +
+      temoinsARetirer.map(r => '<div class="rec-item"><div class="big">🥡</div><div class="body"><div class="title">Plat témoin à retirer : ' + UI.esc(r.plat) + '</div><div class="meta">Prélevé le ' + UI.frDate(r.date) + ' — fin des 5 jours de conservation</div></div>' +
+        '<button class="btn small" data-temoin-retire="' + r.id + '">🗑️ Retiré</button></div>').join('') +
+      equipsEnPanne.map(e => '<div class="rec-item bad"><div class="big">🔧</div><div class="body"><div class="title">' + UI.esc(e.name) + ' : ' + e.n + ' relevés hors limites en 7 jours</div><div class="meta">Panne probable — appeler la maintenance et déplacer les denrées sensibles</div></div><button class="btn small danger" data-go="nonconformites">Signaler</button></div>').join('') +
+      docsEcheance.map(d => '<div class="rec-item' + (d.depassee ? ' bad' : '') + '"><div class="big">📚</div><div class="body"><div class="title">' + UI.esc(d.nom) + '</div><div class="meta">' + (d.depassee ? '⚠️ Échéance DÉPASSÉE depuis le ' : 'À renouveler avant le ') + UI.frDate(d.echeance) + '</div></div><button class="btn small secondary" data-go="documents">Voir</button></div>').join('') +
       '</div></div>' : '') +
 
     ((equipsMissing.length || attendusSansReception.length || thermosEnRetard.length) ? '<div class="card"><h2>À faire</h2>' +
@@ -621,6 +652,30 @@ VIEWS.dashboard = async function (el) {
 
   el.querySelector('#dash-agent').addEventListener('change', e => setCurrentAgent(e.target.value));
   el.querySelectorAll('[data-go]').forEach(b => b.addEventListener('click', () => navigate(b.dataset.go)));
+
+  // Retrait tracé d'un plat témoin (fin des 5 jours de conservation)
+  el.querySelectorAll('[data-temoin-retire]').forEach(b => b.addEventListener('click', async () => {
+    const rec = await DB.getRecord(Number(b.dataset.temoinRetire));
+    if (!rec) return;
+    UI.modal(
+      '<h2>🥡 Retirer le plat témoin</h2>' +
+      '<p class="muted" style="margin-bottom:12px">' + UI.esc(rec.plat) + ' — prélevé le ' + UI.frDate(rec.date) + '. Le retrait sera tracé au registre (preuve d’élimination).</p>' +
+      agentField() +
+      '<div class="actions"><button class="btn ghost" data-x="cancel">Annuler</button><button class="btn" data-x="ok">🗑️ Confirmer le retrait</button></div>',
+      (m, close) => {
+        m.querySelector('[data-x="cancel"]').onclick = close;
+        m.querySelector('[data-x="ok"]').onclick = async () => {
+          const agent = requireAgent(m); if (!agent) return;
+          rec.temoinRetireLe = UI.todayISO();
+          rec.temoinRetirePar = agent;
+          await DB.updateRecord(rec);
+          close();
+          UI.toast('Plat témoin retiré — tracé ✔', 'ok');
+          render();
+        };
+      }
+    );
+  }));
 };
 
 /* ================================================================
@@ -795,6 +850,10 @@ async function openReceptionModal() {
     '<datalist id="dl-fourn">' + fournisseurs.map(f => '<option value="' + UI.esc(f) + '">').join('') + '</datalist>' +
     (attendus.length ? '<span class="muted" style="font-size:12.5px">🚚 Attendus aujourd’hui : ' + attendus.map(UI.esc).join(', ') + '</span>' : '') +
     '</label>' +
+    '<div class="row" style="margin-bottom:10px">' +
+    '<button type="button" class="btn small secondary" data-x="photo-eti">📷 Photographier l’étiquette (OCR)</button>' +
+    '<span data-ocr-rec class="muted" style="font-size:13px"></span>' +
+    '<input type="file" accept="image/*" capture="environment" data-f="photoEti" style="display:none"></div>' +
     '<label class="field"><span class="lbl">Produit / livraison</span>' +
     '<input type="text" data-f="produit" placeholder="Ex. : viande hachée, produits laitiers…"></label>' +
     '<label class="field"><span class="lbl">N° de lot / bon de livraison (optionnel)</span>' +
@@ -819,6 +878,37 @@ async function openReceptionModal() {
       UI.segWire(m);
       const verdict = m.querySelector('[data-verdict]');
       const actionField = m.querySelector('[data-action-field]');
+
+      // OCR de l'étiquette : pré-remplit produit/lot ET, à l'enregistrement,
+      // crée aussi l'entrée du registre Étiquettes avec la photo (une seule
+      // manipulation alimente les deux registres).
+      let photoEti = null;
+      let recOcrSeq = 0;
+      const photoInput = m.querySelector('[data-f="photoEti"]');
+      const ocrStatus = m.querySelector('[data-ocr-rec]');
+      m.querySelector('[data-x="photo-eti"]').addEventListener('click', () => photoInput.click());
+      photoInput.addEventListener('change', async e => {
+        const f = e.target.files[0];
+        if (!f) return;
+        const seq = ++recOcrSeq;
+        try {
+          photoEti = await UI.shrinkImage(f, 1000);
+          ocrStatus.textContent = '🔍 Lecture en cours…';
+          const worker = await ensureOCR();
+          const { data } = await worker.recognize(photoEti);
+          if (seq !== recOcrSeq || !m.isConnected) return;
+          const found = parseEtiquetteOCR(data.text);
+          const fProduit = m.querySelector('[data-f="produit"]');
+          const fLot = m.querySelector('[data-f="lot"]');
+          if (found.produit && !fProduit.value.trim()) fProduit.value = found.produit;
+          if (found.lot && !fLot.value.trim()) fLot.value = found.lot;
+          ocrStatus.textContent = '✔ Étiquette lue — la photo sera archivée au registre Étiquettes';
+        } catch (err) {
+          try { const w = await _ocrWorkerPromise; if (w) await w.terminate(); } catch { /* déjà mort */ }
+          _ocrWorkerPromise = null;
+          if (seq === recOcrSeq && m.isConnected) ocrStatus.textContent = photoEti ? '📷 Photo prise (OCR indisponible) — elle sera archivée' : 'Impossible de lire la photo';
+        }
+      });
 
       // Verdict PMS : ok / tolere (frais 6–10 °C : contrôle à cœur requis) / refus
       const evalConf = () => {
@@ -859,13 +949,23 @@ async function openReceptionModal() {
         const action = m.querySelector('[data-f="action"]').value.trim();
         if (!ok && !action) { UI.toast('Indique l’action corrective (refus, réserve…)', 'bad'); return; }
         if (ok && tolere && !action) { UI.toast('Indique le résultat du contrôle de la T° à cœur', 'bad'); return; }
+        const lotVal = m.querySelector('[data-f="lot"]').value.trim();
         await DB.addRecord({
           type: 'reception', date: UI.todayISO(), time: UI.nowHM(),
           fournisseur, produit, famille: fam,
-          lot: m.querySelector('[data-f="lot"]').value.trim(),
+          lot: lotVal,
           temp: isNaN(t) ? null : t, etat: UI.segValue(m, 'etat'),
           tolere, conforme: ok, action, agent,
         });
+        // La photo d'étiquette prise à la réception alimente aussi le registre Étiquettes
+        if (photoEti) {
+          await DB.addRecord({
+            type: 'etiquette', date: UI.todayISO(), time: UI.nowHM(),
+            produit, photo: photoEti, lot: lotVal, dlc: '',
+            destineLe: UI.todayISO(), fournisseur, agent,
+          });
+          if (VIEWS.tracabilite._state) VIEWS.tracabilite._state._meta = null;
+        }
         close();
         UI.toast('Réception enregistrée ✔', 'ok');
         render();
@@ -1873,10 +1973,15 @@ VIEWS.tracabilite = async function (el) {
   // Index léger par curseur (sans matérialiser les photos), puis chargement
   // complet des seules étiquettes de la semaine affichée — la conservation
   // est illimitée (≥ 6 mois réglementaires), la navigation reste fluide.
-  const meta = [];
-  await DB.eachRecord(r => { if (r.type === 'etiquette' && !r.annule) meta.push({ id: r.id, jour: etiquetteJour(r) }); });
+  let meta = state._meta;
+  if (!meta) {
+    meta = [];
+    await DB.eachRecord(r => { if (r.type === 'etiquette' && !r.annule) meta.push({ id: r.id, jour: etiquetteJour(r) }); });
+    state._meta = meta; // invalidé à chaque ajout/suppression d'étiquette et restauration
+  }
   const total = meta.length;
   const plusAncienne = meta.length ? meta.reduce((a, b) => (a.jour < b.jour ? a : b)).jour : null;
+  const plusRecente = meta.length ? meta.reduce((a, b) => (a.jour > b.jour ? a : b)).jour : null;
   const ids = meta.filter(x => x.jour >= semaine && x.jour <= dimanche).map(x => x.id);
   const recs = (await Promise.all(ids.map(id => DB.getRecord(id)))).filter(Boolean)
     .sort((a, b) => (b.date + (b.time || '')).localeCompare(a.date + (a.time || '')));
@@ -1913,7 +2018,7 @@ VIEWS.tracabilite = async function (el) {
     '<button class="btn small ghost" id="wk-prev">‹ Semaine précédente</button>' +
     '<div class="grow" style="text-align:center;font-weight:800;font-size:17px">Semaine ' + sem.num + ' ' + sem.annee +
     '<div class="muted" style="font-size:12.5px;font-weight:400">du ' + UI.frDate(semaine) + ' au ' + UI.frDate(dimanche) + ' — ' + recs.length + ' étiquette' + (recs.length > 1 ? 's' : '') + '</div></div>' +
-    '<button class="btn small ghost" id="wk-next" ' + (UI.addDays(semaine, 7) > today ? 'disabled' : '') + '>Semaine suivante ›</button>' +
+    '<button class="btn small ghost" id="wk-next" ' + (UI.addDays(semaine, 7) > today && (!plusRecente || UI.addDays(semaine, 7) > plusRecente) ? 'disabled' : '') + '>Semaine suivante ›</button>' +
     (semaine !== mondayOf(today) ? '<button class="btn small secondary" id="wk-today">Aujourd’hui</button>' : '') +
     '</div></div>' +
 
@@ -2107,6 +2212,7 @@ function openEtiquetteModal() {
           destineLe: m.querySelector('[data-f="destine"]').value || UI.todayISO(),
           agent,
         });
+        if (VIEWS.tracabilite._state) VIEWS.tracabilite._state._meta = null;
         saved++;
         return true;
       };
@@ -2154,7 +2260,7 @@ async function openEtiquetteDetail(id) {
     (m, close) => {
       m.querySelector('[data-x="close"]').onclick = close;
       m.querySelector('[data-x="del"]').onclick = () => UI.confirm('Supprimer cette étiquette ?', async () => {
-        await DB.deleteRecord(id); close(); UI.toast('Étiquette supprimée'); render();
+        await DB.deleteRecord(id); if (VIEWS.tracabilite._state) VIEWS.tracabilite._state._meta = null; close(); UI.toast('Étiquette supprimée'); render();
       });
     }
   );
@@ -2163,8 +2269,60 @@ async function openEtiquetteDetail(id) {
 /* ================================================================
    PLAN DE NETTOYAGE
 ================================================================ */
+/** Relevé des températures du lave-vaisselle (lavage 55-65 °C, rinçage 82-90 °C). */
+function openLaveVaisselleModal() {
+  UI.modal(
+    '<h2>🍽️ Températures du lave-vaisselle</h2>' +
+    '<p class="muted" style="margin-bottom:14px">Consignes : lavage ' + RULES.lvLavageMin + '–' + RULES.lvLavageMax + ' °C · rinçage ' + RULES.lvRincageMin + '–' + RULES.lvRincageMax + ' °C</p>' +
+    '<label class="field"><span class="lbl">T° de lavage (°C)</span>' + UI.tempInputHTML('lavage', { placeholder: '60' }) + '</label>' +
+    '<label class="field"><span class="lbl">T° de rinçage (°C)</span>' + UI.tempInputHTML('rincage', { placeholder: '85' }) + '</label>' +
+    agentField() +
+    '<div data-verdict></div>' +
+    actionFieldHTML() +
+    '<div class="actions"><button class="btn ghost" data-x="cancel">Annuler</button><button class="btn" data-x="save">Enregistrer</button></div>',
+    (m, close) => {
+      const fLav = m.querySelector('[data-f="lavage"]');
+      const fRin = m.querySelector('[data-f="rincage"]');
+      const verdict = m.querySelector('[data-verdict]');
+      const actionField = m.querySelector('[data-action-field]');
+      const check = () => {
+        const lav = parseFloat(fLav.value);
+        const rin = parseFloat(fRin.value);
+        if (isNaN(lav) || isNaN(rin)) { verdict.innerHTML = ''; actionField.style.display = 'none'; return null; }
+        const okLav = lav >= RULES.lvLavageMin && lav <= RULES.lvLavageMax;
+        const okRin = rin >= RULES.lvRincageMin && rin <= RULES.lvRincageMax;
+        const ok = okLav && okRin;
+        verdict.innerHTML = '<p class="pill ' + (ok ? 'ok' : 'bad') + '" style="margin-bottom:12px">' +
+          (ok ? '✔ Conforme' : '✘ NON CONFORME — ' + (!okLav ? 'lavage hors plage' : '') + (!okLav && !okRin ? ' et ' : '') + (!okRin ? 'rinçage hors plage' : '')) + '</p>';
+        actionField.style.display = ok ? 'none' : 'block';
+        return ok;
+      };
+      fLav.addEventListener('input', check);
+      fRin.addEventListener('input', check);
+      m.querySelector('[data-x="cancel"]').onclick = close;
+      m.querySelector('[data-x="save"]').onclick = async () => {
+        const lav = parseFloat(fLav.value);
+        const rin = parseFloat(fRin.value);
+        if (isNaN(lav) || isNaN(rin)) { UI.toast('Saisis les deux températures', 'bad'); return; }
+        const agent = requireAgent(m); if (!agent) return;
+        const ok = check();
+        const action = m.querySelector('[data-f="action"]').value.trim();
+        if (!ok && !action) { UI.toast('Indique l’action corrective (réglage machine, appel maintenance…)', 'bad'); return; }
+        await DB.addRecord({
+          type: 'lavevaisselle', date: UI.todayISO(), time: UI.nowHM(),
+          lavage: lav, rincage: rin, conforme: ok, action: ok ? '' : action, agent,
+        });
+        close();
+        UI.toast(ok ? 'Relevé lave-vaisselle enregistré ✔' : 'Non-conformité lave-vaisselle enregistrée', ok ? 'ok' : 'bad');
+        render();
+      };
+    }
+  );
+}
+
 VIEWS.nettoyage = async function (el) {
   const today = UI.todayISO();
+  const lv = alive(await DB.getByTypeAndRange('lavevaisselle', today, today)).sort((a, b) => b.time.localeCompare(a.time));
   const recent = alive(await DB.getByTypeAndRange('nettoyage', UI.addDays(today, -31), today));
   const FREQ_LABEL = { quotidien: 'Quotidien', hebdomadaire: 'Hebdo', mensuel: 'Mensuel' };
   const FREQ_DAYS = { quotidien: 0, hebdomadaire: 6, mensuel: 30 };
@@ -2209,6 +2367,10 @@ VIEWS.nettoyage = async function (el) {
   }).join('');
 
   el.innerHTML = headerHTML('Plan de nettoyage & désinfection', 'Fiches de suivi par zone (PMS) — coche chaque tâche réalisée, traçabilité date + agent') +
+    '<div class="card" style="padding:12px 18px"><div class="row">' +
+    '<div class="lbl" style="margin:0">🍽️ Lave-vaisselle</div>' +
+    (lv.length ? lv.map(r => '<span class="pill ' + (r.conforme === false ? 'bad' : 'ok') + '">' + UI.esc(r.time) + ' — lavage ' + UI.fmtTemp(r.lavage) + ' / rinçage ' + UI.fmtTemp(r.rincage) + '</span>').join('') : '<span class="pill warn">aucun relevé aujourd’hui</span>') +
+    '<div class="grow"></div><button class="btn small" id="new-lv">🌡️ Relever</button></div></div>' +
     (SETTINGS.cleaningTasks.length ? sections : '<div class="empty"><span class="e-ico">🧽</span>Ajoute les tâches de nettoyage dans les Réglages.</div>');
 
   el.querySelectorAll('[data-check]').forEach(btn => btn.addEventListener('click', async () => {
@@ -2250,6 +2412,8 @@ VIEWS.nettoyage = async function (el) {
       }
     );
   }));
+
+  el.querySelector('#new-lv').addEventListener('click', openLaveVaisselleModal);
 
   // « Tout cocher » les tâches quotidiennes dues d'une zone en une fois
   el.querySelectorAll('[data-checkzone]').forEach(btn => btn.addEventListener('click', () => {
@@ -2408,23 +2572,25 @@ function openHuileModal() {
 VIEWS.nonconformites = async function (el) {
   const today = UI.todayISO();
   const from = UI.addDays(today, -30);
-  const [manual, temps, receptions, services, refroids, huiles] = await Promise.all([
+  const [manual, temps, receptions, services, refroids, huiles, lavevaisselles] = await Promise.all([
     DB.getByType('nonconf'),
     DB.getByTypeAndRange('temp', from, today),
     DB.getByTypeAndRange('reception', from, today),
     DB.getByTypeAndRange('service', from, today),
     DB.getByTypeAndRange('refroid', from, today),
     DB.getByTypeAndRange('huile', from, today),
+    DB.getByTypeAndRange('lavevaisselle', from, today),
   ]);
 
-  const autos = alive([...temps, ...receptions, ...services, ...refroids, ...huiles])
+  const autos = alive([...temps, ...receptions, ...services, ...refroids, ...huiles, ...lavevaisselles])
     .filter(r => r.conforme === false)
     .map(r => ({
       date: r.date, time: r.time || r.timeEnd || '',
-      objet: TYPE_LABELS[r.type] + ' — ' + (r.equipName || r.friteuse || r.produit || r.plat || ''),
+      objet: TYPE_LABELS[r.type] + ' — ' + (r.equipName || r.friteuse || r.produit || r.plat || (r.type === 'lavevaisselle' ? 'plonge' : '')),
       description: r.type === 'temp' ? 'Relevé ' + UI.fmtTemp(r.temp)
         : r.type === 'refroid' ? UI.fmtTemp(r.tempStart) + ' → ' + UI.fmtTemp(r.tempEnd) + ' en ' + r.durationMin + ' min'
         : r.type === 'huile' ? 'Composés polaires > 25 %' + (r.polairesPct != null ? ' (' + r.polairesPct + ' %)' : '')
+        : r.type === 'lavevaisselle' ? 'Lavage ' + UI.fmtTemp(r.lavage) + ' / rinçage ' + UI.fmtTemp(r.rincage)
         : 'Relevé ' + UI.fmtTemp(r.temp),
       action: r.actionCorrective || r.action, agent: r.agent, auto: true,
     }));
@@ -2527,6 +2693,7 @@ function openAnnulModal(rec, onDone) {
         rec.annulePar = agent;
         rec.annuleQuand = new Date().toISOString();
         await DB.updateRecord(rec);
+        if (VIEWS.tracabilite._state) VIEWS.tracabilite._state._meta = null;
         close();
         UI.toast('Enregistrement annulé (tracé) ✔', 'ok');
         if (onDone) onDone(); else render();
@@ -2539,7 +2706,7 @@ const EXPORT_COLUMNS = {
   temp: [['Date', r => UI.frDate(r.date)], ['Heure', r => r.time], ['Équipement', r => r.equipName], ['Température (°C)', r => r.statut === 'hs' ? 'À l’arrêt (' + (r.motif || '') + ')' : r.temp], ['Conforme', r => r.statut === 'hs' ? '—' : (r.conforme === false ? 'NON' : 'OUI')], ['Action corrective', r => r.action], ['Agent', r => r.agent]],
   reception: [['Date', r => UI.frDate(r.date)], ['Heure', r => r.time], ['Fournisseur', r => r.fournisseur], ['Produit', r => r.produit], ['Lot / BL', r => r.lot], ['Famille', r => r.famille], ['Température (°C)', r => r.temp], ['État', r => r.etat === 'bad' ? 'Défaut' : 'Correct'], ['Conforme', r => r.conforme === false ? 'NON' : (r.tolere ? 'Contrôle à cœur' : 'OUI')], ['Action corrective', r => r.action], ['Agent', r => r.agent]],
   refroid: [['Date', r => UI.frDate(r.date)], ['Type', r => r.mode === 'remise' ? 'Remise en T°' : 'Refroidissement'], ['Préparation', r => r.produit], ['T° départ', r => r.tempStart], ['Heure départ', r => r.timeStart], ['T° fin', r => r.tempEnd], ['Heure fin', r => r.timeEnd], ['Durée (min)', r => r.durationMin], ['Conforme', r => r.status === 'encours' ? 'En cours' : (r.conforme === false ? 'NON' : 'OUI')], ['Action corrective', r => r.action], ['Agent', r => r.agent]],
-  service: [['Date', r => UI.frDate(r.date)], ['Heure', r => r.time], ['Service', r => r.service || ''], ['Plat', r => r.plat], ['Liaison', r => r.liaison], ['Température (°C)', r => r.temp], ['Plat témoin', r => r.platTemoin ? 'OUI' : 'NON'], ['Conforme', r => r.conforme === false ? 'NON' : (r.tolere ? 'Toléré <2h' : 'OUI')], ['Action corrective', r => r.action], ['Agent', r => r.agent]],
+  service: [['Date', r => UI.frDate(r.date)], ['Heure', r => r.time], ['Service', r => r.service || ''], ['Plat', r => r.plat], ['Liaison', r => r.liaison], ['Température (°C)', r => r.temp], ['Plat témoin', r => r.platTemoin ? 'OUI' : 'NON'], ['Témoin retiré', r => r.temoinRetireLe ? UI.frDate(r.temoinRetireLe) + ' par ' + (r.temoinRetirePar || '') : ''], ['Conforme', r => r.conforme === false ? 'NON' : (r.tolere ? 'Toléré <2h' : 'OUI')], ['Action corrective', r => r.action], ['Agent', r => r.agent]],
   decongel: [['Date mise en décongélation', r => UI.frDate(r.date)], ['Heure', r => r.time], ['Produit', r => r.produit], ['Fournisseur', r => r.fournisseur], ['Lot', r => r.lot], ['À utiliser avant', r => UI.frDate(r.limite)], ['Sorti le', r => r.sortieDate ? UI.frDate(r.sortieDate) + ' ' + (r.sortieTime || '') : ''], ['Devenir', r => r.issue === 'jete' ? 'JETÉ' : (r.issue === 'utilise' ? 'Utilisé' : '')], ['Statut', r => r.statut === 'termine' ? 'Terminé' : 'En cours'], ['Agent', r => r.agent]],
   entame: [['Date ouverture', r => UI.frDate(r.date)], ['Heure', r => r.time], ['Produit', r => r.produit], ['Type', r => r.categorie], ['DLC interne', r => UI.frDate(r.dlc)], ['Clôturé le', r => r.finDate ? UI.frDate(r.finDate) : ''], ['Devenir', r => r.issue === 'jete' ? 'JETÉ' : (r.issue === 'utilise' ? 'Consommé' : '')], ['Statut', r => r.statut === 'termine' ? 'Terminé' : 'En cours'], ['Agent', r => r.agent]],
   etiquette: [['Date photo', r => UI.frDate(r.date)], ['Heure', r => r.time], ['Destiné au', r => r.destineLe ? UI.frDate(r.destineLe) : UI.frDate(r.date)], ['Produit', r => r.produit], ['Lot', r => r.lot], ['DLC', r => r.dlc ? UI.frDate(r.dlc) : ''], ['Photo', r => r.photo ? 'OUI' : 'NON'], ['Agent', r => r.agent]],
@@ -2547,7 +2714,8 @@ const EXPORT_COLUMNS = {
   huile: [['Date', r => UI.frDate(r.date)], ['Heure', r => r.time], ['Friteuse', r => r.friteuse], ['Opération', r => r.action], ['État huile', r => r.etat], ['Polarité', r => r.polaires === 'nok' ? '> 25 % NON CONFORME' : (r.polaires === 'ok' ? '≤ 25 %' : '') + (r.polairesPct != null ? ' (' + r.polairesPct + ' %)' : '')], ['Huile usagée', r => r.volume != null || r.destination ? (r.volume != null ? r.volume + ' L' : '') + (r.destination ? ' → ' + r.destination : '') + (r.bon ? ' (bon ' + r.bon + ')' : '') : ''], ['Température (°C)', r => r.temp], ['Action corrective', r => r.actionCorrective], ['Remarque', r => r.remarque], ['Agent', r => r.agent]],
   nonconf: [['Date', r => UI.frDate(r.date)], ['Heure', r => r.time], ['Objet', r => r.objet], ['Lieu', r => r.lieu], ['Lot', r => r.lot], ['Péremption', r => r.peremption ? UI.frDate(r.peremption) : ''], ['Description', r => r.description], ['Action corrective', r => r.action], ['Statut', r => r.statut], ['Agent', r => r.agent]],
   verif: [['Date', r => UI.frDate(r.date)], ['Heure', r => r.time], ['Instrument', r => r.instrument], ['Méthode', r => r.methode], ['Écart constaté (°C)', r => r.ecart], ['Conforme (|écart| ≤ 1 °C)', r => r.conforme === false ? 'NON' : 'OUI'], ['Action corrective', r => r.action], ['Agent', r => r.agent]],
-  document: [['Date', r => UI.frDate(r.date)], ['Titre', r => r.nom], ['Catégorie', r => r.categorie], ['Fichier', r => r.fichier], ['Taille', r => r.taille ? Math.round(r.taille / 1024) + ' Ko' : ''], ['Note', r => r.note], ['Agent', r => r.agent]],
+  lavevaisselle: [['Date', r => UI.frDate(r.date)], ['Heure', r => r.time], ['T° lavage (°C)', r => r.lavage], ['T° rinçage (°C)', r => r.rincage], ['Conforme', r => r.conforme === false ? 'NON' : 'OUI'], ['Action corrective', r => r.action], ['Agent', r => r.agent]],
+  document: [['Date', r => UI.frDate(r.date)], ['Titre', r => r.nom], ['Catégorie', r => r.categorie], ['Fichier', r => r.fichier], ['Taille', r => r.taille ? Math.round(r.taille / 1024) + ' Ko' : ''], ['Échéance', r => r.echeance ? UI.frDate(r.echeance) : ''], ['Note', r => r.note], ['Agent', r => r.agent]],
   fermeture: [['Date', r => UI.frDate(r.date)], ['Motif', r => r.motif], ['Agent', r => r.agent]],
 };
 
@@ -2607,7 +2775,7 @@ async function buildRegistresPDF(types, from, to) {
     if (type === 'temp') {
       const fermetures = await DB.getByTypeAndRange('fermeture', from, to);
       const fermesSet = new Set(fermetures.map(f => f.date));
-      const joursAvecReleve = new Set(recs.map(r => r.date));
+      const joursAvecReleve = new Set(alive(recs).map(r => r.date));
       const today0 = UI.todayISO();
       let manques = 0, jours = 0;
       for (let d = from; d <= to && d <= today0; d = UI.addDays(d, 1)) {
@@ -2681,10 +2849,15 @@ async function sendWeeklyPdf_(url, today) {
     headers: { 'Content-Type': 'text/plain;charset=utf-8' },
     body: JSON.stringify({ app: 'haccp-cuisine', type: 'pdf', filename: 'registres-haccp-30j-' + today + '.pdf', data: b64 }),
   });
-  if (resp.ok) {
-    localStorage.setItem('haccp-pdf-drive-last', today);
-    UI.toast('Registres PDF déposés sur Drive ✔', 'ok');
-  }
+  if (!resp.ok) return;
+  // Apps Script répond 200 même en erreur : vérifier le corps { ok: … }
+  const txt = await resp.text().catch(() => '');
+  try {
+    const json = JSON.parse(txt);
+    if (json && json.ok === false) return;
+  } catch { /* réponse non JSON : statut HTTP comme critère */ }
+  localStorage.setItem('haccp-pdf-drive-last', today);
+  UI.toast('Registres PDF déposés sur Drive ✔', 'ok');
 }
 
 /* ================================================================
@@ -2717,6 +2890,9 @@ function openDocumentModal() {
     '<label class="field"><span class="lbl">Catégorie</span><select data-f="categorie">' +
     DOC_CATEGORIES.map(c => '<option>' + c + '</option>').join('') + '</select></label>' +
     '<label class="field"><span class="lbl">Note (optionnel)</span><input type="text" data-f="note" placeholder="Ex. : conforme, à re-contrôler en septembre…"></label>' +
+    '<label class="field"><span class="lbl">Valable jusqu’au / prochaine échéance (optionnel)</span>' +
+    '<input type="date" data-f="echeance"></label>' +
+    '<p class="muted" style="font-size:12.5px;margin:-6px 0 12px">Ex. : prochaine analyse d’eau, fin du contrat nuisibles… L’accueil alertera 30 jours avant.</p>' +
     agentField() +
     '<div class="actions"><button class="btn ghost" data-x="cancel">Annuler</button><button class="btn" data-x="save">Enregistrer</button></div>',
     (m, close) => {
@@ -2756,6 +2932,7 @@ function openDocumentModal() {
           type: 'document', date: UI.todayISO(), time: UI.nowHM(),
           nom, categorie: m.querySelector('[data-f="categorie"]').value,
           note: m.querySelector('[data-f="note"]').value.trim(),
+          echeance: m.querySelector('[data-f="echeance"]').value || '',
           fichier: fileName, mime: fileMime, taille: fileSize, data: fileData,
           agent,
         });
@@ -2788,8 +2965,9 @@ VIEWS.documents = async function (el) {
             '<div class="rec-item"><div class="big">📄</div>' +
             '<div class="body"><div class="title">' + UI.esc(d.nom) + '</div>' +
             '<div class="meta">' + UI.frDate(d.date) + ' — ' + UI.esc(d.fichier || '') + ' (' + Math.round((d.taille || 0) / 1024) + ' Ko)' +
+            (d.echeance ? ' — échéance <b>' + UI.frDate(d.echeance) + '</b>' + (d.echeance < UI.todayISO() ? ' ⚠️ DÉPASSÉE' : '') : '') +
             (d.note ? ' — ' + UI.esc(d.note) : '') + ' — ' + UI.esc(d.agent || '') + '</div></div>' +
-            '<button class="btn small" data-open-doc="' + d.id + '">👁️ Ouvrir</button>' +
+            (d.dataOmise && !d.data ? '<span class="pill warn">contenu non inclus (sauvegarde cloud)</span>' : '<button class="btn small" data-open-doc="' + d.id + '">👁️ Ouvrir</button>') +
             '<button class="btn small ghost" data-del-doc="' + d.id + '">🗑️</button></div>'
           ).join('') + '</div></div>').join('')
       : '<div class="empty"><span class="e-ico">📚</span>Aucun document importé. Ajoute ton PMS, tes rapports de labo, tes autocontrôles…</div>');
@@ -2797,7 +2975,8 @@ VIEWS.documents = async function (el) {
   el.querySelector('#new-doc').addEventListener('click', openDocumentModal);
   el.querySelectorAll('[data-open-doc]').forEach(b => b.addEventListener('click', async () => {
     const d = await DB.getRecord(Number(b.dataset.openDoc));
-    if (!d || !d.data) return;
+    if (!d) return;
+    if (!d.data) { UI.toast('Contenu absent : ce document vient d’une sauvegarde cloud — restaure la sauvegarde locale JSON pour le récupérer', 'bad'); return; }
     // dataURL -> Blob puis ouverture via l'enregistreur natif (partage) ou le navigateur
     const resp = await fetch(d.data);
     const blob = await resp.blob();
@@ -3150,7 +3329,7 @@ VIEWS.parametres = async function (el) {
   const FREQ_LABEL = { quotidien: 'Quotidien', hebdomadaire: 'Hebdomadaire', mensuel: 'Mensuel' };
 
   // dernières vérifications par instrument
-  const verifs = await DB.getByType('verif');
+  const verifs = alive(await DB.getByType('verif'));
   const lastVerif = {};
   verifs.forEach(v => { if (!lastVerif[v.instrument] || v.date > lastVerif[v.instrument].date) lastVerif[v.instrument] = v; });
 
@@ -3471,6 +3650,12 @@ VIEWS.parametres = async function (el) {
           delete r.id;
           // Assainissement : une photo doit être une image en dataURL (sinon rejetée)
           if (r.photo && !/^data:image\//.test(String(r.photo))) delete r.photo;
+          // Documents issus d'une sauvegarde CLOUD (contenu omis) : ne pas
+          // écraser/dupliquer un document local complet du même nom
+          if (r.type === 'document' && r.dataOmise) {
+            const locaux = await DB.getByType('document');
+            if (locaux.some(d => d.nom === r.nom && d.fichier === r.fichier && d.taille === r.taille)) continue;
+          }
           // Les menus sont uniques par (date, service) : fusionner au lieu de dupliquer
           if (r.type === 'menu' && r.date && r.service) {
             const existing = (await DB.getByTypeAndRange('menu', r.date, r.date)).find(m2 => m2.service === r.service);
@@ -3485,6 +3670,7 @@ VIEWS.parametres = async function (el) {
         // Invalider les états de vues qui cachent des données désormais périmées
         if (VIEWS.menu._state) VIEWS.menu._state.items = null;
         if (VIEWS.historique._state) VIEWS.historique._state._searchIndex = null;
+        if (VIEWS.tracabilite._state) VIEWS.tracabilite._state._meta = null;
         UI.toast('Sauvegarde restaurée ✔', 'ok');
         render();
       });
@@ -3501,7 +3687,7 @@ const _refroidAlerted = new Set();
  *  + toast) au dépassement de la limite, badge rouge sur l'onglet. */
 async function refroidTick() {
   let encours = [];
-  try { encours = (await DB.getByType('refroid')).filter(r => r.status === 'encours'); }
+  try { encours = (await DB.getByType('refroid')).filter(r => r.status === 'encours' && !r.annule); }
   catch { return; }
   let depasse = false;
   encours.forEach(r => {

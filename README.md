@@ -8,12 +8,12 @@ C'est une **PWA** (application web progressive) : elle s'installe comme une vrai
 | Module | Contenu |
 |---|---|
 | ❄️ **Enceintes froides** | Relevé quotidien du matin (frigos, chambres froides, congélateurs) — conformité automatique, relevés « à la chaîne », enceinte à l'arrêt traçable |
-| 🚚 **Réceptions** | Contrôle à la livraison : fournisseur, produit, T°, état — seuils frais ≤ 4 °C / surgelé ≤ −15 °C |
+| 🚚 **Réceptions** | Contrôle à la livraison avec **photo d'étiquette OCR** (produit/lot pré-remplis, photo archivée au registre Étiquettes), fournisseurs attendus du jour, seuils PMS par famille |
 | 📉 **Refroidissement / remise en T°** | Suivi chronométré : +63 → +10 °C en 2 h max, +10 → +63 °C en 1 h max, alerte si délai dépassé |
 | 🍽️ **Températures de service** | Liaison chaude ≥ 63 °C, liaison froide ≤ 10 °C, suivi des plats témoins |
 | 🍲 **Menu** | Catalogue de plats + menu du jour (midi/soir) ; **import Excel/CSV** du menu à l'année (le format « grille hebdomadaire » de l'établissement — une feuille par semaine — est reconnu automatiquement) ; les plats alimentent les listes de Refroidissement, Remise en T° et Service |
 | 🏷️ **Traçabilité étiquettes** | Photo des étiquettes avec **lecture automatique OCR hors ligne** (produit, n° de lot et DLC pré-remplis), classement par semaine avec les menus |
-| 🧽 **Plan de nettoyage** | Checklist quotidienne / hebdomadaire / mensuelle, traçabilité date + agent |
+| 🧽 **Plan de nettoyage** | Checklist quotidienne / hebdomadaire / mensuelle, traçabilité date + agent, **relevé des températures du lave-vaisselle** (lavage 55-65 °C, rinçage 82-90 °C) |
 | 🍟 **Huiles de friture** | Contrôle visuel, test de composés polaires (≤ 25 %), traçabilité de l'huile usagée (volume, collecteur, bon) |
 | ⚠️ **Non-conformités** | Signalement manuel + remontée automatique de tous les relevés non conformes, actions correctives obligatoires |
 | 📚 **Documents & PMS** | Mémo des consignes clés + import des documents (PMS complet, analyses laboratoire, autocontrôles, contrat nuisibles, formations) consultables sur la tablette et inclus dans les sauvegardes |
