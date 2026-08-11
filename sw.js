@@ -1,5 +1,5 @@
 /* Service worker — mode hors ligne (cache d'abord, mise à jour en arrière-plan) */
-const CACHE = 'haccp-v18';
+const CACHE = 'haccp-v19';
 const ASSETS = [
   './',
   './index.html',
@@ -34,6 +34,10 @@ self.addEventListener('activate', e => {
 
 self.addEventListener('fetch', e => {
   if (e.request.method !== 'GET') return;
+
+  // Requêtes explicitement « fraîches » (synchro du menu…) : réseau direct,
+  // jamais la copie en cache.
+  if (e.request.cache === 'no-store') return;
 
   // Les bibliothèques vendorées (OCR ~14 Mo, xlsx, jspdf) sont immuables :
   // cache seul, sans revalidation réseau en arrière-plan (elles ne changent

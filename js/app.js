@@ -45,6 +45,10 @@ const DEFAULT_SETTINGS = {
   webdav: { on: false, url: '', user: '', pass: '' },
   httpPost: { on: false, url: '' },
   pin: '', // vide = Réglages non protégés
+  // Synchronisation du menu depuis GitHub : l'appli vérifie une fois par jour
+  // si le fichier a changé et réimporte automatiquement.
+  menuUrl: 'https://raw.githubusercontent.com/loicbayle48600-hash/belotte-manager/claude/haccp-android-tablet-app-sk7oa1/menus/menu-2025-ehpad-fam.xlsx',
+  menuAutoSync: true,
   equipements: [
     { id: 'e1', name: 'Chambre froide négative', ...NEG },
     { id: 'e2', name: 'Chambre froide fruits et légumes', ...POS },
@@ -1442,15 +1446,19 @@ function parseDateCell(v) {
   return null;
 }
 
-// Lit un fichier Excel/CSV : toutes les feuilles, en tableaux de lignes.
-async function readWorkbook(file) {
+// Lit un classeur Excel/CSV depuis un ArrayBuffer : toutes les feuilles.
+async function readWorkbookFromBuffer(buf) {
   const XLSX = await ensureXLSX();
-  const buf = await file.arrayBuffer();
   const wb = XLSX.read(buf, { type: 'array', cellDates: true });
   return wb.SheetNames.map(name => ({
     name,
     rows: XLSX.utils.sheet_to_json(wb.Sheets[name], { header: 1, raw: true, defval: '' }),
   }));
+}
+
+// Lit un fichier Excel/CSV : toutes les feuilles, en tableaux de lignes.
+async function readWorkbook(file) {
+  return readWorkbookFromBuffer(await file.arrayBuffer());
 }
 
 /* ---- Format « grille hebdomadaire » (fichier de menus de l'établissement) ----
@@ -1832,6 +1840,32 @@ VIEWS.menu = async function (el) {
     SETTINGS.plats = SETTINGS.plats.filter(p => p.id !== b.dataset.delPlat);
     await saveSettings(); render();
   }));
+
+  // Carte de synchronisation automatique depuis GitHub
+  const syncCard = document.createElement('div');
+  syncCard.className = 'card';
+  const lastSync = localStorage.getItem('haccp-menu-last');
+  syncCard.innerHTML = '<h2>🔄 Menu synchronisé depuis GitHub</h2>' +
+    '<p class="muted" style="margin-bottom:10px">Quand le fichier du dossier <b>menus/</b> du dépôt change, la tablette réimporte automatiquement (vérification quotidienne, dès qu’il y a du wifi).' +
+    (lastSync ? ' Dernière mise à jour : <b>' + UI.frDate(lastSync) + '</b>.' : ' Aucune synchronisation effectuée pour l’instant.') + '</p>' +
+    '<div class="row" style="margin-bottom:10px"><input type="checkbox" id="m-sync-on" ' + (SETTINGS.menuAutoSync ? 'checked' : '') + ' style="width:26px;height:26px;min-height:0">' +
+    '<span style="font-size:15px">Synchronisation automatique</span>' +
+    '<div class="grow"></div><button class="btn small" id="m-sync-now">🔄 Vérifier maintenant</button></div>' +
+    '<label class="field" style="margin:0"><span class="lbl">Adresse du fichier de menus</span>' +
+    '<input type="text" id="m-sync-url" value="' + UI.esc(SETTINGS.menuUrl || '') + '"></label>';
+  el.appendChild(syncCard);
+  syncCard.querySelector('#m-sync-on').addEventListener('change', async e => {
+    SETTINGS.menuAutoSync = e.target.checked;
+    await saveSettings();
+  });
+  syncCard.querySelector('#m-sync-url').addEventListener('change', async e => {
+    SETTINGS.menuUrl = e.target.value.trim();
+    await saveSettings();
+  });
+  syncCard.querySelector('#m-sync-now').addEventListener('click', async () => {
+    UI.toast('Vérification du menu en ligne…');
+    await maybeMenuSync(true);
+  });
 
   el.querySelector('#m-import').addEventListener('click', () => openImportMenu(() => { state.items = null; render(); }));
   const clearBtn = el.querySelector('#m-clear');
@@ -3514,6 +3548,49 @@ VIEWS.parametres = async function (el) {
   });
 };
 
+/* ---------- Synchronisation automatique du menu depuis GitHub ---------- */
+let _menuSyncEnCours = false;
+
+/** Vérifie (au plus une fois par jour) si le fichier de menus publié sur
+ *  GitHub a changé ; si oui, le réimporte automatiquement. Modifier le menu =
+ *  remplacer le fichier dans le dossier menus/ du dépôt, la tablette suit. */
+async function maybeMenuSync(force) {
+  const url = (SETTINGS.menuUrl || '').trim();
+  if (!url || (!SETTINGS.menuAutoSync && !force)) return;
+  if (!navigator.onLine || _menuSyncEnCours) return;
+  const today = UI.todayISO();
+  if (!force && localStorage.getItem('haccp-menu-check') === today) return;
+  _menuSyncEnCours = true;
+  try {
+    const resp = await fetch(url, { cache: 'no-store' });
+    if (!resp.ok) { if (force) UI.toast('Menu introuvable (' + resp.status + ') — vérifie l’URL', 'bad'); return; }
+    const buf = await resp.arrayBuffer();
+    // empreinte du fichier : réimport seulement s'il a changé
+    const digest = await crypto.subtle.digest('SHA-256', buf);
+    const hash = [...new Uint8Array(digest)].slice(0, 12).map(b => b.toString(16).padStart(2, '0')).join('');
+    localStorage.setItem('haccp-menu-check', today);
+    if (localStorage.getItem('haccp-menu-hash') === hash) {
+      if (force) UI.toast('Menu déjà à jour ✔', 'ok');
+      return;
+    }
+    const sheets = await readWorkbookFromBuffer(buf);
+    if (!isGridMenuWorkbook(sheets)) { if (force) UI.toast('Le fichier en ligne n’est pas au format menu hebdomadaire', 'bad'); return; }
+    const { days, catalog } = parseGridMenus(sheets);
+    const dates = Object.keys(days);
+    if (!dates.length) return;
+    await applyImport({ days, catalog });
+    localStorage.setItem('haccp-menu-hash', hash);
+    localStorage.setItem('haccp-menu-last', today);
+    if (VIEWS.menu._state) VIEWS.menu._state.items = null;
+    UI.toast('🍲 Menu mis à jour depuis GitHub : ' + dates.length + ' jours ✔', 'ok');
+    if (currentView === 'menu' || currentView === 'service') render();
+  } catch (e) {
+    if (force) UI.toast('Synchronisation du menu impossible : ' + e.message, 'bad');
+  } finally {
+    _menuSyncEnCours = false;
+  }
+}
+
 /* ---------- Chronomètre des refroidissements en cours ---------- */
 const _refroidAlerted = new Set();
 
@@ -3554,10 +3631,13 @@ async function refroidTick() {
   // continu : on retente au retour au premier plan et toutes les heures
   // (idempotent : une seule sauvegarde par jour grâce à haccp-drive-last).
   const tryBackup = () => maybeAutoBackup().catch(e => console.warn('backup auto', e));
+  const tryMenuSync = () => maybeMenuSync().catch(e => console.warn('menu sync', e));
   setTimeout(tryBackup, 2500);
+  setTimeout(tryMenuSync, 5000);
   setInterval(tryBackup, 60 * 60 * 1000);
-  // dès que la connexion revient (wifi retrouvé), la sauvegarde en retard part immédiatement
-  window.addEventListener('online', () => setTimeout(tryBackup, 3000));
+  setInterval(tryMenuSync, 60 * 60 * 1000);
+  // dès que la connexion revient (wifi retrouvé), sauvegarde et menu en retard partent immédiatement
+  window.addEventListener('online', () => { setTimeout(tryBackup, 3000); setTimeout(tryMenuSync, 6000); });
   // chronomètre des refroidissements (compteurs vivants + alerte de dépassement)
   setInterval(() => { refroidTick().catch(() => {}); }, 30 * 1000);
   // La tablette reste allumée en continu : au passage de minuit (ou au retour
