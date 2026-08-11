@@ -32,6 +32,11 @@ Le plus simple : ouvrir cette page **sur la tablette** et toucher le fichier :
 inconnues » si demandé → Installer. (Mise à jour : même lien, le fichier est
 recompilé automatiquement à chaque évolution ; installer par-dessus conserve les données.)
 
+La même page propose aussi **le fichier des menus de l'année**
+(`menu-2025-ehpad-fam.xlsx`, également dans le dossier [`menus/`](./menus/)) :
+télécharge-le sur la tablette puis importe-le dans l'appli via
+**🍲 Menu → 📥 Importer** (le format est reconnu automatiquement).
+
 ## Installation sur la tablette
 
 ### 1. Mettre l'application en ligne (une seule fois)

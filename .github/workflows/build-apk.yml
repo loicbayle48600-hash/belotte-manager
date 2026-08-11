@@ -81,9 +81,10 @@ jobs:
         run: |
           gh release delete apk --yes --repo "$GITHUB_REPOSITORY" 2>/dev/null || true
           git push -q --delete "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" refs/tags/apk 2>/dev/null || true
-          gh release create apk out/haccp-cuisine.apk \
+          gh release create apk out/haccp-cuisine.apk menus/*.xlsx \
             --repo "$GITHUB_REPOSITORY" \
             --title "📱 HACCP Cuisine — dernier APK (build ${GITHUB_RUN_NUMBER})" \
-            --notes "APK Android à installer sur la tablette. Compilé automatiquement depuis le dernier code. Ouvre ce lien sur la tablette et touche haccp-cuisine.apk ci-dessous."
+            --notes "**haccp-cuisine.apk** : l'application Android à installer sur la tablette (installer par-dessus conserve les données).
+          **menu-2025-ehpad-fam.xlsx** : le fichier des menus de l'année, à importer dans l'appli (module 🍲 Menu → 📥 Importer)."
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
