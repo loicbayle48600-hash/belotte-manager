@@ -12,10 +12,11 @@ C'est une **PWA** (application web progressive) : elle s'installe comme une vrai
 | 📉 **Refroidissement / remise en T°** | Suivi chronométré : +63 → +10 °C en 2 h max, +10 → +63 °C en 1 h max, alerte si délai dépassé |
 | 🍽️ **Températures de service** | Liaison chaude ≥ 63 °C, liaison froide ≤ 10 °C, suivi des plats témoins |
 | 🍲 **Menu** | Catalogue de plats + menu du jour (midi/soir) ; **import Excel/CSV** du menu à l'année (le format « grille hebdomadaire » de l'établissement — une feuille par semaine — est reconnu automatiquement) ; les plats alimentent les listes de Refroidissement, Remise en T° et Service |
-| 🏷️ **Traçabilité étiquettes** | Photo des étiquettes avec l'appareil photo de la tablette (produit, lot, DLC) |
+| 🏷️ **Traçabilité étiquettes** | Photo des étiquettes avec **lecture automatique OCR hors ligne** (produit, n° de lot et DLC pré-remplis), classement par semaine avec les menus |
 | 🧽 **Plan de nettoyage** | Checklist quotidienne / hebdomadaire / mensuelle, traçabilité date + agent |
 | 🍟 **Huiles de friture** | Contrôle visuel, test de composés polaires (≤ 25 %), traçabilité de l'huile usagée (volume, collecteur, bon) |
 | ⚠️ **Non-conformités** | Signalement manuel + remontée automatique de tous les relevés non conformes, actions correctives obligatoires |
+| 📚 **Documents & PMS** | Mémo des consignes clés + import des documents (PMS complet, analyses laboratoire, autocontrôles, contrat nuisibles, formations) consultables sur la tablette et inclus dans les sauvegardes |
 | 📋 **Historique & export** | Calendrier de complétude (jours vides justifiables par fermeture), recherche de lot multi-registres, **annulation tracée** d'une erreur de saisie (ligne barrée avec motif, jamais de suppression), **exports CSV et PDF** avec en-tête officiel, impression |
 | ⚙️ **Réglages** | Équipements, agents, fournisseurs, plan de nettoyage, instruments de mesure personnalisables, **code PIN optionnel** + **sauvegarde/restauration JSON** et **sauvegarde cloud automatique** (Google Drive avec photos en fichiers images, Dropbox, Nextcloud/WebDAV, serveur maison — voir `google-drive/`) |
 

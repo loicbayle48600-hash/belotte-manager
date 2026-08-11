@@ -158,6 +158,7 @@ const TYPE_LABELS = {
   nettoyage: 'Nettoyage',
   huile: 'Huile de friture',
   nonconf: 'Non-conformité',
+  document: 'Document (PMS, labo…)',
 };
 
 let SETTINGS = null;
@@ -2490,6 +2491,7 @@ const EXPORT_COLUMNS = {
   huile: [['Date', r => UI.frDate(r.date)], ['Heure', r => r.time], ['Friteuse', r => r.friteuse], ['Opération', r => r.action], ['État huile', r => r.etat], ['Polarité', r => r.polaires === 'nok' ? '> 25 % NON CONFORME' : (r.polaires === 'ok' ? '≤ 25 %' : '') + (r.polairesPct != null ? ' (' + r.polairesPct + ' %)' : '')], ['Huile usagée', r => r.volume != null || r.destination ? (r.volume != null ? r.volume + ' L' : '') + (r.destination ? ' → ' + r.destination : '') + (r.bon ? ' (bon ' + r.bon + ')' : '') : ''], ['Température (°C)', r => r.temp], ['Action corrective', r => r.actionCorrective], ['Remarque', r => r.remarque], ['Agent', r => r.agent]],
   nonconf: [['Date', r => UI.frDate(r.date)], ['Heure', r => r.time], ['Objet', r => r.objet], ['Lieu', r => r.lieu], ['Lot', r => r.lot], ['Péremption', r => r.peremption ? UI.frDate(r.peremption) : ''], ['Description', r => r.description], ['Action corrective', r => r.action], ['Statut', r => r.statut], ['Agent', r => r.agent]],
   verif: [['Date', r => UI.frDate(r.date)], ['Heure', r => r.time], ['Instrument', r => r.instrument], ['Méthode', r => r.methode], ['Écart constaté (°C)', r => r.ecart], ['Conforme (|écart| ≤ 1 °C)', r => r.conforme === false ? 'NON' : 'OUI'], ['Action corrective', r => r.action], ['Agent', r => r.agent]],
+  document: [['Date', r => UI.frDate(r.date)], ['Titre', r => r.nom], ['Catégorie', r => r.categorie], ['Fichier', r => r.fichier], ['Taille', r => r.taille ? Math.round(r.taille / 1024) + ' Ko' : ''], ['Note', r => r.note], ['Agent', r => r.agent]],
   fermeture: [['Date', r => UI.frDate(r.date)], ['Motif', r => r.motif], ['Agent', r => r.agent]],
 };
 
@@ -2628,6 +2630,124 @@ async function sendWeeklyPdf_(url, today) {
     UI.toast('Registres PDF déposés sur Drive ✔', 'ok');
   }
 }
+
+/* ================================================================
+   DOCUMENTS (PMS, analyses labo, autocontrôles…)
+================================================================ */
+const DOC_CATEGORIES = ['📋 PMS', '🔬 Analyses laboratoire', '🧪 Autocontrôles', '🐭 Nuisibles', '🎓 Formations', '📎 Autres'];
+
+// Mémo des consignes clés du PMS (les procédures détaillées sont codées dans
+// chaque module ; les documents complets s'importent ci-dessous).
+const PMS_MEMO = [
+  ['❄️ Enceintes froides', 'Relevé quotidien du matin. Positif : cible 3 °C, limite 6 °C. Négatif : cible −18 °C, tolérance −15 °C. Hors limites : contrôler à cœur, déplacer les denrées, ouvrir une non-conformité.'],
+  ['🚚 Réception', 'Frais ≤ 6 °C (cible 3), viandes hachées/abats ≤ 2 °C, surgelés ≤ −15 °C. De 6 à 10 °C : contrôle à cœur obligatoire. > 10 °C : refus. Vérifier DLC, étiquetage, emballage, propreté du camion.'],
+  ['📉 Refroidissement', 'De +63 °C à +10 °C en 2 h maximum. Dépassé : prolonger jusqu’à obtention ou jeter, tracer en non-conformité.'],
+  ['🔥 Remise en température', 'De +10 °C à +63 °C en 1 h maximum, consommation immédiate, jamais de seconde remise.'],
+  ['🍽️ Service', 'Liaison chaude ≥ 63 °C. Liaison froide cible 3 °C, limite 6 °C, tolérée 10 °C si consommation < 2 h. Plat témoin ≥ 100 g par plat et par service, 5 jours à 3 °C.'],
+  ['⏳ Décongélation', 'En enceinte à 3 °C uniquement, 48 h maximum, jamais à température ambiante, jamais de recongélation.'],
+  ['📦 Produits entamés', 'Étiqueter à l’ouverture (date + DLC interne) : lait/crème 2-3 j, mayonnaise 3 semaines, IV gamme 1-2 j, charcuterie tranchée 2 j, plats cuisinés 3 j, excédents 24 h.'],
+  ['🍟 Huiles de friture', 'Contrôle visuel à chaque service, composés polaires ≤ 25 % (test), T° de friture ≤ 175 °C. Huile usagée : collecteur agréé, bon d’enlèvement conservé.'],
+  ['🧽 Nettoyage', 'Plan par zone (57 tâches), produits homologués, TACT (température, action, concentration, temps). Tracer chaque tâche (date + agent).'],
+  ['🌡️ Thermomètres', 'Vérification périodique (eau glacée 0 °C / eau bouillante 100 °C), conforme si écart ≤ 1 °C, au moins une fois par an.'],
+];
+
+function openDocumentModal() {
+  UI.modal(
+    '<h2>📚 Ajouter un document</h2>' +
+    '<label class="field"><span class="lbl">Fichier (PDF, photo, Excel, Word…)</span>' +
+    '<input type="file" data-f="fichier" style="min-height:52px;padding:12px;border:1.5px dashed var(--border);border-radius:12px;width:100%"></label>' +
+    '<div data-fileinfo class="muted" style="margin-bottom:10px;font-size:13px"></div>' +
+    '<label class="field"><span class="lbl">Titre</span><input type="text" data-f="nom" placeholder="Ex. : Analyse eau juillet 2026, Rapport labo surfaces…"></label>' +
+    '<label class="field"><span class="lbl">Catégorie</span><select data-f="categorie">' +
+    DOC_CATEGORIES.map(c => '<option>' + c + '</option>').join('') + '</select></label>' +
+    '<label class="field"><span class="lbl">Note (optionnel)</span><input type="text" data-f="note" placeholder="Ex. : conforme, à re-contrôler en septembre…"></label>' +
+    agentField() +
+    '<div class="actions"><button class="btn ghost" data-x="cancel">Annuler</button><button class="btn" data-x="save">Enregistrer</button></div>',
+    (m, close) => {
+      let fileData = null, fileName = '', fileMime = '', fileSize = 0;
+      m.querySelector('[data-f="fichier"]').addEventListener('change', async e => {
+        const f = e.target.files[0];
+        if (!f) return;
+        if (f.size > 8 * 1024 * 1024) {
+          UI.toast('Fichier trop lourd (max 8 Mo) — compresse-le ou photographie les pages', 'bad');
+          e.target.value = ''; return;
+        }
+        fileName = f.name; fileMime = f.type || 'application/octet-stream'; fileSize = f.size;
+        fileData = await new Promise((resolve, reject) => {
+          const fr = new FileReader();
+          fr.onload = () => resolve(fr.result);
+          fr.onerror = () => reject(fr.error);
+          fr.readAsDataURL(f);
+        });
+        m.querySelector('[data-fileinfo]').textContent = '📄 ' + fileName + ' (' + Math.round(fileSize / 1024) + ' Ko)';
+        const nomInput = m.querySelector('[data-f="nom"]');
+        if (!nomInput.value.trim()) nomInput.value = fileName.replace(/\.[^.]+$/, '').replace(/[_\-]+/g, ' ');
+      });
+      m.querySelector('[data-x="cancel"]').onclick = close;
+      m.querySelector('[data-x="save"]').onclick = async () => {
+        const nom = m.querySelector('[data-f="nom"]').value.trim();
+        if (!fileData) { UI.toast('Choisis un fichier', 'bad'); return; }
+        if (!nom) { UI.toast('Donne un titre au document', 'bad'); return; }
+        const agent = requireAgent(m); if (!agent) return;
+        await DB.addRecord({
+          type: 'document', date: UI.todayISO(), time: UI.nowHM(),
+          nom, categorie: m.querySelector('[data-f="categorie"]').value,
+          note: m.querySelector('[data-f="note"]').value.trim(),
+          fichier: fileName, mime: fileMime, taille: fileSize, data: fileData,
+          agent,
+        });
+        close();
+        UI.toast('Document enregistré ✔ (inclus dans les sauvegardes)', 'ok');
+        render();
+      };
+    }
+  );
+}
+
+VIEWS.documents = async function (el) {
+  const docs = alive(await DB.getByType('document')).sort((a, b) => (b.date + (b.time || '')).localeCompare(a.date + (a.time || '')));
+  const byCat = {};
+  docs.forEach(d => { (byCat[d.categorie] = byCat[d.categorie] || []).push(d); });
+
+  el.innerHTML = headerHTML('Documents & PMS', 'Plan de maîtrise sanitaire, analyses laboratoire, autocontrôles… — tout le classeur dans la tablette, inclus dans les sauvegardes cloud',
+      '<button class="btn" id="new-doc">📥 Ajouter un document</button>') +
+
+    '<div class="card"><h2>📖 Consignes clés du PMS <span class="pill info">mémo</span></h2>' +
+    '<div class="rec-list">' + PMS_MEMO.map(([titre, texte]) =>
+      '<div class="rec-item"><div class="body"><div class="title">' + titre + '</div>' +
+      '<div class="meta" style="white-space:normal">' + UI.esc(texte) + '</div></div></div>').join('') +
+    '</div><p class="muted" style="margin-top:10px;font-size:12.5px">Les documents complets du PMS (procédures signées, plans, contrats) s’importent ci-dessous — bouton « 📥 Ajouter un document ».</p></div>' +
+
+    (docs.length
+      ? DOC_CATEGORIES.filter(c => byCat[c]).map(c =>
+          '<div class="card"><h2>' + c + ' <span class="pill info">' + byCat[c].length + '</span></h2><div class="rec-list">' +
+          byCat[c].map(d =>
+            '<div class="rec-item"><div class="big">📄</div>' +
+            '<div class="body"><div class="title">' + UI.esc(d.nom) + '</div>' +
+            '<div class="meta">' + UI.frDate(d.date) + ' — ' + UI.esc(d.fichier || '') + ' (' + Math.round((d.taille || 0) / 1024) + ' Ko)' +
+            (d.note ? ' — ' + UI.esc(d.note) : '') + ' — ' + UI.esc(d.agent || '') + '</div></div>' +
+            '<button class="btn small" data-open-doc="' + d.id + '">👁️ Ouvrir</button>' +
+            '<button class="btn small ghost" data-del-doc="' + d.id + '">🗑️</button></div>'
+          ).join('') + '</div></div>').join('')
+      : '<div class="empty"><span class="e-ico">📚</span>Aucun document importé. Ajoute ton PMS, tes rapports de labo, tes autocontrôles…</div>');
+
+  el.querySelector('#new-doc').addEventListener('click', openDocumentModal);
+  el.querySelectorAll('[data-open-doc]').forEach(b => b.addEventListener('click', async () => {
+    const d = await DB.getRecord(Number(b.dataset.openDoc));
+    if (!d || !d.data) return;
+    // dataURL -> Blob puis ouverture via l'enregistreur natif (partage) ou le navigateur
+    const resp = await fetch(d.data);
+    const blob = await resp.blob();
+    await UI.saveFile(d.fichier || (d.nom + '.pdf'), d.mime || blob.type, blob);
+  }));
+  el.querySelectorAll('[data-del-doc]').forEach(b => b.addEventListener('click', async () => {
+    const d = await DB.getRecord(Number(b.dataset.delDoc));
+    if (!d) return;
+    UI.confirm('Supprimer « ' + d.nom + ' » ? (les sauvegardes déjà envoyées le conservent)', async () => {
+      await DB.deleteRecord(d.id); UI.toast('Document supprimé'); render();
+    });
+  }));
+};
 
 VIEWS.historique = async function (el) {
   const today = UI.todayISO();
@@ -2815,7 +2935,7 @@ VIEWS.historique = async function (el) {
     await DB.eachRecord(r => idx.push({
       id: r.id, type: r.type, date: r.date, time: r.time, conforme: r.conforme,
       produit: r.produit, plat: r.plat, lot: r.lot, fournisseur: r.fournisseur,
-      objet: r.objet, equipName: r.equipName, taskName: r.taskName,
+      objet: r.objet, equipName: r.equipName, taskName: r.taskName, nom: r.nom, fichier: r.fichier,
       description: r.description, categorie: r.categorie, agent: r.agent,
       hasPhoto: !!r.photo,
     }));
@@ -2829,7 +2949,7 @@ VIEWS.historique = async function (el) {
     if (q.length < 2) { box.innerHTML = '<p class="muted">Saisis au moins 2 caractères.</p>'; return; }
     box.innerHTML = '<p class="muted">Recherche…</p>';
     const all = await getSearchIndex();
-    const FIELDS = ['produit', 'plat', 'lot', 'fournisseur', 'objet', 'equipName', 'taskName', 'description', 'categorie'];
+    const FIELDS = ['produit', 'plat', 'lot', 'fournisseur', 'objet', 'equipName', 'taskName', 'nom', 'fichier', 'description', 'categorie'];
     const hits = all.filter(r => FIELDS.some(f => r[f] && String(r[f]).toLowerCase().includes(q)))
       .sort((a, b) => (b.date + (b.time || '')).localeCompare(a.date + (a.time || '')));
     const shown = hits.slice(0, 80);
@@ -2837,7 +2957,7 @@ VIEWS.historique = async function (el) {
     box.innerHTML = hits.length
       ? '<p class="pill info" style="margin-bottom:10px">' + hits.length + ' résultat(s)' + (hits.length > 80 ? ' — 80 premiers affichés' : '') + '</p>' +
         '<div class="rec-list">' + shown.map(r => {
-          const titre = r.produit || r.plat || r.objet || r.equipName || r.taskName || '—';
+          const titre = r.produit || r.plat || r.objet || r.equipName || r.taskName || r.nom || '—';
           return '<div class="rec-item ' + (r.conforme === false ? 'bad' : '') + '"' + (r.type === 'etiquette' ? ' data-open-eti="' + r.id + '" style="cursor:pointer"' : '') + '>' +
             '<div class="big" style="font-size:13px">' + UI.esc(TYPE_LABELS[r.type] || r.type).split(' ')[0] + '</div>' +
             '<div class="body"><div class="title">' + UI.esc(titre) + (r.type === 'etiquette' && r.hasPhoto ? ' 📷' : '') + '</div>' +
