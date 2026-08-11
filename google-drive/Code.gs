@@ -19,6 +19,11 @@ function doPost(e) {
     var contenu = (e && e.postData && e.postData.contents) ? e.postData.contents : '{}';
     var data = JSON.parse(contenu);
 
+    // Dépôt hebdomadaire du PDF lisible des registres (en plus de la sauvegarde JSON)
+    if (data && data.type === 'pdf' && data.data) {
+      return recevoirPdf_(getDossier_(), data);
+    }
+
     var etab = (data.etablissement || 'cuisine').toString().replace(/[^\w\-À-ÿ ]+/g, '').trim() || 'cuisine';
     var horodatage = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd_HH-mm');
     var nom = 'haccp_' + etab.replace(/\s+/g, '-') + '_' + horodatage + '.json';
@@ -96,6 +101,26 @@ function lundiDe_(dateISO) {
   var jj = ('0' + d.getDate()).slice(-2);
   var mm = ('0' + (d.getMonth() + 1)).slice(-2);
   return jj + '-' + mm + '-' + d.getFullYear();
+}
+
+/**
+ * Range le PDF hebdomadaire des registres dans « Registres PDF »
+ * (les 12 plus récents sont conservés).
+ */
+function recevoirPdf_(dossier, data) {
+  var it = dossier.getFoldersByName('Registres PDF');
+  var sousDossier = it.hasNext() ? it.next() : dossier.createFolder('Registres PDF');
+  var nom = String(data.filename || 'registres-haccp.pdf').replace(/[^\w\-À-ÿ .]+/g, '').slice(0, 80) || 'registres-haccp.pdf';
+  var blob = Utilities.newBlob(Utilities.base64Decode(data.data), 'application/pdf', nom);
+  sousDossier.createFile(blob);
+
+  var fichiers = [];
+  var files = sousDossier.getFiles();
+  while (files.hasNext()) fichiers.push(files.next());
+  fichiers.sort(function (a, b) { return b.getDateCreated() - a.getDateCreated(); });
+  for (var i = 12; i < fichiers.length; i++) fichiers[i].setTrashed(true);
+
+  return json_({ ok: true, fichier: nom });
 }
 
 // Empreinte courte (8 hexa) du contenu d'une photo, indépendante des ids.

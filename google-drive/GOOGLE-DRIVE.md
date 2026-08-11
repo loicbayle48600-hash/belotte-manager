@@ -46,6 +46,8 @@ image**, rangée **par semaine** — la même organisation que le classeur de tr
 📁 Sauvegardes HACCP
 ├── haccp_…_2026-07-13_07-32.json          ← une sauvegarde complète par jour (60 conservées)
 ├── haccp_…_2026-07-12_07-30.json
+├── 📁 Registres PDF                        ← PDF lisible des 30 derniers jours, déposé chaque semaine (12 conservés)
+│   └── registres-haccp-30j-2026-07-13.pdf
 └── 📁 Photos étiquettes
     ├── 📁 Semaine du 06-07-2026
     │   ├── 2026-07-07_09h12_escalopes-de-dinde_a3f19c42.jpg

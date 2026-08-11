@@ -441,6 +441,10 @@ async function maybeAutoBackup() {
   const today = UI.todayISO();
   if (lastAutoBackupDate() === today) return;
   const res = await sendBackupAll();
+  if (res.ok) {
+    // le PDF hebdomadaire lisible part avec la sauvegarde (Drive uniquement)
+    maybeWeeklyPdfToDrive().catch(e => console.warn('pdf drive', e));
+  }
   if (res.allOk) {
     // Toutes les destinations ont réussi : plus de tentative aujourd'hui.
     setLastAutoBackupDate(today);
@@ -2393,12 +2397,11 @@ function pdfSafe(s) {
   return String(s == null ? '' : s).replace(/\u2212/g, '-').replace(/[^\x20-\x7E -ÿŒœ€–—‘’“”…•]/g, '?');
 }
 
-/** Génère un PDF (A4 paysage) pour un ou plusieurs registres : en-tête officiel
- *  (établissement, registre, période, visa) + tableau, lignes non conformes en rouge. */
-async function exportPDF(types, from, to, filename) {
-  let jsPDF;
-  try { jsPDF = await ensureJsPDF(); }
-  catch (e) { UI.toast(e.message, 'bad'); return; }
+/** Génère le document PDF (A4 paysage) pour un ou plusieurs registres :
+ *  en-tête officiel (établissement, registre, période, visa) + tableau,
+ *  lignes non conformes en rouge. Retourne { blob, total } (total = 0 si vide). */
+async function buildRegistresPDF(types, from, to) {
+  const jsPDF = await ensureJsPDF();
   const doc = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
   let first = true;
   let total = 0;
@@ -2453,9 +2456,55 @@ async function exportPDF(types, from, to, filename) {
     });
   }
 
-  if (first) { UI.toast('Rien à exporter sur cette période', 'bad'); return; }
-  await UI.saveFile(filename, 'application/pdf', doc.output('blob'));
-  UI.toast('PDF généré (' + total + ' enregistrements) ✔', 'ok');
+  return { blob: first ? null : doc.output('blob'), total };
+}
+
+/** Export PDF à la demande (boutons de l'Historique). */
+async function exportPDF(types, from, to, filename) {
+  let res;
+  try { res = await buildRegistresPDF(types, from, to); }
+  catch (e) { UI.toast(e.message, 'bad'); return; }
+  if (!res.blob) { UI.toast('Rien à exporter sur cette période', 'bad'); return; }
+  await UI.saveFile(filename, 'application/pdf', res.blob);
+  UI.toast('PDF généré (' + res.total + ' enregistrements) ✔', 'ok');
+}
+
+/** Une fois par semaine, dépose aussi le PDF lisible des registres des 30
+ *  derniers jours sur Google Drive (dossier « Registres PDF ») — en plus de la
+ *  sauvegarde JSON technique qui, elle, sert à restaurer l'application. */
+let _pdfDriveEnCours = false;
+async function maybeWeeklyPdfToDrive() {
+  const url = (SETTINGS.driveUrl || '').trim();
+  if (!url || !navigator.onLine || _pdfDriveEnCours) return;
+  const last = localStorage.getItem('haccp-pdf-drive-last') || '';
+  const today = UI.todayISO();
+  if (last && last > UI.addDays(today, -7)) return;
+  _pdfDriveEnCours = true;
+  try {
+    await sendWeeklyPdf_(url, today);
+  } finally {
+    _pdfDriveEnCours = false;
+  }
+}
+
+async function sendWeeklyPdf_(url, today) {
+  const res = await buildRegistresPDF(Object.keys(EXPORT_COLUMNS), UI.addDays(today, -30), today);
+  if (!res.blob) { localStorage.setItem('haccp-pdf-drive-last', today); return; }
+  const b64 = await new Promise((resolve, reject) => {
+    const fr = new FileReader();
+    fr.onload = () => resolve(String(fr.result).split(',')[1]);
+    fr.onerror = () => reject(fr.error);
+    fr.readAsDataURL(res.blob);
+  });
+  const resp = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+    body: JSON.stringify({ app: 'haccp-cuisine', type: 'pdf', filename: 'registres-haccp-30j-' + today + '.pdf', data: b64 }),
+  });
+  if (resp.ok) {
+    localStorage.setItem('haccp-pdf-drive-last', today);
+    UI.toast('Registres PDF déposés sur Drive ✔', 'ok');
+  }
 }
 
 VIEWS.historique = async function (el) {
