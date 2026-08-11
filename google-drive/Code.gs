@@ -44,33 +44,44 @@ function doPost(e) {
 var MAX_PHOTOS_PAR_ENVOI = 100;
 
 /**
- * Enregistre les photos d'étiquettes comme VRAIS fichiers images, rangées par
- * semaine : « Photos étiquettes / Semaine du JJ-MM-AAAA / … » (comme le
- * classeur hebdomadaire de traçabilité). Chaque photo n'est enregistrée
+ * Enregistre les photos d'étiquettes comme VRAIS fichiers images, rangées
+ * comme le classeur : « Photos étiquettes / Semaine 33 2026 / lundi / … ».
+ * Le classement suit le JOUR DE DESTINATION du produit (champ choisi à la
+ * prise de photo), sinon le jour de la photo. Chaque photo n'est enregistrée
  * qu'une fois : le nom contient une empreinte du contenu, stable même après
  * restauration d'une sauvegarde.
  */
+var JOURS_FR = ['dimanche', 'lundi', 'mardi', 'mercredi', 'jeudi', 'vendredi', 'samedi'];
+
 function extrairePhotos_(dossier, data) {
   if (!data.records) return 0;
   var it = dossier.getFoldersByName('Photos étiquettes');
   var racinePhotos = it.hasNext() ? it.next() : dossier.createFolder('Photos étiquettes');
 
-  // caches par semaine : dossier + noms de fichiers déjà présents
-  var dossiersSemaine = {};
-  var existantsSemaine = {};
+  // caches par chemin (semaine puis jour) : dossier + noms déjà présents
+  var dossiers = {};   // "Semaine 33 2026/lundi" -> Folder
+  var existants = {};  // même clé -> { nomFichier: true }
 
-  function dossierDeLaSemaine(dateISO) {
-    var nomSemaine = 'Semaine du ' + lundiDe_(dateISO);
-    if (!dossiersSemaine[nomSemaine]) {
-      var itS = racinePhotos.getFoldersByName(nomSemaine);
-      var d = itS.hasNext() ? itS.next() : racinePhotos.createFolder(nomSemaine);
-      dossiersSemaine[nomSemaine] = d;
+  function sousDossier_(parent, nom) {
+    var itS = parent.getFoldersByName(nom);
+    return itS.hasNext() ? itS.next() : parent.createFolder(nom);
+  }
+
+  function dossierDuJour(dateISO) {
+    var d = parseDate_(dateISO);
+    var nomSemaine = d ? 'Semaine ' + numSemaineISO_(d) + ' ' + anneeSemaineISO_(d) : 'Semaine inconnue';
+    var nomJour = d ? JOURS_FR[d.getDay()] : 'jour-inconnu';
+    var cle = nomSemaine + '/' + nomJour;
+    if (!dossiers[cle]) {
+      var semaine = sousDossier_(racinePhotos, nomSemaine);
+      var jour = sousDossier_(semaine, nomJour);
+      dossiers[cle] = jour;
       var noms = {};
-      var files = d.getFiles();
+      var files = jour.getFiles();
       while (files.hasNext()) noms[files.next().getName()] = true;
-      existantsSemaine[nomSemaine] = noms;
+      existants[cle] = noms;
     }
-    return { dossier: dossiersSemaine[nomSemaine], existants: existantsSemaine[nomSemaine] };
+    return { dossier: dossiers[cle], noms: existants[cle] };
   }
 
   var ajoutees = 0;
@@ -82,25 +93,34 @@ function extrairePhotos_(dossier, data) {
     if (!m) continue;
     var produit = String(r.produit || 'etiquette').replace(/[^\w\-À-ÿ ]+/g, '').trim().replace(/\s+/g, '-').slice(0, 40) || 'etiquette';
     var nom = (r.date || 'sans-date') + '_' + String(r.time || '').replace(':', 'h') + '_' + produit + '_' + empreinte_(m[2]) + '.jpg';
-    var sem = dossierDeLaSemaine(r.date || '');
-    if (sem.existants[nom]) continue;
+    var cible = dossierDuJour(r.destineLe || r.date || '');
+    if (cible.noms[nom]) continue;
     var blob = Utilities.newBlob(Utilities.base64Decode(m[2]), 'image/jpeg', nom);
-    sem.dossier.createFile(blob);
-    sem.existants[nom] = true;
+    cible.dossier.createFile(blob);
+    cible.noms[nom] = true;
     ajoutees++;
   }
   return ajoutees;
 }
 
-// Lundi de la semaine d'une date AAAA-MM-JJ, au format JJ-MM-AAAA (nom de dossier).
-function lundiDe_(dateISO) {
+// Date AAAA-MM-JJ -> Date (midi local), ou null.
+function parseDate_(dateISO) {
   var m = String(dateISO).match(/^(\d{4})-(\d{2})-(\d{2})$/);
-  if (!m) return 'date-inconnue';
-  var d = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]), 12, 0, 0);
-  d.setDate(d.getDate() - ((d.getDay() + 6) % 7));
-  var jj = ('0' + d.getDate()).slice(-2);
-  var mm = ('0' + (d.getMonth() + 1)).slice(-2);
-  return jj + '-' + mm + '-' + d.getFullYear();
+  if (!m) return null;
+  return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]), 12, 0, 0);
+}
+
+// Numéro de semaine ISO (1-53) et année ISO correspondante.
+function numSemaineISO_(d) {
+  var j = new Date(d.getTime());
+  j.setDate(j.getDate() + 3 - ((j.getDay() + 6) % 7)); // jeudi de la semaine
+  var jan4 = new Date(j.getFullYear(), 0, 4, 12);
+  return 1 + Math.round(((j - jan4) / 86400000 - 3 + ((jan4.getDay() + 6) % 7)) / 7);
+}
+function anneeSemaineISO_(d) {
+  var j = new Date(d.getTime());
+  j.setDate(j.getDate() + 3 - ((j.getDay() + 6) % 7));
+  return j.getFullYear();
 }
 
 /**

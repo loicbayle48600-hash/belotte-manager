@@ -1838,14 +1838,38 @@ function mondayOf(iso) {
   return UI.addDays(iso, -((d.getDay() + 6) % 7));
 }
 
+/** Numéro de semaine ISO (1-53) et son année, ex. { num: 33, annee: 2026 }. */
+function semaineISO(iso) {
+  const d = new Date(iso + 'T12:00:00');
+  d.setDate(d.getDate() + 3 - ((d.getDay() + 6) % 7)); // jeudi de la semaine
+  const annee = d.getFullYear();
+  const jan4 = new Date(annee, 0, 4, 12);
+  const num = 1 + Math.round(((d - jan4) / 86400000 - 3 + ((jan4.getDay() + 6) % 7)) / 7);
+  return { num, annee };
+}
+
+/** Jour auquel une étiquette est rattachée : le jour de destination du produit
+ *  (choisi à la prise de photo), sinon le jour de la photo. */
+function etiquetteJour(r) { return r.destineLe || r.date; }
+
 VIEWS.tracabilite = async function (el) {
   const today = UI.todayISO();
-  const from = UI.addDays(today, -35);
-  const [recs, menus] = await Promise.all([
-    DB.getByTypeAndRange('etiquette', from, today),
-    DB.getByTypeAndRange('menu', from, today),
-  ]);
-  recs.sort((a, b) => (b.date + (b.time || '')).localeCompare(a.date + (a.time || '')));
+  const state = VIEWS.tracabilite._state || (VIEWS.tracabilite._state = {});
+  const semaine = state.semaine || mondayOf(today);
+  state.semaine = semaine;
+  const dimanche = UI.addDays(semaine, 6);
+
+  // Index léger par curseur (sans matérialiser les photos), puis chargement
+  // complet des seules étiquettes de la semaine affichée — la conservation
+  // est illimitée (≥ 6 mois réglementaires), la navigation reste fluide.
+  const meta = [];
+  await DB.eachRecord(r => { if (r.type === 'etiquette' && !r.annule) meta.push({ id: r.id, jour: etiquetteJour(r) }); });
+  const total = meta.length;
+  const plusAncienne = meta.length ? meta.reduce((a, b) => (a.jour < b.jour ? a : b)).jour : null;
+  const ids = meta.filter(x => x.jour >= semaine && x.jour <= dimanche).map(x => x.id);
+  const recs = (await Promise.all(ids.map(id => DB.getRecord(id)))).filter(Boolean)
+    .sort((a, b) => (b.date + (b.time || '')).localeCompare(a.date + (a.time || '')));
+  const menus = await DB.getByTypeAndRange('menu', semaine, dimanche);
 
   // Menus par jour (midi + soir) pour rapprocher étiquettes et menu, comme le classeur hebdomadaire du PMS
   const menuByDay = {};
@@ -1854,14 +1878,8 @@ VIEWS.tracabilite = async function (el) {
     menuByDay[mn.date][mn.service] = mn.items || [];
   });
 
-  // Regroupement par semaine (lundi → dimanche), puis par jour
-  const weeks = [];
-  const byWeek = {};
-  recs.forEach(r => {
-    const wk = mondayOf(r.date);
-    if (!byWeek[wk]) { byWeek[wk] = {}; weeks.push(wk); }
-    (byWeek[wk][r.date] = byWeek[wk][r.date] || []).push(r);
-  });
+  const byDay = {};
+  recs.forEach(r => { (byDay[etiquetteJour(r)] = byDay[etiquetteJour(r)] || []).push(r); });
 
   const JOURS = ['dimanche', 'lundi', 'mardi', 'mercredi', 'jeudi', 'vendredi', 'samedi'];
   const dayName = iso => JOURS[new Date(iso + 'T12:00:00').getDay()];
@@ -1869,29 +1887,43 @@ VIEWS.tracabilite = async function (el) {
   const cardHTML = r =>
     '<div class="photo-card" data-id="' + r.id + '">' +
     (r.photo ? '<img src="' + UI.esc(r.photo) + '" alt="étiquette">' : '<div style="height:120px;display:flex;align-items:center;justify-content:center;font-size:40px;background:#eef">🏷️</div>') +
-    '<div class="cap"><b>' + UI.esc(r.produit || 'Produit') + '</b>🕐 ' + UI.frDate(r.date) + (r.time ? ' à ' + UI.esc(r.time) : '') + (r.dlc ? ' · DLC ' + UI.frDate(r.dlc) : '') + '</div></div>';
+    '<div class="cap"><b>' + UI.esc(r.produit || 'Produit') + '</b>🕐 ' + UI.frDate(r.date) + (r.time ? ' à ' + UI.esc(r.time) : '') +
+    (r.destineLe && r.destineLe !== r.date ? ' · pour le ' + UI.frDate(r.destineLe) : '') +
+    (r.dlc ? ' · DLC ' + UI.frDate(r.dlc) : '') + '</div></div>';
 
-  const weekHTML = wk => {
-    const days = Object.keys(byWeek[wk]).sort().reverse();
-    const count = days.reduce((n, d) => n + byWeek[wk][d].length, 0);
-    return '<div class="card"><h2>📅 Semaine du ' + UI.frDate(wk) + ' au ' + UI.frDate(UI.addDays(wk, 6)) + ' <span class="pill info">' + count + ' étiquette' + (count > 1 ? 's' : '') + '</span></h2>' +
-      days.map(d => {
-        const mn = menuByDay[d];
-        const parts = mn ? ['midi', 'soir'].filter(s => mn[s] && mn[s].length)
-          .map(s => (s === 'midi' ? '🌞 ' : '🌙 ') + mn[s].map(UI.esc).join(', ')) : [];
-        const menuLine = parts.length
-          ? '<div class="muted" style="font-size:13px;margin:2px 0 8px">🍲 Menu : ' + parts.join(' · ') + '</div>'
-          : '';
-        return '<div style="margin-bottom:14px"><div style="font-weight:700;text-transform:capitalize">' + dayName(d) + ' ' + UI.frDate(d) + '</div>' +
-          menuLine + '<div class="photo-grid">' + byWeek[wk][d].map(cardHTML).join('') + '</div></div>';
-      }).join('') + '</div>';
-  };
+  const sem = semaineISO(semaine);
+  const joursSemaine = [];
+  for (let i = 0; i < 7; i++) joursSemaine.push(UI.addDays(semaine, i));
 
-  el.innerHTML = headerHTML('Traçabilité des étiquettes', 'Classées par semaine avec le menu correspondant (PMS : classeur hebdomadaire) — 5 dernières semaines',
+  el.innerHTML = headerHTML('Traçabilité des étiquettes', 'Classées par semaine et par jour de destination — conservation illimitée (≥ 6 mois réglementaires)' + (total ? ' · ' + total + ' étiquettes archivées' + (plusAncienne ? ' depuis le ' + UI.frDate(plusAncienne) : '') : ''),
       '<button class="btn" id="new-eti">📷 Nouvelle étiquette</button>') +
-    (recs.length ? weeks.map(weekHTML).join('') : '<div class="empty"><span class="e-ico">🏷️</span>Aucune étiquette enregistrée.</div>');
+
+    '<div class="card"><div class="row">' +
+    '<button class="btn small ghost" id="wk-prev">‹ Semaine précédente</button>' +
+    '<div class="grow" style="text-align:center;font-weight:800;font-size:17px">Semaine ' + sem.num + ' ' + sem.annee +
+    '<div class="muted" style="font-size:12.5px;font-weight:400">du ' + UI.frDate(semaine) + ' au ' + UI.frDate(dimanche) + ' — ' + recs.length + ' étiquette' + (recs.length > 1 ? 's' : '') + '</div></div>' +
+    '<button class="btn small ghost" id="wk-next" ' + (UI.addDays(semaine, 7) > today ? 'disabled' : '') + '>Semaine suivante ›</button>' +
+    (semaine !== mondayOf(today) ? '<button class="btn small secondary" id="wk-today">Aujourd’hui</button>' : '') +
+    '</div></div>' +
+
+    (recs.length
+      ? '<div class="card">' + joursSemaine.filter(d => byDay[d]).map(d => {
+          const mn = menuByDay[d];
+          const parts = mn ? ['midi', 'soir'].filter(s => mn[s] && mn[s].length)
+            .map(s => (s === 'midi' ? '🌞 ' : '🌙 ') + mn[s].map(UI.esc).join(', ')) : [];
+          const menuLine = parts.length
+            ? '<div class="muted" style="font-size:13px;margin:2px 0 8px">🍲 Menu : ' + parts.join(' · ') + '</div>'
+            : '';
+          return '<div style="margin-bottom:14px"><div style="font-weight:700;text-transform:capitalize">' + dayName(d) + ' ' + UI.frDate(d) + ' <span class="pill info">' + byDay[d].length + '</span></div>' +
+            menuLine + '<div class="photo-grid">' + byDay[d].map(cardHTML).join('') + '</div></div>';
+        }).join('') + '</div>'
+      : '<div class="empty"><span class="e-ico">🏷️</span>Aucune étiquette pour cette semaine.</div>');
 
   el.querySelector('#new-eti').addEventListener('click', openEtiquetteModal);
+  el.querySelector('#wk-prev').addEventListener('click', () => { state.semaine = UI.addDays(semaine, -7); render(); });
+  el.querySelector('#wk-next').addEventListener('click', () => { state.semaine = UI.addDays(semaine, 7); render(); });
+  const btnToday = el.querySelector('#wk-today');
+  if (btnToday) btnToday.addEventListener('click', () => { state.semaine = mondayOf(today); render(); });
   el.querySelectorAll('.photo-card').forEach(c => c.addEventListener('click', () => openEtiquetteDetail(Number(c.dataset.id))));
 };
 
@@ -1994,6 +2026,8 @@ function openEtiquetteModal() {
     '<label class="field"><span class="lbl">Produit</span><input type="text" data-f="produit" placeholder="Ex. : escalope de dinde"></label>' +
     '<div class="row"><div class="grow"><label class="field"><span class="lbl">N° de lot (optionnel)</span><input type="text" data-f="lot"></label></div>' +
     '<div class="grow"><label class="field"><span class="lbl">DLC / DDM (optionnel)</span><input type="date" data-f="dlc"></label></div></div>' +
+    '<label class="field"><span class="lbl">🍽️ Produit destiné à quel jour ? (classement au classeur)</span>' +
+    '<input type="date" data-f="destine" value="' + UI.todayISO() + '"></label>' +
     agentField() +
     '<div class="actions"><button class="btn ghost" data-x="cancel">Fermer</button>' +
     '<button class="btn secondary" data-x="next">💾 + 📷 Suivante</button>' +
@@ -2050,6 +2084,7 @@ function openEtiquetteModal() {
           produit, photo: photoData,
           lot: m.querySelector('[data-f="lot"]').value.trim(),
           dlc: m.querySelector('[data-f="dlc"]').value,
+          destineLe: m.querySelector('[data-f="destine"]').value || UI.todayISO(),
           agent,
         });
         saved++;
@@ -2091,6 +2126,7 @@ async function openEtiquetteDetail(id) {
     '<h2>' + UI.esc(r.produit || 'Étiquette') + '</h2>' +
     (r.photo ? '<img src="' + UI.esc(r.photo) + '" class="photo-full">' : '') +
     '<p style="margin-top:12px">' + UI.frDate(r.date) + ' ' + UI.esc(r.time || '') +
+    (r.destineLe && r.destineLe !== r.date ? ' · destiné au <b>' + UI.frDate(r.destineLe) + '</b>' : '') +
     (r.lot ? ' · Lot : <b>' + UI.esc(r.lot) + '</b>' : '') +
     (r.dlc ? ' · DLC : <b>' + UI.frDate(r.dlc) + '</b>' : '') +
     '<br><span class="muted">Enregistré par ' + UI.esc(r.agent) + '</span></p>' +
@@ -2486,7 +2522,7 @@ const EXPORT_COLUMNS = {
   service: [['Date', r => UI.frDate(r.date)], ['Heure', r => r.time], ['Service', r => r.service || ''], ['Plat', r => r.plat], ['Liaison', r => r.liaison], ['Température (°C)', r => r.temp], ['Plat témoin', r => r.platTemoin ? 'OUI' : 'NON'], ['Conforme', r => r.conforme === false ? 'NON' : (r.tolere ? 'Toléré <2h' : 'OUI')], ['Action corrective', r => r.action], ['Agent', r => r.agent]],
   decongel: [['Date mise en décongélation', r => UI.frDate(r.date)], ['Heure', r => r.time], ['Produit', r => r.produit], ['Fournisseur', r => r.fournisseur], ['Lot', r => r.lot], ['À utiliser avant', r => UI.frDate(r.limite)], ['Sorti le', r => r.sortieDate ? UI.frDate(r.sortieDate) + ' ' + (r.sortieTime || '') : ''], ['Devenir', r => r.issue === 'jete' ? 'JETÉ' : (r.issue === 'utilise' ? 'Utilisé' : '')], ['Statut', r => r.statut === 'termine' ? 'Terminé' : 'En cours'], ['Agent', r => r.agent]],
   entame: [['Date ouverture', r => UI.frDate(r.date)], ['Heure', r => r.time], ['Produit', r => r.produit], ['Type', r => r.categorie], ['DLC interne', r => UI.frDate(r.dlc)], ['Clôturé le', r => r.finDate ? UI.frDate(r.finDate) : ''], ['Devenir', r => r.issue === 'jete' ? 'JETÉ' : (r.issue === 'utilise' ? 'Consommé' : '')], ['Statut', r => r.statut === 'termine' ? 'Terminé' : 'En cours'], ['Agent', r => r.agent]],
-  etiquette: [['Date', r => UI.frDate(r.date)], ['Heure', r => r.time], ['Produit', r => r.produit], ['Lot', r => r.lot], ['DLC', r => r.dlc ? UI.frDate(r.dlc) : ''], ['Photo', r => r.photo ? 'OUI' : 'NON'], ['Agent', r => r.agent]],
+  etiquette: [['Date photo', r => UI.frDate(r.date)], ['Heure', r => r.time], ['Destiné au', r => r.destineLe ? UI.frDate(r.destineLe) : UI.frDate(r.date)], ['Produit', r => r.produit], ['Lot', r => r.lot], ['DLC', r => r.dlc ? UI.frDate(r.dlc) : ''], ['Photo', r => r.photo ? 'OUI' : 'NON'], ['Agent', r => r.agent]],
   nettoyage: [['Date', r => UI.frDate(r.date)], ['Heure', r => r.time], ['Tâche', r => r.taskName], ['Zone', r => r.zone], ['Fréquence', r => r.freq], ['Agent', r => r.agent]],
   huile: [['Date', r => UI.frDate(r.date)], ['Heure', r => r.time], ['Friteuse', r => r.friteuse], ['Opération', r => r.action], ['État huile', r => r.etat], ['Polarité', r => r.polaires === 'nok' ? '> 25 % NON CONFORME' : (r.polaires === 'ok' ? '≤ 25 %' : '') + (r.polairesPct != null ? ' (' + r.polairesPct + ' %)' : '')], ['Huile usagée', r => r.volume != null || r.destination ? (r.volume != null ? r.volume + ' L' : '') + (r.destination ? ' → ' + r.destination : '') + (r.bon ? ' (bon ' + r.bon + ')' : '') : ''], ['Température (°C)', r => r.temp], ['Action corrective', r => r.actionCorrective], ['Remarque', r => r.remarque], ['Agent', r => r.agent]],
   nonconf: [['Date', r => UI.frDate(r.date)], ['Heure', r => r.time], ['Objet', r => r.objet], ['Lieu', r => r.lieu], ['Lot', r => r.lot], ['Péremption', r => r.peremption ? UI.frDate(r.peremption) : ''], ['Description', r => r.description], ['Action corrective', r => r.action], ['Statut', r => r.statut], ['Agent', r => r.agent]],
@@ -3471,6 +3507,8 @@ async function refroidTick() {
   const tryBackup = () => maybeAutoBackup().catch(e => console.warn('backup auto', e));
   setTimeout(tryBackup, 2500);
   setInterval(tryBackup, 60 * 60 * 1000);
+  // dès que la connexion revient (wifi retrouvé), la sauvegarde en retard part immédiatement
+  window.addEventListener('online', () => setTimeout(tryBackup, 3000));
   // chronomètre des refroidissements (compteurs vivants + alerte de dépassement)
   setInterval(() => { refroidTick().catch(() => {}); }, 30 * 1000);
   // La tablette reste allumée en continu : au passage de minuit (ou au retour

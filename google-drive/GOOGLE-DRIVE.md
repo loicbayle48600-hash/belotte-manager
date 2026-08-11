@@ -49,15 +49,20 @@ image**, rangée **par semaine** — la même organisation que le classeur de tr
 ├── 📁 Registres PDF                        ← PDF lisible des 30 derniers jours, déposé chaque semaine (12 conservés)
 │   └── registres-haccp-30j-2026-07-13.pdf
 └── 📁 Photos étiquettes
-    ├── 📁 Semaine du 06-07-2026
-    │   ├── 2026-07-07_09h12_escalopes-de-dinde_a3f19c42.jpg
+    ├── 📁 Semaine 32 2026
+    │   ├── 📁 lundi
+    │   │   └── 2026-08-03_09h12_escalopes-de-dinde_a3f19c42.jpg
+    │   ├── 📁 mardi
     │   └── …
-    └── 📁 Semaine du 13-07-2026
+    └── 📁 Semaine 33 2026
         └── …
 ```
 
-Chaque photo n'est déposée qu'une seule fois ; au maximum 100 nouvelles photos par
-sauvegarde (le reste part avec la suivante).
+Les photos sont classées selon le **jour de destination du produit** (choisi à la
+prise de photo), comme le classeur papier. Conservation illimitée (≥ 6 mois
+réglementaires) — rien n'est supprimé automatiquement. Chaque photo n'est déposée
+qu'une seule fois ; au maximum 100 nouvelles photos par sauvegarde (le reste part
+avec la suivante).
 
 > ⚠️ **Si tu avais déjà installé le script** : recopie le nouveau `Code.gs`, puis
 > **Déployer → Gérer les déploiements → ✏️ Modifier → Version : Nouvelle version →
