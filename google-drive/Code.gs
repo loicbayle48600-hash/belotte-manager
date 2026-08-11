@@ -84,19 +84,11 @@ function extrairePhotos_(dossier, data) {
     return { dossier: dossiers[cle], noms: existants[cle] };
   }
 
-  // Les photos de plus de 60 jours sont déposées depuis longtemps : les
-  // ignorer évite de relister des dizaines de dossiers à chaque sauvegarde
-  // (limite d'exécution Apps Script ~6 min).
-  var limite = new Date();
-  limite.setDate(limite.getDate() - 60);
-  var limiteISO = limite.getFullYear() + '-' + ('0' + (limite.getMonth() + 1)).slice(-2) + '-' + ('0' + limite.getDate()).slice(-2);
-
   var ajoutees = 0;
   for (var i = 0; i < data.records.length; i++) {
     if (ajoutees >= MAX_PHOTOS_PAR_ENVOI) break;
     var r = data.records[i];
     if (r.type !== 'etiquette' || !r.photo) continue;
-    if ((r.destineLe || r.date || '') < limiteISO) continue;
     var m = String(r.photo).match(/^data:image\/(jpeg|jpg|png|webp);base64,(.+)$/);
     if (!m) continue;
     var produit = String(r.produit || 'etiquette').replace(/[^\w\-À-ÿ ]+/g, '').trim().replace(/\s+/g, '-').slice(0, 40) || 'etiquette';

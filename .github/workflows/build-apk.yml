@@ -74,3 +74,16 @@ jobs:
           git push -q --force "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" apk-build
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # Release « apk » à lien stable : téléchargeable directement depuis la
+      # tablette via https://github.com/<repo>/releases/latest
+      - name: Publier l'APK en release GitHub
+        run: |
+          gh release delete apk --yes --repo "$GITHUB_REPOSITORY" 2>/dev/null || true
+          git push -q --delete "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" refs/tags/apk 2>/dev/null || true
+          gh release create apk out/haccp-cuisine.apk \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "📱 HACCP Cuisine — dernier APK (build ${GITHUB_RUN_NUMBER})" \
+            --notes "APK Android à installer sur la tablette. Compilé automatiquement depuis le dernier code. Ouvre ce lien sur la tablette et touche haccp-cuisine.apk ci-dessous."
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
