@@ -323,8 +323,19 @@ function dishInputHTML(field, label, placeholder, menuNames, value) {
 function lastAutoBackupDate() { return localStorage.getItem('haccp-drive-last') || ''; }
 function setLastAutoBackupDate(d) { localStorage.setItem('haccp-drive-last', d || ''); }
 
-async function buildBackup() {
-  const records = await DB.getAllRecords();
+/** Sauvegarde complète. { withDocData: false } (envois cloud) remplace le
+ *  contenu des documents importés par leurs seules métadonnées : quelques PDF
+ *  de 8 Mo feraient sinon dépasser la limite de 50 Mo d'Apps Script et
+ *  échouer la sauvegarde quotidienne pour toujours. L'export local (fichier)
+ *  conserve tout. */
+async function buildBackup(opts) {
+  const withDocData = !opts || opts.withDocData !== false;
+  let records = await DB.getAllRecords();
+  if (!withDocData) {
+    records = records.map(r => (r.type === 'document' && r.data)
+      ? Object.assign({}, r, { data: '', dataOmise: true })
+      : r);
+  }
   return { app: 'haccp-cuisine', version: 1, exportedAt: new Date().toISOString(), etablissement: SETTINGS.etablissement, settings: SETTINGS, records };
 }
 
@@ -425,7 +436,7 @@ async function sendBackupAll() {
   const targets = backupTargets();
   if (!targets.length) return { ok: false, results: [], message: 'Aucune destination de sauvegarde configurée' };
   if (!navigator.onLine) return { ok: false, results: [], message: 'Pas de connexion Internet' };
-  const payload = JSON.stringify(await buildBackup());
+  const payload = JSON.stringify(await buildBackup({ withDocData: false }));
   const results = [];
   for (const t of targets) {
     const r = await t.send(payload);
@@ -1987,31 +1998,36 @@ function parseEtiquetteOCR(texte) {
   dates.sort((a, b) => (b.kw - a.kw) || (b.future - a.future) || a.iso.localeCompare(b.iso));
   if (dates.length) res.dlc = dates[0].iso;
 
-  // --- N° de lot : après un mot-clé LOT/BATCH, ou motif L+chiffres ---
-  const reLotKw = /(?:lot|batch|n[°o]\s*lot)\s*[:n°o.]*\s*([A-Z0-9][A-Z0-9\-\/.]{2,15})/i;
-  const reLotL = /\bL[ :.]?([0-9][0-9A-Z\-\/]{3,12})\b/;
+  // --- N° de lot : après un mot-clé LOT/BATCH entier (pas « échaLOTes »),
+  // capture avec au moins un chiffre ; sinon motif L + 4 chiffres minimum ---
+  const reLotKw = /(?:\b(?:lot|batch)\b|n[°o]\s*lot\b)\s*[:n°o.\s]*([A-Z0-9][A-Z0-9\-\/.]{2,15})/i;
+  const reLotL = /\bL[ :.]?(\d{4,12}[A-Z0-9\-\/]{0,4})\b/;
+  const reAdresse = /\b(rue|avenue|zone|cedex|z\.?\s?i\.?|bp)\b/i;
   for (const l of lignes) {
     const m1 = reLotKw.exec(l);
-    if (m1) { res.lot = m1[1].replace(/[.,:]+$/, ''); break; }
+    if (m1 && /\d/.test(m1[1])) { res.lot = m1[1].replace(/[.,:]+$/, ''); break; }
   }
   if (!res.lot) {
     for (const l of lignes) {
+      if (reAdresse.test(l)) continue; // « Zone L1-240 Les Arnavaux » = adresse, pas un lot
       const m2 = reLotL.exec(l);
       if (m2) { res.lot = 'L' + m2[1]; break; }
     }
   }
 
-  // --- Produit : parmi les premières lignes, la plus « riche en lettres » qui
-  // ne ressemble ni à une date, ni à un lot, ni à un poids/prix ---
-  const REJET = /(dlc|ddm|lot|batch|exp|kg\b|\bg\b|€|\bpoids|net|conserver|consommer|ingr[ée]dients|\d{1,2}[\/.\-]\d{1,2})/i;
+  // --- Produit : parmi les premières lignes, la plus « riche en lettres »
+  // après retrait des poids, qui ne ressemble ni à une date, ni à un lot,
+  // ni à une mention d'origine/emballage ---
+  const REJET = /(\bdlc\b|\bddm\b|\blot\b|\bbatch\b|\bexp\b|€|\bpoids\b|\bnet\b|origine|p[êe]ch[ée]|emball[ée]|fabriqu[ée]|conditionn[ée]|\bfrance\b|conserver|consommer|ingr[ée]dients|\d{1,2}[\/.\-]\d{1,2})/i;
   let best = '', bestScore = 0;
   lignes.slice(0, 8).forEach((l, i) => {
-    const lettres = (l.match(/[A-Za-zÀ-ÿ]/g) || []).length;
-    if (lettres < 4 || REJET.test(l)) return;
+    const sansPoids = l.replace(/\d+[.,]?\d*\s*(kg|g|l|ml|cl)\b/gi, '').replace(/\s+/g, ' ').trim();
+    const lettres = (sansPoids.match(/[A-Za-zÀ-ÿ]/g) || []).length;
+    if (lettres < 4 || REJET.test(sansPoids)) return;
     const score = lettres * (i < 3 ? 2 : 1); // les premières lignes sont souvent le nom
-    if (score > bestScore) { bestScore = score; best = l; }
+    if (score > bestScore) { bestScore = score; best = sansPoids; }
   });
-  res.produit = best.replace(/\s+/g, ' ').trim().slice(0, 60);
+  res.produit = best.slice(0, 60);
 
   return res;
 }
@@ -2061,7 +2077,11 @@ function openEtiquetteModal() {
             ? '<span class="pill ok">✔ OCR : ' + filled.join(', ') + ' pré-rempli(s) — vérifie avant d’enregistrer</span>'
             : '<span class="pill warn">OCR : rien de lisible détecté — saisis les champs à la main</span>';
         } catch (e) {
-          if (seq === ocrSeq && m.isConnected) ocrStatus.innerHTML = '<span class="pill warn">OCR indisponible (' + UI.esc(e.message) + ')</span>';
+          // Worker peut-être mort (mémoire, abort wasm) : on le détruit pour
+          // qu'un nouveau soit créé au prochain essai.
+          try { const w = await _ocrWorkerPromise; if (w) await w.terminate(); } catch { /* déjà mort */ }
+          _ocrWorkerPromise = null;
+          if (seq === ocrSeq && m.isConnected) ocrStatus.innerHTML = '<span class="pill warn">OCR indisponible (' + UI.esc(e.message) + ') — reprends la photo pour réessayer</span>';
         }
       };
 
@@ -2708,16 +2728,23 @@ function openDocumentModal() {
           UI.toast('Fichier trop lourd (max 8 Mo) — compresse-le ou photographie les pages', 'bad');
           e.target.value = ''; return;
         }
-        fileName = f.name; fileMime = f.type || 'application/octet-stream'; fileSize = f.size;
-        fileData = await new Promise((resolve, reject) => {
-          const fr = new FileReader();
-          fr.onload = () => resolve(fr.result);
-          fr.onerror = () => reject(fr.error);
-          fr.readAsDataURL(f);
-        });
-        m.querySelector('[data-fileinfo]').textContent = '📄 ' + fileName + ' (' + Math.round(fileSize / 1024) + ' Ko)';
-        const nomInput = m.querySelector('[data-f="nom"]');
-        if (!nomInput.value.trim()) nomInput.value = fileName.replace(/\.[^.]+$/, '').replace(/[_\-]+/g, ' ');
+        try {
+          fileName = f.name; fileMime = f.type || 'application/octet-stream'; fileSize = f.size;
+          fileData = await new Promise((resolve, reject) => {
+            const fr = new FileReader();
+            fr.onload = () => resolve(fr.result);
+            fr.onerror = () => reject(fr.error || new Error('lecture impossible'));
+            fr.readAsDataURL(f);
+          });
+          m.querySelector('[data-fileinfo]').textContent = '📄 ' + fileName + ' (' + Math.round(fileSize / 1024) + ' Ko)';
+          const nomInput = m.querySelector('[data-f="nom"]');
+          if (!nomInput.value.trim()) nomInput.value = fileName.replace(/\.[^.]+$/, '').replace(/[_\-]+/g, ' ');
+        } catch {
+          fileData = null; fileName = ''; fileSize = 0;
+          e.target.value = '';
+          m.querySelector('[data-fileinfo]').textContent = '';
+          UI.toast('Impossible de lire le fichier (est-il bien téléchargé sur la tablette ?)', 'bad');
+        }
       });
       m.querySelector('[data-x="cancel"]').onclick = close;
       m.querySelector('[data-x="save"]').onclick = async () => {
@@ -2733,7 +2760,7 @@ function openDocumentModal() {
           agent,
         });
         close();
-        UI.toast('Document enregistré ✔ (inclus dans les sauvegardes)', 'ok');
+        UI.toast('Document enregistré ✔ (inclus dans la sauvegarde locale ; le cloud n’emporte que la liste)', 'ok');
         render();
       };
     }
@@ -2745,7 +2772,7 @@ VIEWS.documents = async function (el) {
   const byCat = {};
   docs.forEach(d => { (byCat[d.categorie] = byCat[d.categorie] || []).push(d); });
 
-  el.innerHTML = headerHTML('Documents & PMS', 'Plan de maîtrise sanitaire, analyses laboratoire, autocontrôles… — tout le classeur dans la tablette, inclus dans les sauvegardes cloud',
+  el.innerHTML = headerHTML('Documents & PMS', 'Plan de maîtrise sanitaire, analyses laboratoire, autocontrôles… — tout le classeur dans la tablette (fichiers inclus dans la sauvegarde locale JSON ; le cloud n’emporte que la liste)',
       '<button class="btn" id="new-doc">📥 Ajouter un document</button>') +
 
     '<div class="card"><h2>📖 Consignes clés du PMS <span class="pill info">mémo</span></h2>' +
@@ -2878,7 +2905,9 @@ VIEWS.historique = async function (el) {
     const cols = exportCols(state.type);
     const box = document.getElementById('h-table');
     if (!box) return; // l'utilisateur a quitté la vue pendant la requête
-    const annulable = !['menu', 'fermeture'].includes(state.type);
+    // documents : suppression dédiée dans leur module (pas d'annulation qui
+    // laisserait des Mo orphelins en base)
+    const annulable = !['menu', 'fermeture', 'document'].includes(state.type);
     // En-tête officiel, visible uniquement à l'impression (classeur PMS)
     const printHeader = '<div class="print-header"><h2>' + UI.esc(SETTINGS.etablissement) + '</h2>' +
       'Registre : <b>' + UI.esc(TYPE_LABELS[state.type]) + '</b> — Période : du ' + UI.frDate(state.from) + ' au ' + UI.frDate(state.to) +

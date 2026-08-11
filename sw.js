@@ -34,6 +34,15 @@ self.addEventListener('activate', e => {
 
 self.addEventListener('fetch', e => {
   if (e.request.method !== 'GET') return;
+
+  // Les bibliothèques vendorées (OCR ~14 Mo, xlsx, jspdf) sont immuables :
+  // cache seul, sans revalidation réseau en arrière-plan (elles ne changent
+  // qu'avec une nouvelle version du cache).
+  if (new URL(e.request.url).pathname.includes('/vendor/')) {
+    e.respondWith(caches.match(e.request).then(cached => cached || fetch(e.request)));
+    return;
+  }
+
   e.respondWith(
     caches.match(e.request).then(cached => {
       const fresh = fetch(e.request).then(resp => {
