@@ -38,4 +38,16 @@
     <!-- Permissions -->
 
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Appareil photo : étiquettes produits (plugin @capacitor/camera, demande à l'usage) -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <!-- Choix d'une photo existante dans la galerie -->
+    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />
+
+    <!-- Android 11+ : visibilité de l'application appareil photo du système -->
+    <queries>
+        <intent>
+            <action android:name="android.media.action.IMAGE_CAPTURE" />
+        </intent>
+    </queries>
 </manifest>

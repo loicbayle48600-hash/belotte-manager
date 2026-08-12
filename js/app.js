@@ -1977,6 +1977,42 @@ VIEWS.tracabilite = async function (el) {
   el.querySelectorAll('.photo-card').forEach(c => c.addEventListener('click', () => openEtiquetteDetail(Number(c.dataset.id))));
 };
 
+/* ---------- Prise de photo (plugin Camera natif sur l'APK) ---------- */
+
+/** Vrai si le plugin Camera natif est disponible (APK). */
+function hasNativeCamera() {
+  const cap = window.Capacitor;
+  return !!(cap && cap.isNativePlatform && cap.isNativePlatform() && cap.Plugins && cap.Plugins.Camera);
+}
+
+/** Prend une photo via le plugin Camera (l'autorisation Android est demandée
+ *  proprement à la première utilisation). Retourne une dataURL, ou null si
+ *  l'utilisateur annule / refuse. */
+async function capturePhoto() {
+  try {
+    const photo = await window.Capacitor.Plugins.Camera.getPhoto({
+      quality: 85,
+      width: 1200,
+      resultType: 'dataUrl',
+      source: 'PROMPT',
+      promptLabelHeader: 'Photo de l’étiquette',
+      promptLabelPicture: '📷 Prendre une photo',
+      promptLabelPhoto: '🖼️ Choisir dans la galerie',
+      promptLabelCancel: 'Annuler',
+    });
+    return photo && photo.dataUrl ? photo.dataUrl : null;
+  } catch (e) {
+    const msg = String((e && e.message) || e);
+    if (/cancel|annul/i.test(msg)) return null;
+    if (/denied|permission|refus/i.test(msg)) {
+      UI.toast('Autorisation refusée — active l’appareil photo : Paramètres Android → Applications → HACCP Cuisine → Autorisations', 'bad');
+      return null;
+    }
+    UI.toast('Appareil photo indisponible : ' + msg, 'bad');
+    return null;
+  }
+}
+
 /* ---------- OCR des étiquettes (Tesseract.js, 100 % hors ligne) ---------- */
 let _ocrWorkerPromise = null;
 function ensureOCR() {
@@ -2124,15 +2160,35 @@ function openEtiquetteModal() {
         }
       };
 
+      const setPhoto = dataUrl => {
+        photoData = dataUrl;
+        m.querySelector('[data-preview]').innerHTML = '<img src="' + photoData + '" class="photo-full" style="max-height:220px">';
+        runOCR();
+      };
+
       photoInput.addEventListener('change', async e => {
         const f = e.target.files[0];
         if (!f) return;
         try {
-          photoData = await UI.shrinkImage(f, 1000);
-          m.querySelector('[data-preview]').innerHTML = '<img src="' + photoData + '" class="photo-full" style="max-height:220px">';
-          runOCR();
+          setPhoto(await UI.shrinkImage(f, 1000));
         } catch { UI.toast('Impossible de lire la photo', 'bad'); }
       });
+
+      // APK : le plugin Camera natif remplace le sélecteur de fichiers de la
+      // WebView (dont les autorisations photo échouent sur certaines tablettes).
+      const demanderPhoto = () => {
+        if (!hasNativeCamera()) { photoInput.click(); return; }
+        capturePhoto().then(dataUrl => { if (dataUrl) setPhoto(dataUrl); });
+      };
+      if (hasNativeCamera()) {
+        photoInput.style.display = 'none';
+        const camBtn = document.createElement('button');
+        camBtn.type = 'button';
+        camBtn.className = 'btn block secondary';
+        camBtn.textContent = '📷 Prendre la photo de l’étiquette';
+        photoInput.parentElement.appendChild(camBtn);
+        camBtn.addEventListener('click', demanderPhoto);
+      }
 
       const save = async () => {
         const produit = m.querySelector('[data-f="produit"]').value.trim();
@@ -2173,7 +2229,7 @@ function openEtiquetteModal() {
         counter.style.display = '';
         counter.textContent = saved + ' enregistrée' + (saved > 1 ? 's' : '');
         UI.toast('Étiquette ' + saved + ' enregistrée ✔', 'ok');
-        photoInput.click();
+        demanderPhoto();
       };
     }
   );
