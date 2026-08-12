@@ -131,21 +131,35 @@ const UI = (() => {
     });
   }
 
+  /** Contexte audio partagé, débloqué au premier geste de l'utilisateur :
+   *  en PWA navigateur, un AudioContext créé sans geste reste « suspended »
+   *  et le bip serait muet (dans l'APK Capacitor, pas de restriction). */
+  let _audioCtx = null;
+  function _unlockAudio() {
+    try {
+      if (!_audioCtx) _audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      if (_audioCtx.state === 'suspended') _audioCtx.resume();
+    } catch { /* pas d'audio sur cet appareil */ }
+  }
+  document.addEventListener('pointerdown', _unlockAudio, { once: true, capture: true });
+
   /** Triple bip d'alerte (WebAudio, aucune dépendance) + vibration si disponible. */
   function beep() {
     try {
-      const ctx = new (window.AudioContext || window.webkitAudioContext)();
-      for (let i = 0; i < 3; i++) {
-        const osc = ctx.createOscillator();
-        const gain = ctx.createGain();
-        osc.connect(gain); gain.connect(ctx.destination);
-        osc.frequency.value = 880;
-        gain.gain.setValueAtTime(0.4, ctx.currentTime + i * 0.45);
-        gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + i * 0.45 + 0.3);
-        osc.start(ctx.currentTime + i * 0.45);
-        osc.stop(ctx.currentTime + i * 0.45 + 0.32);
+      _unlockAudio();
+      const ctx = _audioCtx;
+      if (ctx && ctx.state === 'running') {
+        for (let i = 0; i < 3; i++) {
+          const osc = ctx.createOscillator();
+          const gain = ctx.createGain();
+          osc.connect(gain); gain.connect(ctx.destination);
+          osc.frequency.value = 880;
+          gain.gain.setValueAtTime(0.4, ctx.currentTime + i * 0.45);
+          gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + i * 0.45 + 0.3);
+          osc.start(ctx.currentTime + i * 0.45);
+          osc.stop(ctx.currentTime + i * 0.45 + 0.32);
+        }
       }
-      setTimeout(() => ctx.close(), 2000);
     } catch { /* audio indisponible : la vibration et le toast restent */ }
     if (navigator.vibrate) navigator.vibrate([300, 150, 300, 150, 300]);
   }

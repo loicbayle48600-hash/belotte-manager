@@ -2,7 +2,8 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <application
-        android:allowBackup="true"
+        android:allowBackup="false"
+        android:networkSecurityConfig="@xml/network_security_config"
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
         android:roundIcon="@mipmap/ic_launcher_round"
@@ -38,6 +39,10 @@
     <!-- Permissions -->
 
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Détection de la connectivité (navigator.onLine, reprise des sauvegardes au retour du wifi) -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <!-- Vibration de l'alarme de refroidissement -->
+    <uses-permission android:name="android.permission.VIBRATE" />
     <!-- Appareil photo : étiquettes produits (plugin @capacitor/camera, demande à l'usage) -->
     <uses-permission android:name="android.permission.CAMERA" />
     <!-- Choix d'une photo existante dans la galerie -->

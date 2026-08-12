@@ -2,9 +2,7 @@
   "appId": "fr.cuisine.haccp",
   "appName": "HACCP Cuisine",
   "webDir": "www",
-  "android": {
-    "allowMixedContent": true
-  },
+  "android": {},
   "plugins": {
     "CapacitorHttp": {
       "enabled": true

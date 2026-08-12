@@ -2005,7 +2005,16 @@ async function capturePhoto() {
     const msg = String((e && e.message) || e);
     if (/cancel|annul/i.test(msg)) return null;
     if (/denied|permission|refus/i.test(msg)) {
-      UI.toast('Autorisation refusée — active l’appareil photo : Paramètres Android → Applications → HACCP Cuisine → Autorisations', 'bad');
+      // Refus mémorisé par Android : un toast de 3 s ne suffit pas, il faut
+      // guider vers les Paramètres (et rappeler que la galerie marche toujours).
+      UI.modal(
+        '<h2>📷 Appareil photo bloqué</h2>' +
+        '<p style="margin-bottom:10px">Android a mémorisé un refus d’autorisation. Pour le réactiver :</p>' +
+        '<p style="margin-bottom:10px"><b>Paramètres → Applications → HACCP Cuisine → Autorisations → Appareil photo → Autoriser</b></p>' +
+        '<p class="muted" style="margin-bottom:10px">En attendant, « 🖼️ Choisir dans la galerie » fonctionne sans autorisation.</p>' +
+        '<div class="actions"><button class="btn" data-x="ok">Compris</button></div>',
+        (m, close) => { m.querySelector('[data-x="ok"]').onclick = close; }
+      );
       return null;
     }
     UI.toast('Appareil photo indisponible : ' + msg, 'bad');
@@ -3682,6 +3691,11 @@ async function refroidTick() {
 (async function init() {
   await loadSettings();
   document.querySelectorAll('.nav-btn').forEach(b => b.addEventListener('click', () => navigate(b.dataset.view)));
+  // Protéger IndexedDB de l'éviction par le système (photos, registres) —
+  // accordé silencieusement dans l'APK, important aussi en PWA navigateur.
+  if (navigator.storage && navigator.storage.persist) {
+    navigator.storage.persist().catch(() => {});
+  }
   render();
   // Sauvegarde automatique quotidienne. La tablette reste souvent allumée en
   // continu : on retente au retour au premier plan et toutes les heures
