@@ -209,6 +209,12 @@ let currentView = 'dashboard';
 let _pinOkUntil = 0; // déverrouillage des Réglages valable 5 min
 
 function navigate(view) {
+  // Menu synchronisé pendant que la vue Menu était ouverte : appliquer
+  // l'import à la sortie de la vue (l'édition en cours n'est plus à protéger)
+  if (view !== 'menu' && VIEWS.menu && VIEWS.menu._state && VIEWS.menu._state._pendingSync) {
+    VIEWS.menu._state.items = null;
+    VIEWS.menu._state._pendingSync = false;
+  }
   // Réglages protégeables par PIN (tablette partagée en cuisine)
   if (view === 'parametres' && SETTINGS.pin && Date.now() > _pinOkUntil) {
     openPinModal(() => { _pinOkUntil = Date.now() + 5 * 60 * 1000; navigate('parametres'); });
@@ -2190,12 +2196,17 @@ function openEtiquetteModal() {
         capturePhoto().then(dataUrl => { if (dataUrl) setPhoto(dataUrl); });
       };
       if (hasNativeCamera()) {
-        photoInput.style.display = 'none';
+        // Masquer le label ENTIER (son texte relaierait le clic vers l'input
+        // caché → sélecteur WebView cassé) et placer le bouton après lui.
+        const lbl = photoInput.closest('label');
+        lbl.style.display = 'none';
+        photoInput.disabled = true;
         const camBtn = document.createElement('button');
         camBtn.type = 'button';
         camBtn.className = 'btn block secondary';
+        camBtn.style.marginBottom = '12px';
         camBtn.textContent = '📷 Prendre la photo de l’étiquette';
-        photoInput.parentElement.appendChild(camBtn);
+        lbl.after(camBtn);
         camBtn.addEventListener('click', demanderPhoto);
       }
 
@@ -3622,7 +3633,10 @@ let _menuSyncEnCours = false;
 async function maybeMenuSync(force) {
   const url = (SETTINGS.menuUrl || '').trim();
   if (!url || (!SETTINGS.menuAutoSync && !force)) return;
-  if (!navigator.onLine || _menuSyncEnCours) return;
+  if (!navigator.onLine || _menuSyncEnCours) {
+    if (force) UI.toast(!navigator.onLine ? 'Vérification impossible : pas de connexion Internet' : 'Vérification déjà en cours…', 'bad');
+    return;
+  }
   const today = UI.todayISO();
   if (!force && localStorage.getItem('haccp-menu-check') === today) return;
   _menuSyncEnCours = true;
@@ -3633,8 +3647,8 @@ async function maybeMenuSync(force) {
     // empreinte du fichier : réimport seulement s'il a changé
     const digest = await crypto.subtle.digest('SHA-256', buf);
     const hash = [...new Uint8Array(digest)].slice(0, 12).map(b => b.toString(16).padStart(2, '0')).join('');
-    localStorage.setItem('haccp-menu-check', today);
     if (localStorage.getItem('haccp-menu-hash') === hash) {
+      localStorage.setItem('haccp-menu-check', today); // succès : fichier inchangé
       if (force) UI.toast('Menu déjà à jour ✔', 'ok');
       return;
     }
@@ -3644,11 +3658,19 @@ async function maybeMenuSync(force) {
     const dates = Object.keys(days);
     if (!dates.length) return;
     await applyImport({ days, catalog });
+    localStorage.setItem('haccp-menu-check', today);
     localStorage.setItem('haccp-menu-hash', hash);
     localStorage.setItem('haccp-menu-last', today);
-    if (VIEWS.menu._state) VIEWS.menu._state.items = null;
-    UI.toast('🍲 Menu mis à jour depuis GitHub : ' + dates.length + ' jours ✔', 'ok');
-    if (currentView === 'menu' || currentView === 'service') render();
+    if (currentView === 'menu') {
+      // ne pas écraser une sélection de plats en cours d'édition à l'écran :
+      // l'invalidation se fera en quittant la vue (drapeau _pendingSync)
+      if (VIEWS.menu._state) VIEWS.menu._state._pendingSync = true;
+      UI.toast('🍲 Menu mis à jour depuis GitHub (' + dates.length + ' jours) — rouvre le module Menu pour le voir', 'ok');
+    } else {
+      if (VIEWS.menu._state) VIEWS.menu._state.items = null;
+      UI.toast('🍲 Menu mis à jour depuis GitHub : ' + dates.length + ' jours ✔', 'ok');
+      if (currentView === 'service') render();
+    }
   } catch (e) {
     if (force) UI.toast('Synchronisation du menu impossible : ' + e.message, 'bad');
   } finally {
