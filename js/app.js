@@ -577,6 +577,8 @@ VIEWS.dashboard = async function (el) {
     SETTINGS.agents.map(a => '<option' + (a === getCurrentAgent() ? ' selected' : '') + '>' + UI.esc(a) + '</option>').join('') +
     '</select></label></div>' +
     (SETTINGS.agents.length === 0 ? '<div class="pill warn">Ajoute les agents dans ⚙️ Réglages</div>' : '') +
+    '<div><button class="btn secondary" id="dash-backup" style="white-space:nowrap">☁️ Sauvegarder</button>' +
+    (lastAutoBackupDate() ? '<div class="muted" style="font-size:11.5px;text-align:center;margin-top:4px">dernière : ' + UI.frDate(lastAutoBackupDate()) + '</div>' : '') + '</div>' +
     '</div></div>' +
 
     '<div class="stat-tiles">' +
@@ -628,6 +630,25 @@ VIEWS.dashboard = async function (el) {
 
   el.querySelector('#dash-agent').addEventListener('change', e => setCurrentAgent(e.target.value));
   el.querySelectorAll('[data-go]').forEach(b => b.addEventListener('click', () => navigate(b.dataset.go)));
+
+  // Sauvegarde cloud manuelle en un tap depuis l'accueil
+  el.querySelector('#dash-backup').addEventListener('click', async () => {
+    if (!backupTargets().length) {
+      UI.toast('Configure d’abord une destination : ⚙️ Réglages → Sauvegardes cloud', 'bad');
+      navigate('parametres');
+      return;
+    }
+    if (!navigator.onLine) { UI.toast('Pas de connexion Internet — la sauvegarde partira automatiquement au retour du wifi', 'bad'); return; }
+    UI.toast('☁️ Sauvegarde en cours…');
+    const res = await sendBackupAll();
+    res.results.forEach(r => UI.toast((r.ok ? '✔ ' : '✘ ') + r.name + (r.ok ? ' : sauvegarde envoyée' : ' : ' + r.message), r.ok ? 'ok' : 'bad'));
+    if (res.ok) {
+      setLastAutoBackupDate(UI.todayISO());
+      maybeWeeklyPdfToDrive().catch(() => {});
+      maybeArchivePdfsToDrive().catch(() => {});
+      render();
+    }
+  });
 };
 
 /* ================================================================

@@ -44,16 +44,16 @@ jobs:
           bash sync-www.sh
           npx cap sync android
 
-      - name: Compiler l'APK debug
+      - name: Compiler l'APK signé (clé fixe, mises à jour par-dessus garanties)
         working-directory: mobile/android
         run: |
           chmod +x gradlew
-          ./gradlew assembleDebug --no-daemon
+          ./gradlew assembleRelease --no-daemon -PappVersionCode=${GITHUB_RUN_NUMBER} -PappVersionName=1.${GITHUB_RUN_NUMBER}
 
       - name: Renommer l'APK
         run: |
           mkdir -p out
-          cp mobile/android/app/build/outputs/apk/debug/app-debug.apk out/haccp-cuisine.apk
+          cp mobile/android/app/build/outputs/apk/release/app-release.apk out/haccp-cuisine.apk
           ls -la out/
 
       - name: Publier l'APK comme artefact
