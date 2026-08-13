@@ -1168,6 +1168,11 @@ async function openServiceModal(prefillPlat, svc, jour) {
     UI.tempInputHTML('temp') + '</label>' +
     '<label class="field"><span class="lbl">Plat témoin prélevé ?</span>' +
     UI.segHTML('temoin', [{ value: 'oui', label: '✔ Oui' }, { value: 'non', label: 'Non' }], 'non') + '</label>' +
+    '<label class="field"><span class="lbl">🕐 Heure du contrôle</span>' +
+    UI.segHTML('heure', [
+      { value: '12:00', label: '🌞 12 h' },
+      { value: '18:00', label: '🌙 18 h' },
+    ], service === 'soir' ? '18:00' : '12:00') + '</label>' +
     agentField() +
     '<div data-verdict></div>' +
     actionFieldHTML() +
@@ -1211,7 +1216,7 @@ async function openServiceModal(prefillPlat, svc, jour) {
         const action = m.querySelector('[data-f="action"]').value.trim();
         if (!ok && !action) { UI.toast('Indique l’action corrective', 'bad'); return; }
         await DB.addRecord({
-          type: 'service', date: dateCtrl, time: UI.nowHM(),
+          type: 'service', date: dateCtrl, time: UI.segValue(m, 'heure') || UI.nowHM(),
           plat, liaison, service, temp: v, platTemoin: UI.segValue(m, 'temoin') === 'oui',
           tolere: liaison === 'froide' && ok && v > RULES.froidLimite,
           conforme: ok, action: ok ? '' : action, agent,
