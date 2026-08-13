@@ -1056,15 +1056,15 @@ async function openRefroidFinishModal(id) {
 VIEWS.service = async function (el) {
   const today = UI.todayISO();
   const state = VIEWS.service._state || (VIEWS.service._state = {});
-  // Le choix explicite midi/soir n'est mémorisé que pour la journée en cours ;
-  // sans choix, le service suit l'heure (midi avant 14 h). Ne PAS écrire
-  // state.svc ici : sinon le service resterait figé d'un jour sur l'autre.
-  if (state.date !== today) { state.date = today; state.svc = null; }
-  const svc = state.svc || (new Date().getHours() < 14 ? 'midi' : 'soir');
+  // Le choix explicite midi/soir et le jour affiché ne sont mémorisés que
+  // pour la journée en cours (rien ne reste figé d'un jour sur l'autre).
+  if (state.date !== today) { state.date = today; state.svc = null; state.jour = null; }
+  const jour = state.jour || today;
+  const svc = state.svc || (jour === today ? (new Date().getHours() < 14 ? 'midi' : 'soir') : 'midi');
 
   const [recsAll, menus] = await Promise.all([
-    DB.getByTypeAndRange('service', today, today),
-    DB.getByTypeAndRange('menu', today, today),
+    DB.getByTypeAndRange('service', jour, jour),
+    DB.getByTypeAndRange('menu', jour, jour),
   ]);
   const recs = alive(recsAll);
   recs.sort((a, b) => b.time.localeCompare(a.time));
@@ -1078,14 +1078,17 @@ VIEWS.service = async function (el) {
 
   const temoinsToday = recs.filter(r => r.platTemoin).length;
 
-  el.innerHTML = headerHTML('Températures de service', 'Avant chaque service : chaude ≥ 63 °C · froide cible 3 °C, limite 6 °C (10 °C si conso < 2 h) — ' + UI.frDate(today),
+  el.innerHTML = headerHTML('Températures de service', 'Avant chaque service : chaude ≥ 63 °C · froide cible 3 °C, limite 6 °C (10 °C si conso < 2 h) — ' + UI.frDate(jour),
       '<button class="btn" id="new-serv">➕ Contrôle libre</button>') +
 
     '<div class="card"><div class="row" style="margin-bottom:10px">' +
-    '<h2 style="margin:0">🍲 Plats du jour à contrôler</h2>' +
+    '<h2 style="margin:0">🍲 Plats à contrôler</h2>' +
+    '<input type="date" id="svc-jour" value="' + jour + '" style="min-height:44px;max-width:180px">' +
+    (jour !== today ? '<button class="btn small secondary" id="svc-today">Aujourd’hui</button>' : '') +
     '<div class="grow"></div>' +
     UI.segHTML('svc', [{ value: 'midi', label: '🌞 Midi' }, { value: 'soir', label: '🌙 Soir' }], svc) +
     '</div>' +
+    (jour !== today ? '<p class="pill warn" style="margin-bottom:10px">⚠ Tu consultes le ' + UI.frDate(jour) + ' — les contrôles saisis seront datés de ce jour</p>' : '') +
     (items.length
       ? '<div class="rec-list">' + items.map(name => {
           const r = doneByPlat[name.trim().toLowerCase()];
@@ -1121,12 +1124,19 @@ VIEWS.service = async function (el) {
     const v = UI.segValue(el, 'svc');
     if (v && v !== svc) { state.svc = v; render(); }
   }, 30));
-  el.querySelector('#new-serv').addEventListener('click', () => openServiceModal('', svc));
-  el.querySelectorAll('[data-ctrl]').forEach(b => b.addEventListener('click', () => openServiceModal(b.dataset.ctrl, svc)));
+  el.querySelector('#svc-jour').addEventListener('change', e => {
+    state.jour = e.target.value || today;
+    render();
+  });
+  const btnAuj = el.querySelector('#svc-today');
+  if (btnAuj) btnAuj.addEventListener('click', () => { state.jour = null; render(); });
+  el.querySelector('#new-serv').addEventListener('click', () => openServiceModal('', svc, jour));
+  el.querySelectorAll('[data-ctrl]').forEach(b => b.addEventListener('click', () => openServiceModal(b.dataset.ctrl, svc, jour)));
 };
 
-async function openServiceModal(prefillPlat, svc) {
+async function openServiceModal(prefillPlat, svc, jour) {
   const service = svc || (new Date().getHours() < 14 ? 'midi' : 'soir');
+  const dateCtrl = jour || UI.todayISO();
   const menuNames = await getTodayMenuNames();
   UI.modal(
     '<h2>🍽️ Contrôle au service</h2>' +
@@ -1183,7 +1193,7 @@ async function openServiceModal(prefillPlat, svc) {
         const action = m.querySelector('[data-f="action"]').value.trim();
         if (!ok && !action) { UI.toast('Indique l’action corrective', 'bad'); return; }
         await DB.addRecord({
-          type: 'service', date: UI.todayISO(), time: UI.nowHM(),
+          type: 'service', date: dateCtrl, time: UI.nowHM(),
           plat, liaison, service, temp: v, platTemoin: UI.segValue(m, 'temoin') === 'oui',
           tolere: liaison === 'froide' && ok && v > RULES.froidLimite,
           conforme: ok, action: ok ? '' : action, agent,
@@ -1434,7 +1444,12 @@ function ensureXLSX() {
 function parseDateCell(v) {
   if (v == null || v === '') return null;
   if (v instanceof Date && !isNaN(v)) {
-    return v.getFullYear() + '-' + String(v.getMonth() + 1).padStart(2, '0') + '-' + String(v.getDate()).padStart(2, '0');
+    // Les cellules date d'Excel arrivent vers minuit — mais selon le fuseau,
+    // la bibliothèque peut rendre 23:59:39 LA VEILLE (constaté en heure
+    // française : décalage d'un jour de tous les menus). On vise midi pour
+    // lire le bon jour quel que soit le fuseau.
+    const d = new Date(v.getTime() + 12 * 3600 * 1000);
+    return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
   }
   if (typeof v === 'number' && v > 20000 && v < 90000) {
     const ms = Math.round((v - 25569) * 86400 * 1000); // série Excel -> ms UTC
@@ -1991,41 +2006,79 @@ function hasNativeCamera() {
   return !!(cap && cap.isNativePlatform && cap.isNativePlatform() && cap.Plugins && cap.Plugins.Camera);
 }
 
-/** Prend une photo via le plugin Camera (l'autorisation Android est demandée
- *  proprement à la première utilisation). Retourne une dataURL, ou null si
- *  l'utilisateur annule / refuse. */
-async function capturePhoto() {
-  try {
-    const photo = await window.Capacitor.Plugins.Camera.getPhoto({
-      quality: 85,
-      width: 1200,
-      resultType: 'dataUrl',
-      source: 'PROMPT',
-      promptLabelHeader: 'Photo de l’étiquette',
-      promptLabelPicture: '📷 Prendre une photo',
-      promptLabelPhoto: '🖼️ Choisir dans la galerie',
-      promptLabelCancel: 'Annuler',
-    });
-    return photo && photo.dataUrl ? photo.dataUrl : null;
-  } catch (e) {
-    const msg = String((e && e.message) || e);
-    if (/cancel|annul/i.test(msg)) return null;
-    if (/denied|permission|refus/i.test(msg)) {
-      // Refus mémorisé par Android : un toast de 3 s ne suffit pas, il faut
-      // guider vers les Paramètres (et rappeler que la galerie marche toujours).
-      UI.modal(
-        '<h2>📷 Appareil photo bloqué</h2>' +
-        '<p style="margin-bottom:10px">Android a mémorisé un refus d’autorisation. Pour le réactiver :</p>' +
-        '<p style="margin-bottom:10px"><b>Paramètres → Applications → HACCP Cuisine → Autorisations → Appareil photo → Autoriser</b></p>' +
-        '<p class="muted" style="margin-bottom:10px">En attendant, « 🖼️ Choisir dans la galerie » fonctionne sans autorisation.</p>' +
-        '<div class="actions"><button class="btn" data-x="ok">Compris</button></div>',
-        (m, close) => { m.querySelector('[data-x="ok"]').onclick = close; }
-      );
-      return null;
+/** Caméra INTÉGRÉE à l'application (aperçu vidéo + capture) : ne dépend
+ *  d'AUCUNE application caméra externe — seule l'autorisation de NOTRE appli
+ *  compte (demandée proprement au premier usage). Bouton Galerie en secours
+ *  (photo picker système, aucune autorisation nécessaire). */
+function openCameraCapture(onPhoto) {
+  UI.modal(
+    '<h2>📷 Photo de l’étiquette</h2>' +
+    '<video data-cam autoplay playsinline muted style="width:100%;max-height:340px;border-radius:12px;background:#000"></video>' +
+    '<div data-camstatus class="muted" style="margin:10px 0;font-size:13.5px">Ouverture de la caméra…</div>' +
+    '<div class="actions">' +
+    '<button class="btn ghost" data-x="cancel">Annuler</button>' +
+    '<button class="btn secondary" data-x="gal">🖼️ Galerie</button>' +
+    '<button class="btn" data-x="shot" disabled>📸 Capturer</button></div>',
+    (m, close) => {
+      const video = m.querySelector('[data-cam]');
+      const shotBtn = m.querySelector('[data-x="shot"]');
+      const status = m.querySelector('[data-camstatus]');
+      let stream = null;
+      const stop = () => { if (stream) { stream.getTracks().forEach(t => t.stop()); stream = null; } };
+      const closeAll = () => { stop(); close(); };
+
+      (async () => {
+        try {
+          // Demander d'abord l'autorisation à l'échelle de l'appli (prompt Android propre)
+          if (hasNativeCamera()) {
+            try { await window.Capacitor.Plugins.Camera.requestPermissions({ permissions: ['camera'] }); } catch { /* le getUserMedia redemandera */ }
+          }
+          stream = await navigator.mediaDevices.getUserMedia({
+            video: { facingMode: 'environment', width: { ideal: 1600 } },
+            audio: false,
+          });
+          if (!m.isConnected) { stop(); return; }
+          video.srcObject = stream;
+          shotBtn.disabled = false;
+          status.textContent = 'Cadre l’étiquette bien à plat, puis 📸 Capturer.';
+        } catch (e) {
+          const nom = String((e && e.name) || e);
+          if (/NotAllowed|denied|permission/i.test(nom)) {
+            status.innerHTML = '<span class="pill bad">Autorisation caméra refusée</span><br>' +
+              'Active-la : <b>Paramètres → Applications → HACCP Cuisine → Autorisations → Appareil photo</b>.<br>' +
+              'En attendant, « 🖼️ Galerie » fonctionne sans autorisation.';
+          } else {
+            status.innerHTML = '<span class="pill warn">Caméra inaccessible (' + UI.esc(nom) + ')</span> — utilise « 🖼️ Galerie ».';
+          }
+        }
+      })();
+
+      m.querySelector('[data-x="cancel"]').onclick = closeAll;
+
+      // Galerie : photo picker système, aucune autorisation requise
+      m.querySelector('[data-x="gal"]').onclick = async () => {
+        closeAll();
+        if (!hasNativeCamera()) return;
+        try {
+          const p = await window.Capacitor.Plugins.Camera.getPhoto({ quality: 85, width: 1200, resultType: 'dataUrl', source: 'PHOTOS' });
+          if (p && p.dataUrl) onPhoto(p.dataUrl);
+        } catch { /* annulé */ }
+      };
+
+      shotBtn.onclick = () => {
+        const w = video.videoWidth, h = video.videoHeight;
+        if (!w || !h) return;
+        const scale = Math.min(1, 1200 / Math.max(w, h));
+        const c = document.createElement('canvas');
+        c.width = Math.round(w * scale);
+        c.height = Math.round(h * scale);
+        c.getContext('2d').drawImage(video, 0, 0, c.width, c.height);
+        const dataUrl = c.toDataURL('image/jpeg', 0.85);
+        closeAll();
+        onPhoto(dataUrl);
+      };
     }
-    UI.toast('Appareil photo indisponible : ' + msg, 'bad');
-    return null;
-  }
+  );
 }
 
 /* ---------- OCR des étiquettes (Tesseract.js, 100 % hors ligne) ---------- */
@@ -2193,7 +2246,7 @@ function openEtiquetteModal() {
       // WebView (dont les autorisations photo échouent sur certaines tablettes).
       const demanderPhoto = () => {
         if (!hasNativeCamera()) { photoInput.click(); return; }
-        capturePhoto().then(dataUrl => { if (dataUrl) setPhoto(dataUrl); });
+        openCameraCapture(setPhoto);
       };
       if (hasNativeCamera()) {
         // Masquer le label ENTIER (son texte relaierait le clic vers l'input
@@ -3646,7 +3699,8 @@ async function maybeMenuSync(force) {
     const buf = await resp.arrayBuffer();
     // empreinte du fichier : réimport seulement s'il a changé
     const digest = await crypto.subtle.digest('SHA-256', buf);
-    const hash = [...new Uint8Array(digest)].slice(0, 12).map(b => b.toString(16).padStart(2, '0')).join('');
+    // 'v2:' = version du parseur (correctif fuseau horaire) : forcer un réimport
+    const hash = 'v2:' + [...new Uint8Array(digest)].slice(0, 12).map(b => b.toString(16).padStart(2, '0')).join('');
     if (localStorage.getItem('haccp-menu-hash') === hash) {
       localStorage.setItem('haccp-menu-check', today); // succès : fichier inchangé
       if (force) UI.toast('Menu déjà à jour ✔', 'ok');
