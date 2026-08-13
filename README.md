@@ -12,7 +12,7 @@ C'est une **PWA** (application web progressive) : elle s'installe comme une vrai
 | 📉 **Refroidissement / remise en T°** | Suivi chronométré : +63 → +10 °C en 2 h max, +10 → +63 °C en 1 h max, alerte si délai dépassé |
 | 🍽️ **Températures de service** | Liaison chaude ≥ 63 °C, liaison froide ≤ 10 °C, suivi des plats témoins |
 | 🍲 **Menu** | Catalogue de plats + menu du jour (midi/soir) ; **import Excel/CSV** du menu à l'année (le format « grille hebdomadaire » de l'établissement — une feuille par semaine — est reconnu automatiquement) ; les plats alimentent les listes de Refroidissement, Remise en T° et Service |
-| 🏷️ **Traçabilité étiquettes** | Photo des étiquettes avec **lecture automatique OCR hors ligne** (produit, n° de lot et DLC pré-remplis), classement par semaine avec les menus |
+| 🏷️ **Traçabilité étiquettes** | Photo des étiquettes, classement par semaine et par jour de destination avec les menus |
 | 🧽 **Plan de nettoyage** | Checklist quotidienne / hebdomadaire / mensuelle, traçabilité date + agent |
 | 🍟 **Huiles de friture** | Contrôle visuel, test de composés polaires (≤ 25 %), traçabilité de l'huile usagée (volume, collecteur, bon) |
 | ⚠️ **Non-conformités** | Signalement manuel + remontée automatique de tous les relevés non conformes, actions correctives obligatoires |

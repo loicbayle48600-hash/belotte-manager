@@ -1,5 +1,5 @@
 /* Service worker — mode hors ligne (cache d'abord, mise à jour en arrière-plan) */
-const CACHE = 'haccp-v27';
+const CACHE = 'haccp-v28';
 const ASSETS = [
   './',
   './index.html',
@@ -10,11 +10,6 @@ const ASSETS = [
   './js/vendor/xlsx.full.min.js',
   './js/vendor/jspdf.umd.min.js',
   './js/vendor/jspdf.plugin.autotable.min.js',
-  './js/vendor/ocr/tesseract.min.js',
-  './js/vendor/ocr/worker.min.js',
-  './js/vendor/ocr/tesseract-core-simd-lstm.wasm.js',
-  './js/vendor/ocr/tesseract-core-lstm.wasm.js',
-  './js/vendor/ocr/fra.traineddata.gz',
   './manifest.webmanifest',
   './icons/icon-192.png',
   './icons/icon-512.png',
@@ -39,7 +34,7 @@ self.addEventListener('fetch', e => {
   // jamais la copie en cache.
   if (e.request.cache === 'no-store') return;
 
-  // Les bibliothèques vendorées (OCR ~14 Mo, xlsx, jspdf) sont immuables :
+  // Les bibliothèques vendorées (xlsx, jspdf) sont immuables :
   // cache seul, sans revalidation réseau en arrière-plan (elles ne changent
   // qu'avec une nouvelle version du cache).
   if (new URL(e.request.url).pathname.includes('/vendor/')) {
