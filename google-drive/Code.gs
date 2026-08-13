@@ -28,10 +28,13 @@ function doPost(e) {
     var horodatage = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd_HH-mm');
     var nom = 'haccp_' + etab.replace(/\s+/g, '-') + '_' + horodatage + '.json';
 
-    var dossier = getDossier_();
-    dossier.createFile(nom, contenu, 'application/json');
-    var photos = extrairePhotos_(dossier, data);
-    nettoyer_(dossier);
+    var racine = getDossier_();
+    // Dossier maître par année : tout est rangé sous <année>/
+    var dossierAnnee = sousDossierPar_(racine, String(new Date().getFullYear()));
+    var dossierJson = sousDossierPar_(dossierAnnee, 'Sauvegardes quotidiennes');
+    dossierJson.createFile(nom, contenu, 'application/json');
+    var photos = extrairePhotos_(racine, data);
+    nettoyer_(dossierJson);
 
     return json_({ ok: true, fichier: nom, photos: photos });
   } catch (err) {
@@ -53,28 +56,21 @@ var MAX_PHOTOS_PAR_ENVOI = 100;
  */
 var JOURS_FR = ['dimanche', 'lundi', 'mardi', 'mercredi', 'jeudi', 'vendredi', 'samedi'];
 
-function extrairePhotos_(dossier, data) {
+function extrairePhotos_(racine, data) {
   if (!data.records) return 0;
-  var it = dossier.getFoldersByName('Photos étiquettes');
-  var racinePhotos = it.hasNext() ? it.next() : dossier.createFolder('Photos étiquettes');
 
-  // caches par chemin (semaine puis jour) : dossier + noms déjà présents
-  var dossiers = {};   // "Semaine 33 2026/lundi" -> Folder
-  var existants = {};  // même clé -> { nomFichier: true }
-
-  function sousDossier_(parent, nom) {
-    var itS = parent.getFoldersByName(nom);
-    return itS.hasNext() ? itS.next() : parent.createFolder(nom);
-  }
+  // caches par chemin (année/semaine/jour) : dossier + noms déjà présents
+  var dossiers = {};
+  var existants = {};
 
   function dossierDuJour(dateISO) {
     var d = parseDate_(dateISO);
+    var annee = d ? String(anneeSemaineISO_(d)) : 'annee-inconnue';
     var nomSemaine = d ? 'Semaine ' + numSemaineISO_(d) + ' ' + anneeSemaineISO_(d) : 'Semaine inconnue';
     var nomJour = d ? JOURS_FR[d.getDay()] : 'jour-inconnu';
-    var cle = nomSemaine + '/' + nomJour;
+    var cle = annee + '/' + nomSemaine + '/' + nomJour;
     if (!dossiers[cle]) {
-      var semaine = sousDossier_(racinePhotos, nomSemaine);
-      var jour = sousDossier_(semaine, nomJour);
+      var jour = sousDossierPar_(sousDossierPar_(sousDossierPar_(sousDossierPar_(racine, annee), 'Photos étiquettes'), nomSemaine), nomJour);
       dossiers[cle] = jour;
       var noms = {};
       var files = jour.getFiles();

@@ -2445,7 +2445,7 @@ async function sendWeeklyPdf_(url, today) {
   const resp = await fetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-    body: JSON.stringify({ app: 'haccp-cuisine', type: 'pdf', filename: 'registres-haccp-30j-' + today + '.pdf', data: b64 }),
+    body: JSON.stringify({ app: 'haccp-cuisine', type: 'pdf', filename: 'registres-haccp-30j-' + today + '.pdf', dossier: today.slice(0, 4) + '/Registres PDF', data: b64 }),
   });
   if (!resp.ok) return;
   // Apps Script répond 200 même en erreur : vérifier le corps { ok: … }
@@ -3376,6 +3376,8 @@ async function maybeArchivePdfsToDrive() {
     let toutOk = true;
     for (const reg of ARCHIVES_PDF) {
       for (const per of periodesArchives(reg.periode, today)) {
+        // dossier maître par année (année de la période archivée)
+        const annee = per.suffixe.startsWith('semaine-') ? per.suffixe.split('-').pop() : per.suffixe.slice(0, 4);
         let res;
         try { res = await buildRegistresPDF([reg.type], per.from, per.to); }
         catch { toutOk = false; continue; }
@@ -3392,7 +3394,7 @@ async function maybeArchivePdfsToDrive() {
           body: JSON.stringify({
             app: 'haccp-cuisine', type: 'pdf',
             filename: reg.slug + '-' + per.suffixe + '.pdf',
-            dossier: 'Registres PDF/' + reg.dossier,
+            dossier: annee + '/Registres PDF/' + reg.dossier,
             remplacer: true,
             data: b64,
           }),

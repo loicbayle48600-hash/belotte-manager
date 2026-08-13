@@ -44,29 +44,29 @@ image**, rangée **par semaine** — la même organisation que le classeur de tr
 
 ```
 📁 Sauvegardes HACCP
-├── haccp_…_2026-07-13_07-32.json          ← une sauvegarde complète par jour (60 conservées)
-├── haccp_…_2026-07-12_07-30.json
-├── 📁 Registres PDF
-│   ├── registres-haccp-30j-2026-07-13.pdf  ← PDF global des 30 derniers jours, chaque semaine (12 conservés)
-│   ├── 📁 Enceintes froides                ← 1 PDF par MOIS, conservé POUR TOUJOURS
-│   │   ├── enceintes-froides-2026-07.pdf
-│   │   └── enceintes-froides-2026-08.pdf   ← le mois en cours est mis à jour chaque jour
-│   ├── 📁 Réceptions                       ← 1 PDF par mois, toujours
-│   ├── 📁 Refroidissement                  ← 1 PDF par mois, toujours
-│   ├── 📁 Service                          ← 1 PDF par SEMAINE, toujours
-│   │   └── service-semaine-33-2026.pdf
-│   ├── 📁 Décongélation                    ← 1 PDF par mois, toujours
-│   ├── 📁 Nettoyage                        ← 1 PDF par semaine, toujours
-│   ├── 📁 Huiles                           ← 1 PDF par mois, toujours
-│   └── 📁 Non-conformités                  ← 1 PDF par mois, toujours
-└── 📁 Photos étiquettes
-    ├── 📁 Semaine 32 2026
-    │   ├── 📁 lundi
-    │   │   └── 2026-08-03_09h12_escalopes-de-dinde_a3f19c42.jpg
-    │   ├── 📁 mardi
+└── 📁 2026                                 ← DOSSIER MAÎTRE PAR ANNÉE (2027 se créera tout seul)
+    ├── 📁 Sauvegardes quotidiennes
+    │   ├── haccp_…_2026-08-14_07-32.json   ← sauvegarde complète du jour (60 conservées)
     │   └── …
-    └── 📁 Semaine 33 2026
-        └── …
+    ├── 📁 Registres PDF
+    │   ├── registres-haccp-30j-….pdf       ← PDF global des 30 derniers jours (hebdomadaire)
+    │   ├── 📁 Enceintes froides            ← 1 PDF par MOIS, conservé POUR TOUJOURS
+    │   │   ├── enceintes-froides-2026-07.pdf
+    │   │   └── enceintes-froides-2026-08.pdf  ← le mois en cours est mis à jour chaque jour
+    │   ├── 📁 Réceptions                   ← 1 PDF par mois, toujours
+    │   ├── 📁 Refroidissement              ← 1 PDF par mois, toujours
+    │   ├── 📁 Service                      ← 1 PDF par SEMAINE, toujours
+    │   │   └── service-semaine-33-2026.pdf
+    │   ├── 📁 Décongélation                ← 1 PDF par mois, toujours
+    │   ├── 📁 Nettoyage                    ← 1 PDF par semaine, toujours
+    │   ├── 📁 Huiles                       ← 1 PDF par mois, mis à jour au fil de l'eau, toujours
+    │   └── 📁 Non-conformités              ← 1 PDF par mois, mis à jour au fil de l'eau, toujours
+    └── 📁 Photos étiquettes
+        ├── 📁 Semaine 32 2026
+        │   ├── 📁 lundi
+        │   │   └── 2026-08-03_09h12_escalopes-de-dinde_a3f19c42.jpg
+        │   └── …
+        └── 📁 Semaine 33 2026
 ```
 
 Les photos sont classées selon le **jour de destination du produit** (choisi à la
