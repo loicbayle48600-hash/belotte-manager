@@ -76,7 +76,6 @@ L'application est **préconfigurée d'après le PMS FAM/EHPAD 2025 de l'établis
 - **Refroidissement** : +63 → +10 °C en moins de 2 h (pas de tolérance) · **Remise en température** : +10 → +63 °C en moins d'1 h, avec actions correctives du PMS.
 - **Service / expédition** : liaison chaude ≥ 63 °C (pas de tolérance) ; liaison froide cible 3 °C, limite 6 °C, tolérée jusqu'à 10 °C si consommation dans les 2 h ; suivi des plats témoins (100 g, 5 jours à 3 °C).
 - **Décongélation** : registre dédié (enceinte à 3 °C uniquement, 48 h max, jamais de recongélation) avec alerte de dépassement.
-- **Produits entamés** : registre dédié avec les DLC internes du PMS (lait 2-3 j, mayonnaise 3 semaines, IV gamme 1-2 j, charcuterie tranchée 2 j, plats cuisinés 3 j, excédents 1 j…) et alertes de péremption.
 - **Nettoyage & désinfection** : les fiches de suivi réelles du PMS par zone (préparation froide, cuisson, légumerie, plonge, office, économat/réception — 57 tâches).
 - **Non-conformités** : fiche complète (lieu d'incident, n° de lot, date de péremption, description, action corrective, visa) + remontée automatique de tout relevé hors limites.
 - **Équipe HACCP 2025** préchargée (coordinateur : BAYLE Loïc) — chaque enregistrement porte le visa de l'agent.
