@@ -131,22 +131,46 @@ function anneeSemaineISO_(d) {
   return j.getFullYear();
 }
 
+// Récupère (ou crée) un sous-dossier par son nom.
+function sousDossierPar_(parent, nom) {
+  var it = parent.getFoldersByName(nom);
+  return it.hasNext() ? it.next() : parent.createFolder(nom);
+}
+
 /**
- * Range le PDF hebdomadaire des registres dans « Registres PDF »
- * (les 12 plus récents sont conservés).
+ * Range un PDF de registres.
+ * - data.dossier (ex. "Registres PDF/Enceintes froides") : archives PAR
+ *   REGISTRE, conservées POUR TOUJOURS ; data.remplacer remplace le fichier
+ *   du même nom (le PDF de la période en cours est régénéré chaque jour,
+ *   puis figé quand la période se termine).
+ * - sans data.dossier : le PDF global hebdomadaire historique (12 conservés).
  */
 function recevoirPdf_(dossier, data) {
-  var it = dossier.getFoldersByName('Registres PDF');
-  var sousDossier = it.hasNext() ? it.next() : dossier.createFolder('Registres PDF');
   var nom = String(data.filename || 'registres-haccp.pdf').replace(/[^\w\-À-ÿ .]+/g, '').slice(0, 80) || 'registres-haccp.pdf';
-  var blob = Utilities.newBlob(Utilities.base64Decode(data.data), 'application/pdf', nom);
-  sousDossier.createFile(blob);
 
-  var fichiers = [];
-  var files = sousDossier.getFiles();
-  while (files.hasNext()) fichiers.push(files.next());
-  fichiers.sort(function (a, b) { return b.getDateCreated() - a.getDateCreated(); });
-  for (var i = 12; i < fichiers.length; i++) fichiers[i].setTrashed(true);
+  var cible = dossier;
+  var chemin = String(data.dossier || 'Registres PDF').split('/');
+  for (var p = 0; p < chemin.length; p++) {
+    var part = chemin[p].replace(/[^\w\-À-ÿ .]+/g, '').trim();
+    if (part) cible = sousDossierPar_(cible, part);
+  }
+
+  if (data.remplacer) {
+    var anciens = cible.getFilesByName(nom);
+    while (anciens.hasNext()) anciens.next().setTrashed(true);
+  }
+
+  var blob = Utilities.newBlob(Utilities.base64Decode(data.data), 'application/pdf', nom);
+  cible.createFile(blob);
+
+  // rotation UNIQUEMENT pour le PDF global historique (jamais pour les archives par registre)
+  if (!data.dossier) {
+    var fichiers = [];
+    var files = cible.getFiles();
+    while (files.hasNext()) fichiers.push(files.next());
+    fichiers.sort(function (a, b) { return b.getDateCreated() - a.getDateCreated(); });
+    for (var i = 12; i < fichiers.length; i++) fichiers[i].setTrashed(true);
+  }
 
   return json_({ ok: true, fichier: nom });
 }

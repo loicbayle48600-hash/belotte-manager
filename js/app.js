@@ -463,8 +463,9 @@ async function maybeAutoBackup() {
   if (lastAutoBackupDate() === today) return;
   const res = await sendBackupAll();
   if (res.ok) {
-    // le PDF hebdomadaire lisible part avec la sauvegarde (Drive uniquement)
+    // PDF lisibles vers le Drive : global hebdomadaire + archives par registre
     maybeWeeklyPdfToDrive().catch(e => console.warn('pdf drive', e));
+    maybeArchivePdfsToDrive().catch(e => console.warn('pdf archives', e));
   }
   if (res.allOk) {
     // Toutes les destinations ont réussi : plus de tentative aujourd'hui.
@@ -3324,6 +3325,92 @@ async function maybeMenuSync(force) {
     if (force) UI.toast('Synchronisation du menu impossible : ' + e.message, 'bad');
   } finally {
     _menuSyncEnCours = false;
+  }
+}
+
+/* ---------- Archives PDF par registre sur Google Drive ---------- */
+// Un PDF par période et par registre, CONSERVÉ POUR TOUJOURS sur le Drive.
+// Le fichier de la période en cours est régénéré chaque jour (mise à jour au
+// fur et à mesure), puis reste figé quand la période se termine.
+const ARCHIVES_PDF = [
+  { type: 'temp',      slug: 'enceintes-froides', dossier: 'Enceintes froides', periode: 'mois' },
+  { type: 'reception', slug: 'receptions',        dossier: 'Réceptions',        periode: 'mois' },
+  { type: 'refroid',   slug: 'refroidissement',   dossier: 'Refroidissement',   periode: 'mois' },
+  { type: 'service',   slug: 'service',           dossier: 'Service',           periode: 'semaine' },
+  { type: 'decongel',  slug: 'decongelation',     dossier: 'Décongélation',     periode: 'mois' },
+  { type: 'nettoyage', slug: 'nettoyage',         dossier: 'Nettoyage',         periode: 'semaine' },
+  { type: 'huile',     slug: 'huiles',            dossier: 'Huiles',            periode: 'mois' },
+  { type: 'nonconf',   slug: 'non-conformites',   dossier: 'Non-conformités',   periode: 'mois' },
+];
+
+/** Périodes à couvrir : l'actuelle (mise à jour quotidienne) ET la précédente
+ *  (pour la figer complète même si la tablette était éteinte au changement). */
+function periodesArchives(periode, today) {
+  if (periode === 'semaine') {
+    const lundi = mondayOf(today);
+    const lundiPrec = UI.addDays(lundi, -7);
+    const s1 = semaineISO(lundi), s0 = semaineISO(lundiPrec);
+    return [
+      { from: lundiPrec, to: UI.addDays(lundiPrec, 6), suffixe: 'semaine-' + s0.num + '-' + s0.annee },
+      { from: lundi, to: UI.addDays(lundi, 6), suffixe: 'semaine-' + s1.num + '-' + s1.annee },
+    ];
+  }
+  const debutMois = today.slice(0, 8) + '01';
+  const finMoisPrec = UI.addDays(debutMois, -1);
+  const debutMoisPrec = finMoisPrec.slice(0, 8) + '01';
+  return [
+    { from: debutMoisPrec, to: finMoisPrec, suffixe: finMoisPrec.slice(0, 7) },
+    { from: debutMois, to: today, suffixe: today.slice(0, 7) },
+  ];
+}
+
+let _pdfArchEnCours = false;
+/** Génère et dépose les archives PDF par registre (une fois par jour réussi). */
+async function maybeArchivePdfsToDrive() {
+  const url = (SETTINGS.driveUrl || '').trim();
+  if (!url || !navigator.onLine || _pdfArchEnCours) return;
+  const today = UI.todayISO();
+  if (localStorage.getItem('haccp-pdfarch-last') === today) return;
+  _pdfArchEnCours = true;
+  try {
+    let toutOk = true;
+    for (const reg of ARCHIVES_PDF) {
+      for (const per of periodesArchives(reg.periode, today)) {
+        let res;
+        try { res = await buildRegistresPDF([reg.type], per.from, per.to); }
+        catch { toutOk = false; continue; }
+        if (!res.blob) continue; // aucune donnée sur la période : rien à déposer
+        const b64 = await new Promise((resolve, reject) => {
+          const fr = new FileReader();
+          fr.onload = () => resolve(String(fr.result).split(',')[1]);
+          fr.onerror = () => reject(fr.error);
+          fr.readAsDataURL(res.blob);
+        });
+        const resp = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+          body: JSON.stringify({
+            app: 'haccp-cuisine', type: 'pdf',
+            filename: reg.slug + '-' + per.suffixe + '.pdf',
+            dossier: 'Registres PDF/' + reg.dossier,
+            remplacer: true,
+            data: b64,
+          }),
+        }).catch(() => null);
+        let ok = !!(resp && resp.ok);
+        if (ok) {
+          try {
+            const json = JSON.parse(await resp.text());
+            if (json && json.ok === false) ok = false;
+          } catch { /* statut HTTP comme critère */ }
+        }
+        if (!ok) toutOk = false;
+      }
+    }
+    // le marqueur du jour n'est posé que si TOUT est passé (sinon retry horaire)
+    if (toutOk) localStorage.setItem('haccp-pdfarch-last', today);
+  } finally {
+    _pdfArchEnCours = false;
   }
 }
 
