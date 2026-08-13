@@ -245,6 +245,14 @@ function openPinModal(onOk) {
   );
 }
 
+/** Exige le PIN des Réglages (s'il est activé) avant une action destructrice
+ *  (suppression d'étiquette, de document, du catalogue…). Le déverrouillage
+ *  reste valable 5 minutes, comme pour l'écran Réglages. */
+function requirePin(onOk) {
+  if (!SETTINGS.pin || Date.now() <= _pinOkUntil) { onOk(); return; }
+  openPinModal(() => { _pinOkUntil = Date.now() + 5 * 60 * 1000; onOk(); });
+}
+
 async function render() {
   const el = document.getElementById('view');
   el.innerHTML = '<div class="empty">Chargement…</div>';
@@ -1812,10 +1820,10 @@ VIEWS.menu = async function (el) {
     SETTINGS.plats.sort((a, b) => a.name.localeCompare(b.name, 'fr'));
     await saveSettings(); render();
   });
-  el.querySelectorAll('[data-del-plat]').forEach(b => b.addEventListener('click', async () => {
+  el.querySelectorAll('[data-del-plat]').forEach(b => b.addEventListener('click', () => requirePin(async () => {
     SETTINGS.plats = SETTINGS.plats.filter(p => p.id !== b.dataset.delPlat);
     await saveSettings(); render();
-  }));
+  })));
 
   // Carte de synchronisation automatique depuis GitHub
   const syncCard = document.createElement('div');
@@ -1845,9 +1853,9 @@ VIEWS.menu = async function (el) {
 
   el.querySelector('#m-import').addEventListener('click', () => openImportMenu(() => { state.items = null; render(); }));
   const clearBtn = el.querySelector('#m-clear');
-  if (clearBtn) clearBtn.addEventListener('click', () => UI.confirm('Vider tout le catalogue de plats ? Les menus déjà enregistrés par jour sont conservés.', async () => {
+  if (clearBtn) clearBtn.addEventListener('click', () => requirePin(() => UI.confirm('Vider tout le catalogue de plats ? Les menus déjà enregistrés par jour sont conservés.', async () => {
     SETTINGS.plats = []; await saveSettings(); render();
-  }));
+  })));
 };
 
 /* ================================================================
@@ -2138,9 +2146,9 @@ async function openEtiquetteDetail(id) {
     '<div class="actions"><button class="btn danger" data-x="del">🗑️ Supprimer</button><button class="btn ghost" data-x="close">Fermer</button></div>',
     (m, close) => {
       m.querySelector('[data-x="close"]').onclick = close;
-      m.querySelector('[data-x="del"]').onclick = () => UI.confirm('Supprimer cette étiquette ?', async () => {
+      m.querySelector('[data-x="del"]').onclick = () => requirePin(() => UI.confirm('Supprimer cette étiquette ?', async () => {
         await DB.deleteRecord(id); if (VIEWS.tracabilite._state) VIEWS.tracabilite._state._meta = null; close(); UI.toast('Étiquette supprimée'); render();
-      });
+      }));
     }
   );
 }
@@ -2797,9 +2805,9 @@ VIEWS.documents = async function (el) {
   el.querySelectorAll('[data-del-doc]').forEach(b => b.addEventListener('click', async () => {
     const d = await DB.getRecord(Number(b.dataset.delDoc));
     if (!d) return;
-    UI.confirm('Supprimer « ' + d.nom + ' » ? (les sauvegardes déjà envoyées le conservent)', async () => {
+    requirePin(() => UI.confirm('Supprimer « ' + d.nom + ' » ? (les sauvegardes déjà envoyées le conservent)', async () => {
       await DB.deleteRecord(d.id); UI.toast('Document supprimé'); render();
-    });
+    }));
   }));
 };
 
@@ -2966,9 +2974,9 @@ VIEWS.historique = async function (el) {
           close(); UI.toast('Jour déclaré fermé ✔', 'ok'); render();
         };
         const btnU = m.querySelector('[data-x="unclose"]');
-        if (btnU) btnU.onclick = () => UI.confirm('Annuler la déclaration de fermeture du ' + UI.frDate(iso) + ' ?', async () => {
+        if (btnU) btnU.onclick = () => requirePin(() => UI.confirm('Annuler la déclaration de fermeture du ' + UI.frDate(iso) + ' ?', async () => {
           await DB.deleteRecord(ferme.id); close(); render();
-        });
+        }));
       }
     );
   }));
