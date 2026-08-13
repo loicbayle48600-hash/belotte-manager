@@ -3334,13 +3334,13 @@ VIEWS.parametres = async function (el) {
       }
     );
   });
-  el.querySelectorAll('[data-del-equip]').forEach(b => b.addEventListener('click', () => {
+  el.querySelectorAll('[data-del-equip]').forEach(b => b.addEventListener('click', () => requirePin(() => {
     const i = Number(b.dataset.delEquip);
     UI.confirm('Supprimer « ' + SETTINGS.equipements[i].name + ' » ? L’historique de ses relevés est conservé.', async () => {
       SETTINGS.equipements.splice(i, 1);
       await saveSettings(); render();
     });
-  }));
+  })));
 
   // Fournisseurs
   el.querySelector('#s-fourn-add').addEventListener('click', async () => {
@@ -3354,13 +3354,13 @@ VIEWS.parametres = async function (el) {
     });
     await saveSettings(); render();
   });
-  el.querySelectorAll('[data-del-fourn]').forEach(b => b.addEventListener('click', () => {
+  el.querySelectorAll('[data-del-fourn]').forEach(b => b.addEventListener('click', () => requirePin(() => {
     const i = Number(b.dataset.delFourn);
     UI.confirm('Supprimer le fournisseur « ' + SETTINGS.fournisseurs[i].name + ' » ?', async () => {
       SETTINGS.fournisseurs.splice(i, 1);
       await saveSettings(); render();
     });
-  }));
+  })));
 
   // Instruments de mesure
   el.querySelector('#s-th-add').addEventListener('click', async () => {
@@ -3372,13 +3372,13 @@ VIEWS.parametres = async function (el) {
   });
   el.querySelectorAll('[data-verif-th]').forEach(b => b.addEventListener('click', () =>
     openVerifModal(SETTINGS.thermometres[Number(b.dataset.verifTh)])));
-  el.querySelectorAll('[data-del-th]').forEach(b => b.addEventListener('click', () => {
+  el.querySelectorAll('[data-del-th]').forEach(b => b.addEventListener('click', () => requirePin(() => {
     const i = Number(b.dataset.delTh);
     UI.confirm('Supprimer « ' + SETTINGS.thermometres[i] + ' » ? L’historique de ses vérifications est conservé.', async () => {
       SETTINGS.thermometres.splice(i, 1);
       await saveSettings(); render();
     });
-  }));
+  })));
 
   // Friteuses
   el.querySelector('#s-frit-add').addEventListener('click', async () => {
@@ -3387,10 +3387,10 @@ VIEWS.parametres = async function (el) {
     if (!SETTINGS.friteuses.includes(v)) SETTINGS.friteuses.push(v);
     await saveSettings(); render();
   });
-  el.querySelectorAll('[data-del-frit]').forEach(b => b.addEventListener('click', async () => {
+  el.querySelectorAll('[data-del-frit]').forEach(b => b.addEventListener('click', () => requirePin(async () => {
     SETTINGS.friteuses.splice(Number(b.dataset.delFrit), 1);
     await saveSettings(); render();
-  }));
+  })));
 
   // Tâches de nettoyage
   el.querySelector('#s-task-add').addEventListener('click', () => {
@@ -3421,13 +3421,13 @@ VIEWS.parametres = async function (el) {
       }
     );
   });
-  el.querySelectorAll('[data-del-task]').forEach(b => b.addEventListener('click', () => {
+  el.querySelectorAll('[data-del-task]').forEach(b => b.addEventListener('click', () => requirePin(() => {
     const i = Number(b.dataset.delTask);
     UI.confirm('Supprimer la tâche « ' + SETTINGS.cleaningTasks[i].name + ' » ?', async () => {
       SETTINGS.cleaningTasks.splice(i, 1);
       await saveSettings(); render();
     });
-  }));
+  })));
 
   // Sauvegarde / restauration
   // Code PIN
@@ -3436,15 +3436,17 @@ VIEWS.parametres = async function (el) {
     if (!/^\d{4}$/.test(v)) { UI.toast('Le PIN doit faire exactement 4 chiffres', 'bad'); return; }
     SETTINGS.pin = v;
     await saveSettings();
-    _pinOkUntil = Date.now() + 5 * 60 * 1000;
-    UI.toast('PIN activé ✔ (à retenir : il est aussi dans la sauvegarde JSON)', 'ok');
+    // Verrouillage IMMÉDIAT : pas de fenêtre de 5 min après l'activation
+    // (sinon « ça ne marche pas » quand on teste juste après avoir activé).
+    _pinOkUntil = 0;
+    UI.toast('PIN activé ✔ — verrou immédiat (code aussi lisible dans la sauvegarde JSON)', 'ok');
     render();
   });
   const pinOff = el.querySelector('#s-pin-off');
-  if (pinOff) pinOff.addEventListener('click', () => UI.confirm('Désactiver le code PIN des Réglages ?', async () => {
+  if (pinOff) pinOff.addEventListener('click', () => requirePin(() => UI.confirm('Désactiver le code PIN des Réglages ?', async () => {
     SETTINGS.pin = '';
     await saveSettings(); render();
-  }));
+  })));
 
   el.querySelector('#s-backup').addEventListener('click', async () => {
     const blob = new Blob([JSON.stringify(await buildBackup())], { type: 'application/json' });
@@ -3453,7 +3455,7 @@ VIEWS.parametres = async function (el) {
     const ok = await UI.saveFile('sauvegarde-haccp-' + UI.todayISO() + '.json', 'application/json', blob);
     if (ok) UI.toast('Sauvegarde exportée ✔', 'ok');
   });
-  el.querySelector('#s-restore').addEventListener('click', () => el.querySelector('#s-restore-file').click());
+  el.querySelector('#s-restore').addEventListener('click', () => requirePin(() => el.querySelector('#s-restore-file').click()));
   el.querySelector('#s-restore-file').addEventListener('change', async e => {
     const f = e.target.files[0];
     if (!f) return;
