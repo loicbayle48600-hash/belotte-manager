@@ -255,6 +255,12 @@ function requirePin(onOk) {
 
 async function render() {
   const el = document.getElementById('view');
+  const main = document.getElementById('main');
+  // Ré-affichage de la MÊME vue (coche du plan de nettoyage, enregistrement…) :
+  // on garde la position de défilement, sinon l'écran « saute » à chaque clic.
+  // Changement d'onglet : retour en haut, comme attendu.
+  const keepScroll = render._lastView === currentView && main ? main.scrollTop : 0;
+  render._lastView = currentView;
   el.innerHTML = '<div class="empty">Chargement…</div>';
   try {
     await VIEWS[currentView](el);
@@ -262,6 +268,7 @@ async function render() {
     console.error(e);
     el.innerHTML = '<div class="empty">⚠️ Erreur : ' + UI.esc(e.message) + '</div>';
   }
+  if (main) main.scrollTop = keepScroll;
 }
 
 /* ---------- Blocs réutilisables ---------- */
