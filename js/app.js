@@ -2099,7 +2099,9 @@ function hasNativeCamera() {
 function openCameraCapture(onPhoto) {
   UI.modal(
     '<h2 style="margin-bottom:8px">📷 Photo de l’étiquette</h2>' +
-    '<video data-cam autoplay playsinline muted style="flex:1;min-height:0;width:100%;object-fit:contain;border-radius:12px;background:#000"></video>' +
+    // object-fit:cover : l'aperçu REMPLIT l'écran (pas de bandes noires) ; la
+    // capture est recadrée à l'identique de l'aperçu (ce que tu vois = la photo).
+    '<video data-cam autoplay playsinline muted style="flex:1;min-height:0;width:100%;object-fit:cover;border-radius:12px;background:#000"></video>' +
     '<div data-camstatus class="muted" style="margin:10px 0;font-size:13.5px">Ouverture de la caméra…</div>' +
     '<div class="actions" style="margin-top:auto">' +
     '<button class="btn ghost" data-x="cancel">Annuler</button>' +
@@ -2156,11 +2158,17 @@ function openCameraCapture(onPhoto) {
       shotBtn.onclick = () => {
         const w = video.videoWidth, h = video.videoHeight;
         if (!w || !h) return;
-        const scale = Math.min(1, 1200 / Math.max(w, h));
+        // Recadrage IDENTIQUE à l'aperçu (object-fit: cover) : la photo
+        // correspond exactement à ce qui était affiché à l'écran.
+        const ew = video.clientWidth || w, eh = video.clientHeight || h;
+        const zoom = Math.max(ew / w, eh / h);
+        const cw = Math.round(ew / zoom), ch = Math.round(eh / zoom); // zone source visible
+        const sx = Math.round((w - cw) / 2), sy = Math.round((h - ch) / 2);
+        const scale = Math.min(1, 1200 / Math.max(cw, ch));
         const c = document.createElement('canvas');
-        c.width = Math.round(w * scale);
-        c.height = Math.round(h * scale);
-        c.getContext('2d').drawImage(video, 0, 0, c.width, c.height);
+        c.width = Math.round(cw * scale);
+        c.height = Math.round(ch * scale);
+        c.getContext('2d').drawImage(video, sx, sy, cw, ch, 0, 0, c.width, c.height);
         const dataUrl = c.toDataURL('image/jpeg', 0.85);
         closeAll();
         onPhoto(dataUrl);
