@@ -627,13 +627,20 @@ VIEWS.dashboard = async function (el) {
         '<button class="btn small secondary" data-go="parametres">Vérifier</button></div>' : '') +
       '</div>' : '') +
 
-    '<div class="card"><h2>Accès rapide</h2><div class="grid cols-3">' +
-    '<button class="btn secondary" data-go="temperatures">❄️ Relevé température</button>' +
-    '<button class="btn secondary" data-go="reception">🚚 Nouvelle réception</button>' +
-    '<button class="btn secondary" data-go="tracabilite">🏷️ Photo étiquette</button>' +
-    '<button class="btn secondary" data-go="nettoyage">🧽 Plan de nettoyage</button>' +
+    '<div class="card"><h2>Tous les modules</h2><div class="grid cols-3">' +
+    '<button class="btn secondary" data-go="temperatures">❄️ Enceintes froides</button>' +
+    '<button class="btn secondary" data-go="reception">🚚 Réceptions</button>' +
+    '<button class="btn secondary" data-go="refroidissement">📉 Refroidissement</button>' +
     '<button class="btn secondary" data-go="service">🍽️ T° de service</button>' +
+    '<button class="btn secondary" data-go="menu">🍲 Menu</button>' +
+    '<button class="btn secondary" data-go="decongel">⏳ Décongélation</button>' +
+    '<button class="btn secondary" data-go="tracabilite">🏷️ Étiquettes</button>' +
+    '<button class="btn secondary" data-go="nettoyage">🧽 Nettoyage</button>' +
+    '<button class="btn secondary" data-go="huiles">🍟 Huiles</button>' +
+    '<button class="btn secondary" data-go="nonconformites">⚠️ Non-conformités</button>' +
+    '<button class="btn secondary" data-go="documents">📚 Documents</button>' +
     '<button class="btn secondary" data-go="historique">📋 Historique / export</button>' +
+    '<button class="btn secondary" data-go="parametres">⚙️ Réglages</button>' +
     '</div></div>';
 
   el.querySelector('#dash-agent').addEventListener('change', e => setCurrentAgent(e.target.value));
@@ -929,7 +936,9 @@ VIEWS.refroidissement = async function (el) {
       return '<div class="rec-item ' + (mins > limit ? 'bad' : '') + '" data-refroid-item="' + r.id + '">' +
         '<div class="big" data-refroid-mins="' + r.id + '">' + mins + ' min</div>' +
         '<div class="body"><div class="title">' + UI.esc(r.produit) + '</div>' +
-        '<div class="meta">' + (r.mode === 'remise' ? '🔥 Remise en température' : '📉 Refroidissement') + ' — départ ' + UI.esc(r.timeStart) + ' à ' + UI.fmtTemp(r.tempStart) +
+        '<div class="meta">' + (r.mode === 'remise' ? '🔥 Remise en température' : '📉 Refroidissement') +
+        (r.cellule ? ' — ' + (r.cellule === 'grande' ? 'grande' : 'petite') + ' cellule' : '') +
+        ' — départ ' + UI.esc(r.timeStart) + ' à ' + UI.fmtTemp(r.tempStart) +
         (mins > limit ? ' — ⚠️ délai dépassé' : ' (limite ' + limit + ' min)') + '</div></div>' +
         '<button class="btn small" data-finish="' + r.id + '">Terminer</button></div>';
     }).join('') + '</div></div>' : '') +
@@ -939,7 +948,8 @@ VIEWS.refroidissement = async function (el) {
       '<div class="rec-item ' + (r.conforme === false ? 'bad' : 'ok') + '">' +
       '<div class="big">' + r.durationMin + ' min</div>' +
       '<div class="body"><div class="title">' + UI.esc(r.produit) + '</div>' +
-      '<div class="meta">' + UI.frDate(r.date) + ' — ' + (r.mode === 'remise' ? 'Remise' : 'Refroidissement') + ' : ' +
+      '<div class="meta">' + UI.frDate(r.date) + ' — ' + (r.mode === 'remise' ? 'Remise' : 'Refroidissement') +
+      (r.cellule ? ' (' + (r.cellule === 'grande' ? 'grande' : 'petite') + ' cellule)' : '') + ' : ' +
       UI.fmtTemp(r.tempStart) + ' (' + UI.esc(r.timeStart) + ') → ' + UI.fmtTemp(r.tempEnd) + ' (' + UI.esc(r.timeEnd) + ') — ' + UI.esc(r.agent) +
       (r.conforme === false ? ' — ⚠️ ' + UI.esc(r.action || '') : '') + '</div></div>' +
       '<span class="pill ' + (r.conforme === false ? 'bad' : 'ok') + '">' + (r.conforme === false ? 'Non conforme' : 'Conforme') + '</span></div>'
@@ -964,6 +974,11 @@ async function openRefroidStartModal() {
       { value: 'remise', label: '🔥 Remise en T° (1 h max)' },
     ], 'refroidissement') + '</label>' +
     dishInputHTML('produit', 'Préparation / plat', 'Ex. : blanquette de veau', menuNames) +
+    '<label class="field"><span class="lbl">Cellule de refroidissement</span>' +
+    UI.segHTML('cellule', [
+      { value: 'petite', label: '🧊 Petite cellule' },
+      { value: 'grande', label: '🧊 Grande cellule' },
+    ], 'petite') + '</label>' +
     '<label class="field"><span class="lbl">Température de départ (°C)</span>' +
     UI.tempInputHTML('temp', { placeholder: '63.0' }) + '</label>' +
     '<label class="field"><span class="lbl">Heure de début (modifiable si saisie après coup)</span>' +
@@ -984,6 +999,7 @@ async function openRefroidStartModal() {
         const day = heure > UI.nowHM() ? UI.addDays(UI.todayISO(), -1) : UI.todayISO();
         await DB.addRecord({
           type: 'refroid', date: day, mode: UI.segValue(m, 'mode'),
+          cellule: UI.segValue(m, 'cellule') || '',
           produit, tempStart: t, timeStart: heure, startISO: isoFromDayTime(day, heure),
           status: 'encours', agent,
         });
@@ -1142,7 +1158,9 @@ VIEWS.service = async function (el) {
       '<div class="body"><div class="title">' + UI.esc(r.plat) + (r.platTemoin ? ' <span class="pill info">Plat témoin ✔</span>' : '') + '</div>' +
       '<div class="meta">' + (r.liaison === 'chaude' ? '🔥 Liaison chaude' : '❄️ Liaison froide') + ' — ' + UI.esc(r.time) + ' — ' + UI.esc(r.agent) +
       (r.conforme === false ? ' — ⚠️ ' + UI.esc(r.action || '') : '') + '</div></div>' +
-      '<span class="pill ' + (r.conforme === false ? 'bad' : (r.tolere ? 'warn' : 'ok')) + '">' + (r.conforme === false ? 'Non conforme' : (r.tolere ? 'Toléré < 2 h' : 'Conforme')) + '</span></div>'
+      '<span class="pill ' + (r.conforme === false ? 'bad' : (r.tolere ? 'warn' : 'ok')) + '">' + (r.conforme === false ? 'Non conforme' : (r.tolere ? 'Toléré < 2 h' : 'Conforme')) + '</span>' +
+      '<button class="btn small ghost" data-edit-serv="' + r.id + '" title="Modifier">✏️</button>' +
+      '<button class="btn small ghost" data-del-serv="' + r.id + '" title="Supprimer">🗑️</button></div>'
     ).join('') + '</div></div>' : '');
 
   UI.segWire(el);
@@ -1158,7 +1176,90 @@ VIEWS.service = async function (el) {
   if (btnAuj) btnAuj.addEventListener('click', () => { state.jour = null; render(); });
   el.querySelector('#new-serv').addEventListener('click', () => openServiceModal('', svc, jour));
   el.querySelectorAll('[data-ctrl]').forEach(b => b.addEventListener('click', () => openServiceModal(b.dataset.ctrl, svc, jour)));
+  el.querySelectorAll('[data-edit-serv]').forEach(b => b.addEventListener('click', () => openServiceEditModal(Number(b.dataset.editServ))));
+  el.querySelectorAll('[data-del-serv]').forEach(b => b.addEventListener('click', () => requirePin(() => UI.confirm('Supprimer ce contrôle de température ?', async () => {
+    await DB.deleteRecord(Number(b.dataset.delServ));
+    UI.toast('Contrôle supprimé', 'ok');
+    render();
+  }))));
 };
+
+/** Modification d'un contrôle de service déjà enregistré (plat, liaison,
+ *  température, heure, témoin) — la conformité est recalculée. */
+async function openServiceEditModal(id) {
+  const r = await DB.getRecord(id);
+  if (!r) return;
+  const menuNames = await getTodayMenuNames();
+  UI.modal(
+    '<h2>✏️ Modifier le contrôle</h2>' +
+    '<p class="muted" style="margin-bottom:12px">' + UI.frDate(r.date) + ' — enregistré par ' + UI.esc(r.agent || '') + '</p>' +
+    dishInputHTML('plat', 'Plat', 'Ex. : purée, salade de betteraves…', menuNames, r.plat || '') +
+    '<label class="field"><span class="lbl">Liaison</span>' +
+    UI.segHTML('liaison', [
+      { value: 'chaude', label: '🔥 Chaude (≥ 63 °C)' },
+      { value: 'froide', label: '❄️ Froide (≤ 10 °C)' },
+    ], r.liaison || 'chaude') + '</label>' +
+    '<label class="field"><span class="lbl">Température (°C)</span>' +
+    UI.tempInputHTML('temp') + '</label>' +
+    '<label class="field"><span class="lbl">Plat témoin prélevé ?</span>' +
+    UI.segHTML('temoin', [{ value: 'oui', label: '✔ Oui' }, { value: 'non', label: 'Non' }], r.platTemoin ? 'oui' : 'non') + '</label>' +
+    '<label class="field"><span class="lbl">🕐 Heure du contrôle</span>' +
+    UI.segHTML('heure', [
+      { value: '12:00', label: '🌞 12 h' },
+      { value: '18:00', label: '🌙 18 h' },
+    ], r.time === '18:00' ? '18:00' : '12:00') + '</label>' +
+    agentField(r.agent) +
+    '<div data-verdict></div>' +
+    actionFieldHTML(r.action) +
+    '<div class="actions"><button class="btn ghost" data-x="cancel">Annuler</button><button class="btn" data-x="save">Enregistrer</button></div>',
+    (m, close) => {
+      UI.segWire(m);
+      const tempInput = m.querySelector('[data-f="temp"]');
+      tempInput.value = r.temp;
+      const verdict = m.querySelector('[data-verdict]');
+      const actionField = m.querySelector('[data-action-field]');
+
+      const check = () => {
+        const v = parseFloat(tempInput.value);
+        if (isNaN(v)) { verdict.innerHTML = ''; actionField.style.display = 'none'; return null; }
+        const liaison = UI.segValue(m, 'liaison');
+        const ok = liaison === 'chaude' ? v >= RULES.chaudMin : v <= RULES.froidMax;
+        verdict.innerHTML = ok
+          ? (liaison === 'froide' && v > RULES.froidLimite
+            ? '<p class="pill warn" style="margin-bottom:12px">⚠ Toléré (6–10 °C) : à consommer dans les 2 heures</p>'
+            : '<p class="pill ok" style="margin-bottom:12px">✔ Conforme</p>')
+          : '<p class="pill bad" style="margin-bottom:12px">✘ NON CONFORME</p>';
+        actionField.style.display = ok ? 'none' : 'block';
+        return ok;
+      };
+      tempInput.addEventListener('input', check);
+      m.addEventListener('click', () => setTimeout(check, 30));
+      check();
+
+      m.querySelector('[data-x="cancel"]').onclick = close;
+      m.querySelector('[data-x="save"]').onclick = async () => {
+        const plat = m.querySelector('[data-f="plat"]').value.trim();
+        const v = parseFloat(tempInput.value);
+        if (!plat || isNaN(v)) { UI.toast('Renseigne le plat et la température', 'bad'); return; }
+        const agent = requireAgent(m); if (!agent) return;
+        const liaison = UI.segValue(m, 'liaison');
+        const ok = liaison === 'chaude' ? v >= RULES.chaudMin : v <= RULES.froidMax;
+        const action = m.querySelector('[data-f="action"]').value.trim();
+        if (!ok && !action) { UI.toast('Indique l’action corrective', 'bad'); return; }
+        Object.assign(r, {
+          plat, liaison, temp: v, time: UI.segValue(m, 'heure') || r.time,
+          platTemoin: UI.segValue(m, 'temoin') === 'oui',
+          tolere: liaison === 'froide' && ok && v > RULES.froidLimite,
+          conforme: ok, action: ok ? '' : action, agent,
+        });
+        await DB.updateRecord(r);
+        close();
+        UI.toast('Contrôle modifié ✔', 'ok');
+        render();
+      };
+    }
+  );
+}
 
 async function openServiceModal(prefillPlat, svc, jour) {
   const service = svc || (new Date().getHours() < 14 ? 'midi' : 'soir');
@@ -1975,14 +2076,16 @@ function hasNativeCamera() {
  *  (photo picker système, aucune autorisation nécessaire). */
 function openCameraCapture(onPhoto) {
   UI.modal(
-    '<h2>📷 Photo de l’étiquette</h2>' +
-    '<video data-cam autoplay playsinline muted style="width:100%;max-height:340px;border-radius:12px;background:#000"></video>' +
+    '<h2 style="margin-bottom:8px">📷 Photo de l’étiquette</h2>' +
+    '<video data-cam autoplay playsinline muted style="flex:1;min-height:0;width:100%;object-fit:contain;border-radius:12px;background:#000"></video>' +
     '<div data-camstatus class="muted" style="margin:10px 0;font-size:13.5px">Ouverture de la caméra…</div>' +
-    '<div class="actions">' +
+    '<div class="actions" style="margin-top:auto">' +
     '<button class="btn ghost" data-x="cancel">Annuler</button>' +
     '<button class="btn secondary" data-x="gal">🖼️ Galerie</button>' +
-    '<button class="btn" data-x="shot" disabled>📸 Capturer</button></div>',
+    '<button class="btn" data-x="shot" disabled style="font-size:19px;padding:14px 26px">📸 Capturer</button></div>',
     (m, close) => {
+      // PLEIN ÉCRAN : l'aperçu caméra occupe tout l'écran de la tablette
+      m.style.cssText += ';position:fixed;inset:0;width:100%;max-width:none;height:100%;max-height:none;margin:0;border-radius:0;display:flex;flex-direction:column';
       const video = m.querySelector('[data-cam]');
       const shotBtn = m.querySelector('[data-x="shot"]');
       const status = m.querySelector('[data-camstatus]');
@@ -2050,6 +2153,8 @@ function openEtiquetteModal() {
     '<label class="field"><span class="lbl">Photo de l’étiquette</span>' +
     '<input type="file" accept="image/*" capture="environment" data-f="photo" style="min-height:52px;padding:12px;border:1.5px dashed var(--border);border-radius:12px;width:100%"></label>' +
     '<div data-preview style="margin-bottom:12px"></div>' +
+    '<label class="field"><span class="lbl">Nom du produit (optionnel)</span>' +
+    '<input type="text" data-f="produit" placeholder="Ex. : escalope de dinde"></label>' +
     '<label class="field"><span class="lbl">🍽️ Produit destiné à quel jour ? (classement au classeur)</span>' +
     '<input type="date" data-f="destine" value="' + UI.todayISO() + '"></label>' +
     agentField() +
@@ -2101,6 +2206,7 @@ function openEtiquetteModal() {
         await DB.addRecord({
           type: 'etiquette', date: UI.todayISO(), time: UI.nowHM(),
           photo: photoData,
+          produit: m.querySelector('[data-f="produit"]').value.trim(),
           destineLe: m.querySelector('[data-f="destine"]').value || UI.todayISO(),
           agent,
         });
@@ -2121,6 +2227,7 @@ function openEtiquetteModal() {
         if (!(await save())) return;
         photoData = null;
         m.querySelector('[data-preview]').innerHTML = '';
+        m.querySelector('[data-f="produit"]').value = '';
         photoInput.value = '';
         const counter = m.querySelector('[data-count]');
         counter.style.display = '';
@@ -2532,7 +2639,7 @@ function openAnnulModal(rec, onDone) {
 const EXPORT_COLUMNS = {
   temp: [['Date', r => UI.frDate(r.date)], ['Heure', r => r.time], ['Équipement', r => r.equipName], ['Température (°C)', r => r.statut === 'hs' ? 'À l’arrêt (' + (r.motif || '') + ')' : r.temp], ['Conforme', r => r.statut === 'hs' ? '—' : (r.conforme === false ? 'NON' : 'OUI')], ['Action corrective', r => r.action], ['Agent', r => r.agent]],
   reception: [['Date', r => UI.frDate(r.date)], ['Heure', r => r.time], ['Fournisseur', r => r.fournisseur], ['Produit', r => r.produit], ['Lot / BL', r => r.lot], ['Famille', r => r.famille], ['Température (°C)', r => r.temp], ['État', r => r.etat === 'bad' ? 'Défaut' : 'Correct'], ['Conforme', r => r.conforme === false ? 'NON' : (r.tolere ? 'Contrôle à cœur' : 'OUI')], ['Action corrective', r => r.action], ['Agent', r => r.agent]],
-  refroid: [['Date', r => UI.frDate(r.date)], ['Type', r => r.mode === 'remise' ? 'Remise en T°' : 'Refroidissement'], ['Préparation', r => r.produit], ['T° départ', r => r.tempStart], ['Heure départ', r => r.timeStart], ['T° fin', r => r.tempEnd], ['Heure fin', r => r.timeEnd], ['Durée (min)', r => r.durationMin], ['Conforme', r => r.status === 'encours' ? 'En cours' : (r.conforme === false ? 'NON' : 'OUI')], ['Action corrective', r => r.action], ['Agent', r => r.agent]],
+  refroid: [['Date', r => UI.frDate(r.date)], ['Type', r => r.mode === 'remise' ? 'Remise en T°' : 'Refroidissement'], ['Cellule', r => r.cellule === 'grande' ? 'Grande' : (r.cellule === 'petite' ? 'Petite' : '')], ['Préparation', r => r.produit], ['T° départ', r => r.tempStart], ['Heure départ', r => r.timeStart], ['T° fin', r => r.tempEnd], ['Heure fin', r => r.timeEnd], ['Durée (min)', r => r.durationMin], ['Conforme', r => r.status === 'encours' ? 'En cours' : (r.conforme === false ? 'NON' : 'OUI')], ['Action corrective', r => r.action], ['Agent', r => r.agent]],
   service: [['Date', r => UI.frDate(r.date)], ['Heure', r => r.time], ['Service', r => r.service || ''], ['Plat', r => r.plat], ['Liaison', r => r.liaison], ['Température (°C)', r => r.temp], ['Plat témoin', r => r.platTemoin ? 'OUI' : 'NON'], ['Conforme', r => r.conforme === false ? 'NON' : (r.tolere ? 'Toléré <2h' : 'OUI')], ['Action corrective', r => r.action], ['Agent', r => r.agent]],
   decongel: [['Date mise en décongélation', r => UI.frDate(r.date)], ['Heure', r => r.time], ['Produit', r => r.produit], ['Fournisseur', r => r.fournisseur], ['Lot', r => r.lot], ['À utiliser avant', r => UI.frDate(r.limite)], ['Sorti le', r => r.sortieDate ? UI.frDate(r.sortieDate) + ' ' + (r.sortieTime || '') : ''], ['Devenir', r => r.issue === 'jete' ? 'JETÉ' : (r.issue === 'utilise' ? 'Utilisé' : '')], ['Statut', r => r.statut === 'termine' ? 'Terminé' : 'En cours'], ['Agent', r => r.agent]],
   etiquette: [['Date photo', r => UI.frDate(r.date)], ['Heure', r => r.time], ['Destiné au', r => r.destineLe ? UI.frDate(r.destineLe) : UI.frDate(r.date)], ['Produit', r => r.produit], ['Lot', r => r.lot], ['DLC', r => r.dlc ? UI.frDate(r.dlc) : ''], ['Photo', r => r.photo ? 'OUI' : 'NON'], ['Agent', r => r.agent]],
