@@ -596,6 +596,14 @@ VIEWS.dashboard = async function (el) {
     (lastAutoBackupDate() ? '<div class="muted" style="font-size:11.5px;text-align:center;margin-top:4px">dernière : ' + UI.frDate(lastAutoBackupDate()) + '</div>' : '') + '</div>' +
     '</div></div>' +
 
+    // Accès ULTRA rapide : les 3 gestes les plus fréquents, en tête d'écran,
+    // dès l'ouverture de la tablette — sans passer par la barre du bas.
+    '<div class="grid cols-3" id="dash-express" style="margin-bottom:16px">' +
+    '<button class="btn" data-go="service" style="font-size:19px;padding:24px 10px;line-height:1.3">🍽️<br>T° de service</button>' +
+    '<button class="btn" data-go="tracabilite" style="font-size:19px;padding:24px 10px;line-height:1.3">🏷️<br>Étiquettes</button>' +
+    '<button class="btn" data-go="refroidissement" style="font-size:19px;padding:24px 10px;line-height:1.3">📉<br>Refroidissement</button>' +
+    '</div>' +
+
     '<div class="stat-tiles">' +
     '<div class="stat ' + (equipsMissing.length === 0 && SETTINGS.equipements.length ? 'ok' : '') + '"><div class="n">' + (SETTINGS.equipements.length - equipsMissing.length) + '/' + SETTINGS.equipements.length + '</div><div class="t">Enceintes relevées (quotidien, début de journée)</div></div>' +
     '<div class="stat ' + (dailyDone === dailyTasks.length && dailyTasks.length ? 'ok' : '') + '"><div class="n">' + dailyDone + '/' + dailyTasks.length + '</div><div class="t">Nettoyage quotidien</div></div>' +
