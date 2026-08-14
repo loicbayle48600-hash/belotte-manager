@@ -61,6 +61,10 @@ image**, rangée **par semaine** — la même organisation que le classeur de tr
     │   ├── 📁 Nettoyage                    ← 1 PDF par semaine, toujours
     │   ├── 📁 Huiles                       ← 1 PDF par mois, mis à jour au fil de l'eau, toujours
     │   └── 📁 Non-conformités              ← 1 PDF par mois, mis à jour au fil de l'eau, toujours
+    ├── 📁 Documents                        ← PMS, rapports labo, autocontrôles (PDF)
+    │   ├── 📁 PMS
+    │   ├── 📁 Analyses laboratoire         ← documents photographiés ou importés dans l'appli
+    │   └── 📁 Autocontrôles
     └── 📁 Photos étiquettes
         ├── 📁 Semaine 32 2026
         │   ├── 📁 lundi

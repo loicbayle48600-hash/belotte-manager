@@ -2823,6 +2823,107 @@ const PMS_MEMO = [
   ['🌡️ Thermomètres', 'Vérification périodique (eau glacée 0 °C / eau bouillante 100 °C), conforme si écart ≤ 1 °C, au moins une fois par an.'],
 ];
 
+/** Dépose un PDF de document (labo, autocontrôle, PMS…) sur le Drive, dans
+ *  « <année>/Documents/<catégorie> ». Retourne true si l'envoi a réussi. */
+async function sendDocPdfToDrive(filename, categorie, b64) {
+  const url = (SETTINGS.driveUrl || '').trim();
+  if (!url || !navigator.onLine) return false;
+  const annee = String(new Date().getFullYear());
+  const cat = String(categorie || '').replace(/[^\w\-À-ÿ ]+/g, '').trim() || 'Autres';
+  try {
+    const resp = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify({ app: 'haccp-cuisine', type: 'pdf', filename, dossier: annee + '/Documents/' + cat, data: b64 }),
+    });
+    if (!resp.ok) return false;
+    try { const j = JSON.parse(await resp.text()); if (j && j.ok === false) return false; } catch { /* statut HTTP */ }
+    return true;
+  } catch { return false; }
+}
+
+/** Assemble des photos (dataURL) en un PDF A4 : une page par photo, centrée. */
+async function photosToPdf(pages) {
+  const jsPDF = await ensureJsPDF();
+  const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
+  for (let i = 0; i < pages.length; i++) {
+    if (i) doc.addPage();
+    const img = await new Promise((ok, ko) => { const im = new Image(); im.onload = () => ok(im); im.onerror = () => ko(new Error('image illisible')); im.src = pages[i]; });
+    const k = Math.min(190 / img.width, 277 / img.height);
+    const w = img.width * k, h = img.height * k;
+    doc.addImage(pages[i], 'JPEG', (210 - w) / 2, (297 - h) / 2, w, h);
+  }
+  return doc.output('blob');
+}
+
+/** Rapports labo / autocontrôles : photographier les pages -> PDF dans
+ *  l'application (catégorie choisie) + dépôt sur le Drive. */
+function openPhotoDocModal() {
+  UI.modal(
+    '<h2>📷 Photographier un document</h2>' +
+    '<p class="muted" style="margin-bottom:12px">Rapport labo, autocontrôle, bon d’enlèvement… Photographie chaque page : l’application assemble un PDF, le range dans Documents et l’envoie sur le Drive.</p>' +
+    '<div data-pages class="row" style="flex-wrap:wrap;gap:8px;margin-bottom:10px"></div>' +
+    '<div class="row" style="margin-bottom:12px">' +
+    '<button type="button" class="btn secondary" data-x="addpage">📷 Photographier une page</button>' +
+    '<button type="button" class="btn ghost small" data-x="gal">🖼️ Depuis la galerie</button>' +
+    '<input type="file" accept="image/*" multiple data-f="galerie" style="display:none"></div>' +
+    '<label class="field"><span class="lbl">Titre</span><input type="text" data-f="nom" placeholder="Ex. : Analyse surfaces août 2026"></label>' +
+    '<label class="field"><span class="lbl">Catégorie</span><select data-f="categorie">' +
+    DOC_CATEGORIES.filter(c => c !== '📋 PMS').map(c => '<option' + (c === '🔬 Analyses laboratoire' ? ' selected' : '') + '>' + c + '</option>').join('') + '</select></label>' +
+    '<label class="field"><span class="lbl">Note (optionnel)</span><input type="text" data-f="note" placeholder="Ex. : conforme, à re-contrôler…"></label>' +
+    agentField() +
+    '<div class="actions"><button class="btn ghost" data-x="cancel">Annuler</button><button class="btn" data-x="save">💾 Enregistrer le PDF</button></div>',
+    (m, close) => {
+      const pages = [];
+      const pagesBox = m.querySelector('[data-pages]');
+      const galInput = m.querySelector('[data-f="galerie"]');
+
+      const refreshPages = () => {
+        pagesBox.innerHTML = pages.map((p, i) =>
+          '<span style="position:relative;display:inline-block"><img src="' + p + '" style="height:84px;border-radius:8px;border:1px solid var(--border)">' +
+          '<button type="button" data-rmpage="' + i + '" style="position:absolute;top:-6px;right:-6px;border:none;background:var(--red);color:#fff;border-radius:50%;width:24px;height:24px;cursor:pointer">✕</button></span>'
+        ).join('') + (pages.length ? '<span class="pill info">' + pages.length + ' page' + (pages.length > 1 ? 's' : '') + '</span>' : '');
+        pagesBox.querySelectorAll('[data-rmpage]').forEach(b => b.addEventListener('click', () => { pages.splice(Number(b.dataset.rmpage), 1); refreshPages(); }));
+      };
+
+      m.querySelector('[data-x="addpage"]').addEventListener('click', () => openCameraCapture(p => { pages.push(p); refreshPages(); }));
+      m.querySelector('[data-x="gal"]').addEventListener('click', () => galInput.click());
+      galInput.addEventListener('change', async e => {
+        for (const f of e.target.files) {
+          try { pages.push(await UI.shrinkImage(f, 1400)); } catch { UI.toast('Photo illisible ignorée', 'bad'); }
+        }
+        galInput.value = '';
+        refreshPages();
+      });
+
+      m.querySelector('[data-x="cancel"]').onclick = close;
+      m.querySelector('[data-x="save"]').onclick = async () => {
+        const nom = m.querySelector('[data-f="nom"]').value.trim();
+        if (!pages.length) { UI.toast('Photographie au moins une page', 'bad'); return; }
+        if (!nom) { UI.toast('Donne un titre au document', 'bad'); return; }
+        const agent = requireAgent(m); if (!agent) return;
+        let blob;
+        try { blob = await photosToPdf(pages); }
+        catch (e) { UI.toast('PDF impossible : ' + e.message, 'bad'); return; }
+        const dataURL = await new Promise((ok, ko) => { const fr = new FileReader(); fr.onload = () => ok(fr.result); fr.onerror = () => ko(fr.error); fr.readAsDataURL(blob); });
+        const categorie = m.querySelector('[data-f="categorie"]').value;
+        const fichier = nom.replace(/[^\w\-À-ÿ ]+/g, '').trim().replace(/\s+/g, '-').slice(0, 50) + '_' + UI.todayISO() + '.pdf';
+        await DB.addRecord({
+          type: 'document', date: UI.todayISO(), time: UI.nowHM(),
+          nom, categorie,
+          note: m.querySelector('[data-f="note"]').value.trim(),
+          fichier, mime: 'application/pdf', taille: blob.size, data: dataURL,
+          agent,
+        });
+        close();
+        render();
+        const ok = await sendDocPdfToDrive(fichier, categorie, String(dataURL).split(',')[1]);
+        UI.toast(ok ? 'PDF enregistré + déposé sur le Drive ✔' : 'PDF enregistré dans l’appli ✔ (Drive injoignable : il reste dans la sauvegarde locale)', ok ? 'ok' : 'warn');
+      };
+    }
+  );
+}
+
 function openDocumentModal() {
   UI.modal(
     '<h2>📚 Ajouter un document</h2>' +
@@ -2868,16 +2969,24 @@ function openDocumentModal() {
         if (!fileData) { UI.toast('Choisis un fichier', 'bad'); return; }
         if (!nom) { UI.toast('Donne un titre au document', 'bad'); return; }
         const agent = requireAgent(m); if (!agent) return;
+        const categorie = m.querySelector('[data-f="categorie"]').value;
         await DB.addRecord({
           type: 'document', date: UI.todayISO(), time: UI.nowHM(),
-          nom, categorie: m.querySelector('[data-f="categorie"]').value,
+          nom, categorie,
           note: m.querySelector('[data-f="note"]').value.trim(),
           fichier: fileName, mime: fileMime, taille: fileSize, data: fileData,
           agent,
         });
         close();
-        UI.toast('Document enregistré ✔ (inclus dans la sauvegarde locale ; le cloud n’emporte que la liste)', 'ok');
         render();
+        // Les PDF importés (PMS, rapports reçus par mail…) partent aussi sur le
+        // Drive, rangés dans <année>/Documents/<catégorie>.
+        if (fileMime === 'application/pdf') {
+          const ok = await sendDocPdfToDrive(fileName, categorie, String(fileData).split(',')[1]);
+          UI.toast(ok ? 'Document enregistré + déposé sur le Drive ✔' : 'Document enregistré ✔ (Drive injoignable — il reste dans la sauvegarde locale)', ok ? 'ok' : 'warn');
+        } else {
+          UI.toast('Document enregistré ✔ (inclus dans la sauvegarde locale ; le cloud n’emporte que la liste)', 'ok');
+        }
       };
     }
   );
@@ -2888,8 +2997,23 @@ VIEWS.documents = async function (el) {
   const byCat = {};
   docs.forEach(d => { (byCat[d.categorie] = byCat[d.categorie] || []).push(d); });
 
+  const REGISTRES_PDF_DOC = [
+    ['temp', '❄️ Enceintes froides'], ['reception', '🚚 Réceptions'],
+    ['refroid', '📉 Refroidissement / remise'], ['service', '🍽️ Service'],
+    ['decongel', '⏳ Décongélation'], ['nettoyage', '🧽 Nettoyage'],
+    ['huile', '🍟 Huiles'], ['nonconf', '⚠️ Non-conformités'],
+    ['verif', '🌡️ Thermomètres'], ['etiquette', '🏷️ Étiquettes (liste)'],
+  ];
+
   el.innerHTML = headerHTML('Documents & PMS', 'Plan de maîtrise sanitaire, analyses laboratoire, autocontrôles… — tout le classeur dans la tablette (fichiers inclus dans la sauvegarde locale JSON ; le cloud n’emporte que la liste)',
-      '<button class="btn" id="new-doc">📥 Ajouter un document</button>') +
+      '<button class="btn secondary" id="photo-doc">📷 Photographier</button> <button class="btn" id="new-doc">📥 Ajouter un document</button>') +
+
+    '<div class="card"><h2>📋 Registres de la tablette — PDF en un tap</h2>' +
+    '<p class="muted" style="margin-bottom:12px">En cas de contrôle sanitaire : chaque bouton génère immédiatement le PDF des <b>30 derniers jours</b> du registre (à ouvrir, imprimer ou partager). Pour une autre période : module 📋 Historique. Les archives mensuelles/hebdomadaires complètes sont aussi conservées pour toujours sur le Drive (dossier « Registres PDF »).</p>' +
+    '<div class="grid cols-3">' +
+    REGISTRES_PDF_DOC.map(([t, lbl]) => '<button class="btn secondary" data-reg-pdf="' + t + '">' + lbl + '</button>').join('') +
+    '<button class="btn" id="reg-pdf-tout">📄 TOUS les registres (30 j)</button>' +
+    '</div></div>' +
 
     '<div class="card"><h2>📖 Consignes clés du PMS <span class="pill info">mémo</span></h2>' +
     '<div class="rec-list">' + PMS_MEMO.map(([titre, texte]) =>
@@ -2911,6 +3035,12 @@ VIEWS.documents = async function (el) {
       : '<div class="empty"><span class="e-ico">📚</span>Aucun document importé. Ajoute ton PMS, tes rapports de labo, tes autocontrôles…</div>');
 
   el.querySelector('#new-doc').addEventListener('click', openDocumentModal);
+  el.querySelector('#photo-doc').addEventListener('click', openPhotoDocModal);
+  const today = UI.todayISO();
+  el.querySelectorAll('[data-reg-pdf]').forEach(b => b.addEventListener('click', () =>
+    exportPDF([b.dataset.regPdf], UI.addDays(today, -30), today, 'registre-' + b.dataset.regPdf + '-30j-' + today + '.pdf')));
+  el.querySelector('#reg-pdf-tout').addEventListener('click', () =>
+    exportPDF(Object.keys(EXPORT_COLUMNS), UI.addDays(today, -30), today, 'registres-haccp-30j-' + today + '.pdf'));
   el.querySelectorAll('[data-open-doc]').forEach(b => b.addEventListener('click', async () => {
     const d = await DB.getRecord(Number(b.dataset.openDoc));
     if (!d) return;
