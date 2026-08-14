@@ -596,12 +596,15 @@ VIEWS.dashboard = async function (el) {
     (lastAutoBackupDate() ? '<div class="muted" style="font-size:11.5px;text-align:center;margin-top:4px">dernière : ' + UI.frDate(lastAutoBackupDate()) + '</div>' : '') + '</div>' +
     '</div></div>' +
 
-    // Accès ULTRA rapide : les 3 gestes les plus fréquents, en tête d'écran,
+    // Accès ULTRA rapide : les gestes les plus fréquents, en tête d'écran,
     // dès l'ouverture de la tablette — sans passer par la barre du bas.
     '<div class="grid cols-3" id="dash-express" style="margin-bottom:16px">' +
     '<button class="btn" data-go="service" style="font-size:19px;padding:24px 10px;line-height:1.3">🍽️<br>T° de service</button>' +
     '<button class="btn" data-go="tracabilite" style="font-size:19px;padding:24px 10px;line-height:1.3">🏷️<br>Étiquettes</button>' +
     '<button class="btn" data-go="refroidissement" style="font-size:19px;padding:24px 10px;line-height:1.3">📉<br>Refroidissement</button>' +
+    '<button class="btn" data-go="temperatures" style="font-size:19px;padding:24px 10px;line-height:1.3">❄️<br>T° des frigos</button>' +
+    '<button class="btn" data-go="reception" style="font-size:19px;padding:24px 10px;line-height:1.3">🚚<br>Réception</button>' +
+    '<button class="btn" data-go="nettoyage" style="font-size:19px;padding:24px 10px;line-height:1.3">🧽<br>Nettoyage</button>' +
     '</div>' +
 
     '<div class="stat-tiles">' +
