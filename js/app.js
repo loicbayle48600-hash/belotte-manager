@@ -945,6 +945,7 @@ VIEWS.refroidissement = async function (el) {
         '<div class="body"><div class="title">' + UI.esc(r.produit) + '</div>' +
         '<div class="meta">' + (r.mode === 'remise' ? '🔥 Remise en température' : '📉 Refroidissement') +
         (r.cellule ? ' — ' + (r.cellule === 'grande' ? 'grande' : 'petite') + ' cellule' : '') +
+        (r.alarme ? ' — 🔔 alarme' : '') +
         ' — départ ' + UI.esc(r.timeStart) + ' à ' + UI.fmtTemp(r.tempStart) +
         (mins > limit ? ' — ⚠️ délai dépassé' : ' (limite ' + limit + ' min)') + '</div></div>' +
         '<button class="btn small" data-finish="' + r.id + '">Terminer</button></div>';
@@ -990,6 +991,8 @@ async function openRefroidStartModal() {
     UI.tempInputHTML('temp', { placeholder: '63.0' }) + '</label>' +
     '<label class="field"><span class="lbl">Heure de début (modifiable si saisie après coup)</span>' +
     '<input type="time" data-f="heure" value="' + UI.nowHM() + '"></label>' +
+    '<label class="field" style="display:flex;align-items:center;gap:12px"><input type="checkbox" data-f="alarme" checked style="width:26px;height:26px;min-height:0">' +
+    '<span class="lbl" style="margin:0">🔔 Alarme sonore tant que le délai est dépassé (sonne toutes les 30 s jusqu’à « Terminer »)</span></label>' +
     agentField() +
     '<div class="actions"><button class="btn ghost" data-x="cancel">Annuler</button><button class="btn" data-x="save">▶ Démarrer</button></div>',
     (m, close) => {
@@ -1007,6 +1010,7 @@ async function openRefroidStartModal() {
         await DB.addRecord({
           type: 'refroid', date: day, mode: UI.segValue(m, 'mode'),
           cellule: UI.segValue(m, 'cellule') || '',
+          alarme: m.querySelector('[data-f="alarme"]').checked,
           produit, tempStart: t, timeStart: heure, startISO: isoFromDayTime(day, heure),
           status: 'encours', agent,
         });
@@ -3780,10 +3784,16 @@ async function refroidTick() {
       const item = document.querySelector('[data-refroid-item="' + r.id + '"]');
       if (item && mins > limit) item.classList.add('bad');
     }
-    if (mins > limit && !_refroidAlerted.has(r.id)) {
-      _refroidAlerted.add(r.id);
-      UI.beep();
-      UI.toast('⏰ ' + (r.mode === 'remise' ? 'Remise en T°' : 'Refroidissement') + ' « ' + r.produit + ' » : délai de ' + limit + ' min DÉPASSÉ !', 'bad');
+    if (mins > limit) {
+      if (!_refroidAlerted.has(r.id)) {
+        _refroidAlerted.add(r.id);
+        UI.beep();
+        UI.toast('⏰ ' + (r.mode === 'remise' ? 'Remise en T°' : 'Refroidissement') + ' « ' + r.produit + ' » : délai de ' + limit + ' min DÉPASSÉ !', 'bad');
+      } else if (r.alarme) {
+        // Alarme optionnelle : re-sonne à chaque contrôle (30 s) tant que le
+        // suivi dépassé n'est pas terminé — impossible de la rater en cuisine.
+        UI.beep();
+      }
     }
   });
   const navBtn = document.querySelector('.nav-btn[data-view="refroidissement"]');
