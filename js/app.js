@@ -155,6 +155,7 @@ const TYPE_LABELS = {
   refroid: 'Refroidissement / remise en T°',
   service: 'Température de service / expédition',
   decongel: 'Décongélation',
+  congel: 'Congélation',
   verif: 'Vérification thermomètre',
   fermeture: 'Jour de fermeture',
   etiquette: 'Étiquette produit',
@@ -1485,6 +1486,70 @@ function openDecongelModal() {
 }
 
 /* ================================================================
+   CONGÉLATION (produits congelés sur place)
+================================================================ */
+VIEWS.congelation = async function (el) {
+  const today = UI.todayISO();
+  const recs = alive(await DB.getByType('congel')).sort((a, b) => (b.date + (b.time || '')).localeCompare(a.date + (a.time || '')));
+  const moisCourant = recs.filter(r => r.date.slice(0, 7) === today.slice(0, 7)).length;
+
+  const joursDepuis = d => Math.round((new Date(today + 'T12:00:00') - new Date(d + 'T12:00:00')) / 86400000);
+
+  el.innerHTML = headerHTML('Congélation', 'Produits congelés sur place — nom du produit et date de congélation (registre PDF mensuel déposé sur le Drive, mis à jour au fil de l’eau)',
+      '<button class="btn" id="new-congel">➕ Produit congelé</button>') +
+
+    (recs.length
+      ? '<div class="card"><h2>🧊 Produits congelés <span class="pill info">' + recs.length + '</span>' +
+        (moisCourant ? ' <span class="pill ok">' + moisCourant + ' ce mois-ci</span>' : '') + '</h2><div class="rec-list">' +
+        recs.map(r => {
+          const j = joursDepuis(r.date);
+          return '<div class="rec-item"><div class="big">🧊</div>' +
+            '<div class="body"><div class="title">' + UI.esc(r.produit) + '</div>' +
+            '<div class="meta">Congelé le <b>' + UI.frDate(r.date) + '</b>' + (r.time ? ' à ' + UI.esc(r.time) : '') +
+            (j > 0 ? ' — il y a ' + (j >= 30 ? Math.floor(j / 30) + ' mois' : j + ' jour' + (j > 1 ? 's' : '')) : ' — aujourd’hui') +
+            ' — ' + UI.esc(r.agent || '') + '</div></div>' +
+            '<button class="btn small ghost" data-del-congel="' + r.id + '" title="Supprimer">🗑️</button></div>';
+        }).join('') + '</div></div>'
+      : '<div class="empty"><span class="e-ico">🧊</span>Aucun produit congelé enregistré. Touche « ➕ Produit congelé » à la première congélation maison.</div>');
+
+  el.querySelector('#new-congel').addEventListener('click', openCongelModal);
+  el.querySelectorAll('[data-del-congel]').forEach(b => b.addEventListener('click', () => requirePin(() => UI.confirm('Supprimer ce produit congelé du registre ?', async () => {
+    await DB.deleteRecord(Number(b.dataset.delCongel));
+    UI.toast('Produit supprimé', 'ok');
+    render();
+  }))));
+};
+
+function openCongelModal() {
+  UI.modal(
+    '<h2>🧊 Produit congelé sur place</h2>' +
+    '<label class="field"><span class="lbl">Nom du produit</span>' +
+    '<input type="text" data-f="produit" placeholder="Ex. : pain, sauté de veau (excédent)…"></label>' +
+    '<label class="field"><span class="lbl">Date de congélation</span>' +
+    '<input type="date" data-f="date" value="' + UI.todayISO() + '"></label>' +
+    agentField() +
+    '<div class="actions"><button class="btn ghost" data-x="cancel">Annuler</button><button class="btn" data-x="save">Enregistrer</button></div>',
+    (m, close) => {
+      m.querySelector('[data-x="cancel"]').onclick = close;
+      m.querySelector('[data-x="save"]').onclick = async () => {
+        const produit = m.querySelector('[data-f="produit"]').value.trim();
+        if (!produit) { UI.toast('Indique le nom du produit', 'bad'); return; }
+        const agent = requireAgent(m); if (!agent) return;
+        await DB.addRecord({
+          type: 'congel',
+          date: m.querySelector('[data-f="date"]').value || UI.todayISO(),
+          time: UI.nowHM(),
+          produit, agent,
+        });
+        close();
+        UI.toast('Congélation enregistrée ✔', 'ok');
+        render();
+      };
+    }
+  );
+}
+
+/* ================================================================
    PRODUITS ENTAMÉS (DLC internes du PMS)
 ================================================================ */
 const ENTAME_TYPES = [
@@ -2672,6 +2737,7 @@ const EXPORT_COLUMNS = {
   refroid: [['Date', r => UI.frDate(r.date)], ['Type', r => r.mode === 'remise' ? 'Remise en T°' : 'Refroidissement'], ['Cellule', r => r.cellule === 'grande' ? 'Grande' : (r.cellule === 'petite' ? 'Petite' : '')], ['Préparation', r => r.produit], ['T° départ', r => r.tempStart], ['Heure départ', r => r.timeStart], ['T° fin', r => r.tempEnd], ['Heure fin', r => r.timeEnd], ['Durée (min)', r => r.durationMin], ['Conforme', r => r.status === 'encours' ? 'En cours' : (r.conforme === false ? 'NON' : 'OUI')], ['Action corrective', r => r.action], ['Agent', r => r.agent]],
   service: [['Date', r => UI.frDate(r.date)], ['Heure', r => r.time], ['Service', r => r.service || ''], ['Plat', r => r.plat], ['Liaison', r => r.liaison], ['Température (°C)', r => r.temp], ['Plat témoin', r => r.platTemoin ? 'OUI' : 'NON'], ['Conforme', r => r.conforme === false ? 'NON' : (r.tolere ? 'Toléré <2h' : 'OUI')], ['Action corrective', r => r.action], ['Agent', r => r.agent]],
   decongel: [['Date mise en décongélation', r => UI.frDate(r.date)], ['Heure', r => r.time], ['Produit', r => r.produit], ['Fournisseur', r => r.fournisseur], ['Lot', r => r.lot], ['À utiliser avant', r => UI.frDate(r.limite)], ['Sorti le', r => r.sortieDate ? UI.frDate(r.sortieDate) + ' ' + (r.sortieTime || '') : ''], ['Devenir', r => r.issue === 'jete' ? 'JETÉ' : (r.issue === 'utilise' ? 'Utilisé' : '')], ['Statut', r => r.statut === 'termine' ? 'Terminé' : 'En cours'], ['Agent', r => r.agent]],
+  congel: [['Date de congélation', r => UI.frDate(r.date)], ['Heure', r => r.time], ['Produit', r => r.produit], ['Agent', r => r.agent]],
   etiquette: [['Date photo', r => UI.frDate(r.date)], ['Heure', r => r.time], ['Destiné au', r => r.destineLe ? UI.frDate(r.destineLe) : UI.frDate(r.date)], ['Produit', r => r.produit], ['Lot', r => r.lot], ['DLC', r => r.dlc ? UI.frDate(r.dlc) : ''], ['Photo', r => r.photo ? 'OUI' : 'NON'], ['Agent', r => r.agent]],
   nettoyage: [['Date', r => UI.frDate(r.date)], ['Heure', r => r.time], ['Tâche', r => r.taskName], ['Zone', r => r.zone], ['Fréquence', r => r.freq], ['Agent', r => r.agent]],
   huile: [['Date', r => UI.frDate(r.date)], ['Heure', r => r.time], ['Friteuse', r => r.friteuse], ['Opération', r => r.action], ['État huile', r => r.etat], ['Polarité', r => r.polaires === 'nok' ? '> 25 % NON CONFORME' : (r.polaires === 'ok' ? '≤ 25 %' : '') + (r.polairesPct != null ? ' (' + r.polairesPct + ' %)' : '')], ['Huile usagée', r => r.volume != null || r.destination ? (r.volume != null ? r.volume + ' L' : '') + (r.destination ? ' → ' + r.destination : '') + (r.bon ? ' (bon ' + r.bon + ')' : '') : ''], ['Température (°C)', r => r.temp], ['Action corrective', r => r.actionCorrective], ['Remarque', r => r.remarque], ['Agent', r => r.agent]],
@@ -3019,7 +3085,7 @@ VIEWS.documents = async function (el) {
   const REGISTRES_PDF_DOC = [
     ['temp', '❄️ Enceintes froides'], ['reception', '🚚 Réceptions'],
     ['refroid', '📉 Refroidissement / remise'], ['service', '🍽️ Service'],
-    ['decongel', '⏳ Décongélation'], ['nettoyage', '🧽 Nettoyage'],
+    ['decongel', '⏳ Décongélation'], ['congel', '🧊 Congélation'], ['nettoyage', '🧽 Nettoyage'],
     ['huile', '🍟 Huiles'], ['nonconf', '⚠️ Non-conformités'],
     ['verif', '🌡️ Thermomètres'], ['etiquette', '🏷️ Étiquettes (liste)'],
   ];
@@ -3834,6 +3900,7 @@ const ARCHIVES_PDF = [
   { type: 'refroid',   slug: 'refroidissement',   dossier: 'Refroidissement',   periode: 'mois' },
   { type: 'service',   slug: 'service',           dossier: 'Service',           periode: 'semaine' },
   { type: 'decongel',  slug: 'decongelation',     dossier: 'Décongélation',     periode: 'mois' },
+  { type: 'congel',    slug: 'congelation',       dossier: 'Congélation',       periode: 'mois' },
   { type: 'nettoyage', slug: 'nettoyage',         dossier: 'Nettoyage',         periode: 'semaine' },
   { type: 'huile',     slug: 'huiles',            dossier: 'Huiles',            periode: 'mois' },
   { type: 'nonconf',   slug: 'non-conformites',   dossier: 'Non-conformités',   periode: 'mois' },

@@ -58,6 +58,7 @@ image**, rangée **par semaine** — la même organisation que le classeur de tr
     │   ├── 📁 Service                      ← 1 PDF par SEMAINE, toujours
     │   │   └── service-semaine-33-2026.pdf
     │   ├── 📁 Décongélation                ← 1 PDF par mois, toujours
+    │   ├── 📁 Congélation                  ← 1 PDF par mois, mis à jour au fil de l'eau, toujours
     │   ├── 📁 Nettoyage                    ← 1 PDF par semaine, toujours
     │   ├── 📁 Huiles                       ← 1 PDF par mois, mis à jour au fil de l'eau, toujours
     │   └── 📁 Non-conformités              ← 1 PDF par mois, mis à jour au fil de l'eau, toujours
