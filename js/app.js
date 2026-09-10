@@ -587,6 +587,11 @@ VIEWS.dashboard = async function (el) {
   el.innerHTML =
     headerHTML(SETTINGS.etablissement, 'Aujourd’hui — ' + new Date().toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })) +
 
+    (_majDispo ? '<div class="card" style="border-color:var(--green)"><div class="row">' +
+      '<span class="pill ok">🔄 Mise à jour disponible : version ' + UI.esc(_majDispo.versionName || _majDispo.versionCode) + '</span>' +
+      '<span class="muted" style="font-size:13px">Un tap pour télécharger, puis ouvre le fichier et confirme : l’application s’installe par-dessus, rien n’est perdu.</span>' +
+      '<button class="btn small" id="dash-maj">📥 Télécharger la mise à jour</button></div></div>' : '') +
+
     '<div class="card"><div class="row">' +
     '<div class="grow"><label class="field" style="margin:0"><span class="lbl">Agent en poste</span>' +
     '<select id="dash-agent"><option value="">— Choisir —</option>' +
@@ -666,6 +671,8 @@ VIEWS.dashboard = async function (el) {
   el.querySelectorAll('[data-go]').forEach(b => b.addEventListener('click', () => navigate(b.dataset.go)));
 
   // Sauvegarde cloud manuelle en un tap depuis l'accueil
+  const majBtn = el.querySelector('#dash-maj');
+  if (majBtn) majBtn.addEventListener('click', telechargerMaj);
   el.querySelector('#dash-backup').addEventListener('click', async () => {
     if (!backupTargets().length) {
       UI.toast('Configure d’abord une destination : ⚙️ Réglages → Sauvegardes cloud', 'bad');
@@ -3979,6 +3986,44 @@ async function maybeArchivePdfsToDrive() {
   }
 }
 
+/* ---------- Mise à jour automatique de l'application (APK) ---------- */
+// Android interdit l'installation silencieuse hors Play Store : l'application
+// DÉTECTE donc les nouvelles versions toute seule (vérification quotidienne)
+// et propose le téléchargement en un tap ; Android demande ensuite une simple
+// confirmation, l'installation se fait par-dessus sans perdre les données.
+const APK_TELECHARGEMENT = 'https://github.com/loicbayle48600-hash/belotte-manager/releases/latest/download/haccp-cuisine.apk';
+const APK_VERSION_URL = 'https://raw.githubusercontent.com/loicbayle48600-hash/belotte-manager/apk-build/version.json';
+
+function isNativeApp() {
+  const c = window.Capacitor;
+  return !!(c && c.isNativePlatform && c.isNativePlatform());
+}
+
+let _majDispo = null; // { versionCode, versionName } si une version plus récente existe
+async function maybeCheckUpdate(force) {
+  // Uniquement l'APK (la PWA navigateur se met à jour via le service worker)
+  if (!isNativeApp() || !navigator.onLine || !Number(window.APP_VERSION_CODE)) return;
+  const today = UI.todayISO();
+  if (!force && localStorage.getItem('haccp-maj-last') === today) return;
+  try {
+    const resp = await fetch(APK_VERSION_URL, { cache: 'no-store' });
+    if (!resp.ok) return;
+    const v = await resp.json();
+    localStorage.setItem('haccp-maj-last', today); // posé seulement après une réponse valide
+    const dispo = v && Number(v.versionCode) > Number(window.APP_VERSION_CODE);
+    const changement = dispo !== !!_majDispo;
+    _majDispo = dispo ? v : null;
+    if (changement && currentView === 'dashboard') render();
+  } catch { /* hors ligne / GitHub injoignable : on retentera */ }
+}
+
+/** Ouvre le téléchargement de l'APK dans le navigateur de la tablette. */
+function telechargerMaj() {
+  const w = window.open(APK_TELECHARGEMENT, '_blank');
+  if (!w) window.location.href = APK_TELECHARGEMENT;
+  UI.toast('Téléchargement lancé — ouvre ensuite le fichier haccp-cuisine.apk et confirme l’installation (les données sont conservées)', 'ok');
+}
+
 /* ---------- Chronomètre des refroidissements en cours ---------- */
 const _refroidAlerted = new Set();
 
@@ -4031,12 +4076,15 @@ async function refroidTick() {
   // (idempotent : une seule sauvegarde par jour grâce à haccp-drive-last).
   const tryBackup = () => maybeAutoBackup().catch(e => console.warn('backup auto', e));
   const tryMenuSync = () => maybeMenuSync().catch(e => console.warn('menu sync', e));
+  const tryMaj = () => maybeCheckUpdate().catch(e => console.warn('maj', e));
   setTimeout(tryBackup, 2500);
   setTimeout(tryMenuSync, 5000);
+  setTimeout(tryMaj, 8000);
   setInterval(tryBackup, 60 * 60 * 1000);
   setInterval(tryMenuSync, 60 * 60 * 1000);
+  setInterval(tryMaj, 60 * 60 * 1000);
   // dès que la connexion revient (wifi retrouvé), sauvegarde et menu en retard partent immédiatement
-  window.addEventListener('online', () => { setTimeout(tryBackup, 3000); setTimeout(tryMenuSync, 6000); });
+  window.addEventListener('online', () => { setTimeout(tryBackup, 3000); setTimeout(tryMenuSync, 6000); setTimeout(tryMaj, 9000); });
   // chronomètre des refroidissements (compteurs vivants + alerte de dépassement)
   setInterval(() => { refroidTick().catch(() => {}); }, 30 * 1000);
   // La tablette reste allumée en continu : au passage de minuit (ou au retour

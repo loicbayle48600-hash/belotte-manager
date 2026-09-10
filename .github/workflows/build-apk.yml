@@ -42,6 +42,8 @@ jobs:
         working-directory: mobile
         run: |
           bash sync-www.sh
+          # Numéro de version embarqué (sert à la détection de mise à jour dans l'appli)
+          printf 'window.APP_VERSION_CODE = %s;\nwindow.APP_VERSION_NAME = "1.%s";\n' "${GITHUB_RUN_NUMBER}" "${GITHUB_RUN_NUMBER}" > www/version.js
           npx cap sync android
 
       - name: Compiler l'APK signé (clé fixe, mises à jour par-dessus garanties)
@@ -54,6 +56,8 @@ jobs:
         run: |
           mkdir -p out
           cp mobile/android/app/build/outputs/apk/release/app-release.apk out/haccp-cuisine.apk
+          # Fichier consulté par les tablettes pour détecter une nouvelle version
+          printf '{"versionCode": %s, "versionName": "1.%s"}\n' "${GITHUB_RUN_NUMBER}" "${GITHUB_RUN_NUMBER}" > out/version.json
           ls -la out/
 
       - name: Publier l'APK comme artefact
@@ -69,7 +73,7 @@ jobs:
           git checkout -q -b apk-build
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add haccp-cuisine.apk
+          git add haccp-cuisine.apk version.json
           git commit -q -m "APK HACCP compilé (run ${GITHUB_RUN_NUMBER})"
           git push -q --force "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" apk-build
         env:
