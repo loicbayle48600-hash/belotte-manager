@@ -1008,8 +1008,10 @@ async function openRefroidStartModal() {
     ], 'petite') + '</label>' +
     '<label class="field"><span class="lbl">Température de départ (°C)</span>' +
     UI.tempInputHTML('temp', { placeholder: '63.0' }) + '</label>' +
-    '<label class="field"><span class="lbl">Heure de début (modifiable si saisie après coup)</span>' +
-    '<input type="time" data-f="heure" value="' + UI.nowHM() + '"></label>' +
+    '<div class="row"><div class="grow"><label class="field"><span class="lbl">📅 Date de début (modifiable si saisie après coup)</span>' +
+    '<input type="date" data-f="dateDebut" value="' + UI.todayISO() + '" max="' + UI.todayISO() + '"></label></div>' +
+    '<div class="grow"><label class="field"><span class="lbl">Heure de début</span>' +
+    '<input type="time" data-f="heure" value="' + UI.nowHM() + '"></label></div></div>' +
     '<label class="field" style="display:flex;align-items:center;gap:12px"><input type="checkbox" data-f="alarme" checked style="width:26px;height:26px;min-height:0">' +
     '<span class="lbl" style="margin:0">🔔 Alarme sonore tant que le délai est dépassé (sonne toutes les 30 s jusqu’à « Terminer »)</span></label>' +
     agentField() +
@@ -1023,9 +1025,10 @@ async function openRefroidStartModal() {
         if (!produit || isNaN(t)) { UI.toast('Renseigne le plat et la température', 'bad'); return; }
         const heure = m.querySelector('[data-f="heure"]').value || UI.nowHM();
         const agent = requireAgent(m); if (!agent) return;
-        // Une heure « dans le futur » correspond en réalité à hier soir
-        // (ex. : départ 23:30 saisi à 00:15) : on date au jour précédent.
-        const day = heure > UI.nowHM() ? UI.addDays(UI.todayISO(), -1) : UI.todayISO();
+        const dateChoisie = m.querySelector('[data-f="dateDebut"]').value || UI.todayISO();
+        // Date laissée à aujourd'hui avec une heure « dans le futur » = en
+        // réalité hier soir (ex. : départ 23:30 saisi à 00:15) : jour précédent.
+        const day = (dateChoisie === UI.todayISO() && heure > UI.nowHM()) ? UI.addDays(dateChoisie, -1) : dateChoisie;
         await DB.addRecord({
           type: 'refroid', date: day, mode: UI.segValue(m, 'mode'),
           cellule: UI.segValue(m, 'cellule') || '',
@@ -1070,12 +1073,13 @@ async function openRefroidFinishModal(id) {
       // « dans le futur », c'était hier soir). Une fin antérieure au début est
       // refusée : mins vaut alors null.
       const endInfo = () => {
+        // L'heure de fin est ancrée sur le JOUR DU DÉBUT du suivi (et non sur
+        // aujourd'hui) : un suivi antidaté saisi après coup garde une durée
+        // juste ; une fin « avant » le début = minuit franchi (+1 jour).
         const hm = heureInput.value || UI.nowHM();
-        const now = new Date();
-        let end = new Date(UI.todayISO() + 'T' + hm + ':00');
-        if (end > now) end = new Date(end.getTime() - 24 * 3600 * 1000);
         const start = new Date(rec.startISO);
-        if (end < start) return { hm, mins: null };
+        let end = new Date((rec.date || UI.todayISO()) + 'T' + hm + ':00');
+        if (end < start) end = new Date(end.getTime() + 24 * 3600 * 1000);
         return { hm, mins: Math.round((end - start) / 60000) };
       };
 
@@ -1233,6 +1237,8 @@ async function openServiceEditModal(id) {
     UI.tempInputHTML('temp') + '</label>' +
     '<label class="field"><span class="lbl">Plat témoin prélevé ?</span>' +
     UI.segHTML('temoin', [{ value: 'oui', label: '✔ Oui' }, { value: 'non', label: 'Non' }], r.platTemoin ? 'oui' : 'non') + '</label>' +
+    '<label class="field"><span class="lbl">📅 Date du contrôle</span>' +
+    '<input type="date" data-f="dateCtrl" value="' + r.date + '" max="' + UI.todayISO() + '"></label>' +
     '<label class="field"><span class="lbl">🕐 Heure du contrôle</span>' +
     UI.segHTML('heure', [
       { value: '12:00', label: '🌞 12 h' },
@@ -1277,7 +1283,9 @@ async function openServiceEditModal(id) {
         const action = m.querySelector('[data-f="action"]').value.trim();
         if (!ok && !action) { UI.toast('Indique l’action corrective', 'bad'); return; }
         Object.assign(r, {
-          plat, liaison, temp: v, time: UI.segValue(m, 'heure') || r.time,
+          plat, liaison, temp: v,
+          date: m.querySelector('[data-f="dateCtrl"]').value || r.date,
+          time: UI.segValue(m, 'heure') || r.time,
           platTemoin: UI.segValue(m, 'temoin') === 'oui',
           tolere: liaison === 'froide' && ok && v > RULES.froidLimite,
           conforme: ok, action: ok ? '' : action, agent,
@@ -1307,6 +1315,8 @@ async function openServiceModal(prefillPlat, svc, jour) {
     UI.tempInputHTML('temp') + '</label>' +
     '<label class="field"><span class="lbl">Plat témoin prélevé ?</span>' +
     UI.segHTML('temoin', [{ value: 'oui', label: '✔ Oui' }, { value: 'non', label: 'Non' }], 'non') + '</label>' +
+    '<label class="field"><span class="lbl">📅 Date du contrôle (modifiable si saisie le lendemain)</span>' +
+    '<input type="date" data-f="dateCtrl" value="' + dateCtrl + '" max="' + UI.todayISO() + '"></label>' +
     '<label class="field"><span class="lbl">🕐 Heure du contrôle</span>' +
     UI.segHTML('heure', [
       { value: '12:00', label: '🌞 12 h' },
@@ -1355,7 +1365,9 @@ async function openServiceModal(prefillPlat, svc, jour) {
         const action = m.querySelector('[data-f="action"]').value.trim();
         if (!ok && !action) { UI.toast('Indique l’action corrective', 'bad'); return; }
         await DB.addRecord({
-          type: 'service', date: dateCtrl, time: UI.segValue(m, 'heure') || UI.nowHM(),
+          type: 'service',
+          date: m.querySelector('[data-f="dateCtrl"]').value || dateCtrl,
+          time: UI.segValue(m, 'heure') || UI.nowHM(),
           plat, liaison, service, temp: v, platTemoin: UI.segValue(m, 'temoin') === 'oui',
           tolere: liaison === 'froide' && ok && v > RULES.froidLimite,
           conforme: ok, action: ok ? '' : action, agent,
@@ -2367,6 +2379,11 @@ async function openEtiquetteDetail(id) {
 ================================================================ */
 VIEWS.nettoyage = async function (el) {
   const today = UI.todayISO();
+  // Jour de saisie sélectionnable (rattrapage : saisir hier le lendemain) —
+  // remis à aujourd'hui à chaque nouvelle journée.
+  const state = VIEWS.nettoyage._state || (VIEWS.nettoyage._state = {});
+  if (state.date !== today) { state.date = today; state.jour = null; }
+  const jour = state.jour || today;
   const recent = alive(await DB.getByTypeAndRange('nettoyage', UI.addDays(today, -31), today));
   const FREQ_LABEL = { quotidien: 'Quotidien', hebdomadaire: 'Hebdo', mensuel: 'Mensuel' };
   const FREQ_DAYS = { quotidien: 0, hebdomadaire: 6, mensuel: 30 };
@@ -2388,9 +2405,9 @@ VIEWS.nettoyage = async function (el) {
   const taskHTML = t => {
     const last = lastDone[t.id];
     const isDone = last && last.date >= UI.addDays(today, -FREQ_DAYS[t.freq]);
-    const doneToday = last && last.date === today;
+    const doneCeJour = recent.some(r => r.taskId === t.id && r.date === jour);
     return '<div class="task-row ' + (isDone ? 'done' : '') + '" data-task="' + t.id + '">' +
-      '<button class="check" data-check="' + t.id + '" data-donetoday="' + (doneToday ? '1' : '') + '">✔</button>' +
+      '<button class="check" data-check="' + t.id + '" data-donejour="' + (doneCeJour ? '1' : '') + '">✔</button>' +
       '<div class="body" style="flex:1"><div class="tname">' + UI.esc(t.name) + '</div>' +
       '<div class="zone"><span class="tag-freq">' + FREQ_LABEL[t.freq] + '</span>' +
       (last ? ' · fait le ' + UI.frDate(last.date) + ' par ' + UI.esc(last.agent) : ' · jamais fait') + '</div></div></div>';
@@ -2411,19 +2428,32 @@ VIEWS.nettoyage = async function (el) {
   }).join('');
 
   el.innerHTML = headerHTML('Plan de nettoyage & désinfection', 'Fiches de suivi par zone (PMS) — coche chaque tâche réalisée, traçabilité date + agent') +
+    '<div class="card"><div class="row">' +
+    '<span class="lbl" style="margin:0">📅 Jour de saisie</span>' +
+    '<input type="date" id="net-jour" value="' + jour + '" max="' + today + '" style="min-height:44px;max-width:180px">' +
+    (jour !== today ? '<button class="btn small secondary" id="net-today">Aujourd’hui</button>' : '') +
+    (jour !== today ? '<span class="pill warn">⚠ Les tâches cochées seront datées du ' + UI.frDate(jour) + '</span>' : '') +
+    '</div></div>' +
     (SETTINGS.cleaningTasks.length ? sections : '<div class="empty"><span class="e-ico">🧽</span>Ajoute les tâches de nettoyage dans les Réglages.</div>');
+
+  el.querySelector('#net-jour').addEventListener('change', e => {
+    state.jour = e.target.value && e.target.value <= today ? e.target.value : today;
+    render();
+  });
+  const netAuj = el.querySelector('#net-today');
+  if (netAuj) netAuj.addEventListener('click', () => { state.jour = null; render(); });
 
   el.querySelectorAll('[data-check]').forEach(btn => btn.addEventListener('click', async () => {
     const taskId = btn.dataset.check;
     const task = SETTINGS.cleaningTasks.find(t => t.id === taskId);
     if (!task) return;
-    // Date prise au moment du clic (la vue peut rester ouverte au passage de minuit)
-    const clickDay = UI.todayISO();
+    // Jour sélectionné (aujourd'hui par défaut — la vue peut rester ouverte au passage de minuit)
+    const clickDay = (VIEWS.nettoyage._state && VIEWS.nettoyage._state.jour) || UI.todayISO();
 
-    if (btn.dataset.donetoday === '1') {
-      // décocher : supprime l'enregistrement du jour
-      const todays = (await DB.getByTypeAndRange('nettoyage', clickDay, clickDay)).filter(r => r.taskId === taskId);
-      for (const r of todays) await DB.deleteRecord(r.id);
+    if (btn.dataset.donejour === '1') {
+      // décocher : supprime l'enregistrement du jour sélectionné
+      const dujour = (await DB.getByTypeAndRange('nettoyage', clickDay, clickDay)).filter(r => r.taskId === taskId);
+      for (const r of dujour) await DB.deleteRecord(r.id);
       UI.toast('Tâche décochée');
       render();
       return;
@@ -2456,7 +2486,7 @@ VIEWS.nettoyage = async function (el) {
   // « Tout cocher » les tâches quotidiennes dues d'une zone en une fois
   el.querySelectorAll('[data-checkzone]').forEach(btn => btn.addEventListener('click', () => {
     const zone = btn.dataset.checkzone;
-    const clickDay = UI.todayISO();
+    const clickDay = (VIEWS.nettoyage._state && VIEWS.nettoyage._state.jour) || UI.todayISO();
     const todo = SETTINGS.cleaningTasks.filter(t => t.zone === zone && t.freq === 'quotidien' && isDue(t));
     if (!todo.length) return;
 
@@ -4003,16 +4033,23 @@ let _majDispo = null; // { versionCode, versionName } si une version plus récen
 async function maybeCheckUpdate(force) {
   // Uniquement l'APK (la PWA navigateur se met à jour via le service worker)
   if (!isNativeApp() || !navigator.onLine || !Number(window.APP_VERSION_CODE)) return;
-  const today = UI.todayISO();
-  if (!force && localStorage.getItem('haccp-maj-last') === today) return;
+  // Vérification au plus toutes les heures : une mise à jour publiée sur
+  // GitHub s'annonce sur la tablette dans l'heure qui suit.
+  const dernier = Number(localStorage.getItem('haccp-maj-last-ts') || 0);
+  if (!force && Date.now() - dernier < 55 * 60 * 1000) return;
   try {
     const resp = await fetch(APK_VERSION_URL, { cache: 'no-store' });
     if (!resp.ok) return;
     const v = await resp.json();
-    localStorage.setItem('haccp-maj-last', today); // posé seulement après une réponse valide
+    localStorage.setItem('haccp-maj-last-ts', String(Date.now())); // posé seulement après une réponse valide
     const dispo = v && Number(v.versionCode) > Number(window.APP_VERSION_CODE);
     const changement = dispo !== !!_majDispo;
     _majDispo = dispo ? v : null;
+    // signaler UNE fois chaque nouvelle version, même hors accueil
+    if (dispo && localStorage.getItem('haccp-maj-vue') !== String(v.versionCode)) {
+      localStorage.setItem('haccp-maj-vue', String(v.versionCode));
+      UI.toast('🔄 Mise à jour ' + (v.versionName || v.versionCode) + ' disponible — bouton 📥 sur l’accueil', 'ok');
+    }
     if (changement && currentView === 'dashboard') render();
   } catch { /* hors ligne / GitHub injoignable : on retentera */ }
 }
@@ -4022,6 +4059,24 @@ function telechargerMaj() {
   const w = window.open(APK_TELECHARGEMENT, '_blank');
   if (!w) window.location.href = APK_TELECHARGEMENT;
   UI.toast('Téléchargement lancé — ouvre ensuite le fichier haccp-cuisine.apk et confirme l’installation (les données sont conservées)', 'ok');
+}
+
+/* ---------- Écran : veille normale, sauf refroidissement en cours ---------- */
+// L'application ne bloque plus la mise en veille (l'écran s'éteint selon le
+// réglage Android). Exception : pendant un refroidissement/une remise en T°
+// en cours, l'écran est maintenu éveillé (Wake Lock) — les chronomètres et
+// l'alarme de la WebView seraient gelés écran éteint.
+let _wakeLock = null;
+async function setScreenAwake(on) {
+  try {
+    if (on && !_wakeLock && navigator.wakeLock && !document.hidden) {
+      _wakeLock = await navigator.wakeLock.request('screen');
+      _wakeLock.addEventListener('release', () => { _wakeLock = null; });
+    } else if (!on && _wakeLock) {
+      const wl = _wakeLock; _wakeLock = null;
+      await wl.release();
+    }
+  } catch { _wakeLock = null; /* API absente ou refusée : veille normale */ }
 }
 
 /* ---------- Chronomètre des refroidissements en cours ---------- */
@@ -4059,6 +4114,8 @@ async function refroidTick() {
   });
   const navBtn = document.querySelector('.nav-btn[data-view="refroidissement"]');
   if (navBtn) navBtn.classList.toggle('has-alert', depasse);
+  // écran éveillé uniquement tant qu'un suivi est en cours
+  setScreenAwake(encours.length > 0);
 }
 
 /* ---------- Démarrage ---------- */
@@ -4095,6 +4152,8 @@ async function refroidTick() {
   };
   setInterval(checkNewDay, 60 * 1000);
   document.addEventListener('visibilitychange', () => {
-    if (!document.hidden) { checkNewDay(); tryBackup(); }
+    // un Wake Lock est libéré par le système quand la page est cachée :
+    // le tick le re-demande au retour si un suivi est toujours en cours
+    if (!document.hidden) { checkNewDay(); tryBackup(); refroidTick().catch(() => {}); }
   });
 })();

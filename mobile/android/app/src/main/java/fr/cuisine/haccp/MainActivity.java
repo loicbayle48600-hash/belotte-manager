@@ -1,16 +1,10 @@
 package fr.cuisine.haccp;
 
-import android.os.Bundle;
-import android.view.WindowManager;
 import com.getcapacitor.BridgeActivity;
 
 public class MainActivity extends BridgeActivity {
-    @Override
-    public void onCreate(Bundle savedInstanceState) {
-        super.onCreate(savedInstanceState);
-        // Tablette de cuisine : écran maintenu allumé pour que les chronomètres
-        // de refroidissement et leurs alarmes restent actifs (les timers de la
-        // WebView sont gelés quand l'écran s'éteint). Aucune permission requise.
-        getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
-    }
+    // L'écran suit la mise en veille réglée dans Android (Paramètres →
+    // Affichage). Pendant un refroidissement en cours, l'application garde
+    // l'écran éveillé via l'API Wake Lock du web (voir refroidTick dans
+    // app.js) pour que le chronomètre et l'alarme restent actifs.
 }
