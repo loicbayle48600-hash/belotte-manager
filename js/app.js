@@ -4045,13 +4045,32 @@ async function maybeCheckUpdate(force) {
     const dispo = v && Number(v.versionCode) > Number(window.APP_VERSION_CODE);
     const changement = dispo !== !!_majDispo;
     _majDispo = dispo ? v : null;
-    // signaler UNE fois chaque nouvelle version, même hors accueil
-    if (dispo && localStorage.getItem('haccp-maj-vue') !== String(v.versionCode)) {
+    // proposer l'installation UNE fois par nouvelle version (fenêtre de
+    // validation : le téléchargement démarre tout seul quand on accepte) —
+    // sans interrompre une saisie en cours (on repropose au contrôle suivant)
+    if (dispo && localStorage.getItem('haccp-maj-vue') !== String(v.versionCode) && !document.querySelector('.modal-overlay')) {
       localStorage.setItem('haccp-maj-vue', String(v.versionCode));
-      UI.toast('🔄 Mise à jour ' + (v.versionName || v.versionCode) + ' disponible — bouton 📥 sur l’accueil', 'ok');
+      openMajModal(v);
     }
     if (changement && currentView === 'dashboard') render();
   } catch { /* hors ligne / GitHub injoignable : on retentera */ }
+}
+
+/** Fenêtre proposée dès qu'une nouvelle version est détectée : valider lance
+ *  le téléchargement automatiquement (Android demande ensuite la confirmation
+ *  d'installation — c'est la seule étape qu'il impose). */
+function openMajModal(v) {
+  UI.modal(
+    '<h2>🔄 Mise à jour disponible</h2>' +
+    '<p style="font-size:16px;margin-bottom:12px">La version <b>' + UI.esc(v.versionName || v.versionCode) + '</b> de l’application est prête.</p>' +
+    '<p class="muted" style="margin-bottom:12px">En validant, le téléchargement démarre tout seul. Ouvre ensuite le fichier téléchargé et confirme : l’application s’installe par-dessus, aucune donnée n’est perdue.</p>' +
+    '<div class="actions"><button class="btn ghost" data-x="later">Plus tard</button>' +
+    '<button class="btn" data-x="go">📥 Installer la mise à jour</button></div>',
+    (m, close) => {
+      m.querySelector('[data-x="later"]').onclick = () => { close(); UI.toast('Le bouton 📥 reste disponible sur l’accueil', 'ok'); };
+      m.querySelector('[data-x="go"]').onclick = () => { close(); telechargerMaj(); };
+    }
+  );
 }
 
 /** Ouvre le téléchargement de l'APK dans le navigateur de la tablette. */
