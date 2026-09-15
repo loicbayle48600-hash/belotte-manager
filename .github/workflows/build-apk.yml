@@ -33,6 +33,11 @@ jobs:
 
       - name: Installer le SDK Android
         uses: android-actions/setup-android@v3
+        with:
+          # Le paquet legacy « tools » (défaut de l'action) n'existe plus dans
+          # les cmdline-tools récents des runners : ne demander que l'essentiel,
+          # Gradle télécharge lui-même build-tools et platforms.
+          packages: 'platform-tools'
 
       - name: Installer les dépendances Capacitor
         working-directory: mobile
