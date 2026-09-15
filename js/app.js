@@ -864,7 +864,7 @@ async function openReceptionModal() {
     '<datalist id="dl-fourn">' + fournisseurs.map(f => '<option value="' + UI.esc(f) + '">').join('') + '</datalist>' +
     (attendus.length ? '<span class="muted" style="font-size:12.5px">🚚 Attendus aujourd’hui : ' + attendus.map(UI.esc).join(', ') + '</span>' : '') +
     '</label>' +
-    '<label class="field"><span class="lbl">Produit / livraison</span>' +
+    '<label class="field"><span class="lbl">Produit / livraison (optionnel)</span>' +
     '<input type="text" data-f="produit" placeholder="Ex. : viande hachée, produits laitiers…"></label>' +
     '<label class="field"><span class="lbl">N° de lot / bon de livraison (optionnel)</span>' +
     '<input type="text" data-f="lot" placeholder="Ex. : BL 12345, lot 2026-07"></label>' +
@@ -919,7 +919,7 @@ async function openReceptionModal() {
       m.querySelector('[data-x="save"]').onclick = async () => {
         const fournisseur = m.querySelector('[data-f="fournisseur"]').value.trim();
         const produit = m.querySelector('[data-f="produit"]').value.trim();
-        if (!fournisseur || !produit) { UI.toast('Fournisseur et produit sont obligatoires', 'bad'); return; }
+        if (!fournisseur) { UI.toast('Indique le fournisseur', 'bad'); return; }
         const fam = UI.segValue(m, 'famille');
         const t = parseFloat(m.querySelector('[data-f="temp"]').value);
         if (fam !== 'epicerie' && isNaN(t)) { UI.toast('La température est obligatoire pour les produits frais et surgelés', 'bad'); return; }
@@ -2427,12 +2427,18 @@ VIEWS.nettoyage = async function (el) {
       tasks.map(taskHTML).join('') + '</div>';
   }).join('');
 
+  const dueDailyAll = SETTINGS.cleaningTasks.filter(t => t.freq === 'quotidien' && isDue(t));
+
   el.innerHTML = headerHTML('Plan de nettoyage & désinfection', 'Fiches de suivi par zone (PMS) — coche chaque tâche réalisée, traçabilité date + agent') +
     '<div class="card"><div class="row">' +
     '<span class="lbl" style="margin:0">📅 Jour de saisie</span>' +
     '<input type="date" id="net-jour" value="' + jour + '" max="' + today + '" style="min-height:44px;max-width:180px">' +
     (jour !== today ? '<button class="btn small secondary" id="net-today">Aujourd’hui</button>' : '') +
     (jour !== today ? '<span class="pill warn">⚠ Les tâches cochées seront datées du ' + UI.frDate(jour) + '</span>' : '') +
+    '<div class="grow"></div>' +
+    (dueDailyAll.length
+      ? '<button class="btn" id="net-all-daily" style="font-size:16px">✔ Tout le quotidien en 1 clic (' + dueDailyAll.length + ')</button>'
+      : '<span class="pill ok">Quotidien : tout est fait ✔</span>') +
     '</div></div>' +
     (SETTINGS.cleaningTasks.length ? sections : '<div class="empty"><span class="e-ico">🧽</span>Ajoute les tâches de nettoyage dans les Réglages.</div>');
 
@@ -2484,6 +2490,41 @@ VIEWS.nettoyage = async function (el) {
   }));
 
   // « Tout cocher » les tâches quotidiennes dues d'une zone en une fois
+  // « Tout le quotidien en 1 clic » : coche TOUTES les tâches quotidiennes
+  // restantes, toutes zones confondues (un seul agent, une seule validation)
+  const allDailyBtn = el.querySelector('#net-all-daily');
+  if (allDailyBtn) allDailyBtn.addEventListener('click', () => {
+    const clickDay = (VIEWS.nettoyage._state && VIEWS.nettoyage._state.jour) || UI.todayISO();
+    const todo = SETTINGS.cleaningTasks.filter(t => t.freq === 'quotidien' && isDue(t));
+    if (!todo.length) return;
+
+    const doSaveAll = async agent => {
+      for (const t of todo) {
+        await DB.addRecord({
+          type: 'nettoyage', date: clickDay, time: UI.nowHM(),
+          taskId: t.id, taskName: t.name, zone: t.zone, freq: t.freq, agent,
+        });
+      }
+      UI.toast(todo.length + ' tâches quotidiennes cochées ✔ (toutes zones)', 'ok');
+      render();
+    };
+
+    const agent = getCurrentAgent();
+    const go = a => UI.confirm('Cocher les ' + todo.length + ' tâches quotidiennes restantes (toutes les zones) pour le ' + UI.frDate(clickDay) + ' ?', () => doSaveAll(a));
+    if (agent) { go(agent); return; }
+    UI.modal(
+      '<h2>Qui a réalisé le nettoyage quotidien ?</h2>' + agentField('') +
+      '<div class="actions"><button class="btn ghost" data-x="cancel">Annuler</button><button class="btn" data-x="save">Valider</button></div>',
+      (m, close) => {
+        m.querySelector('[data-x="cancel"]').onclick = close;
+        m.querySelector('[data-x="save"]').onclick = () => {
+          const a = requireAgent(m); if (!a) return;
+          close(); go(a);
+        };
+      }
+    );
+  });
+
   el.querySelectorAll('[data-checkzone]').forEach(btn => btn.addEventListener('click', () => {
     const zone = btn.dataset.checkzone;
     const clickDay = (VIEWS.nettoyage._state && VIEWS.nettoyage._state.jour) || UI.todayISO();
@@ -3576,7 +3617,10 @@ VIEWS.parametres = async function (el) {
     '<div class="card"><h2>🧽 Plan de nettoyage (' + SETTINGS.cleaningTasks.length + ' tâches)</h2>' +
     '<div class="rec-list" style="margin-bottom:12px">' + SETTINGS.cleaningTasks.map((t, i) =>
       '<div class="rec-item"><div class="body"><div class="title">' + UI.esc(t.name) + '</div>' +
-      '<div class="meta">' + UI.esc(t.zone) + ' · ' + FREQ_LABEL[t.freq] + '</div></div>' +
+      '<div class="meta">' + UI.esc(t.zone) + '</div></div>' +
+      '<select data-freq-task="' + i + '" style="min-height:40px;max-width:150px">' +
+      ['quotidien', 'hebdomadaire', 'mensuel'].map(f => '<option value="' + f + '"' + (t.freq === f ? ' selected' : '') + '>' + FREQ_LABEL[f] + '</option>').join('') +
+      '</select>' +
       '<button class="btn small ghost" data-del-task="' + i + '">🗑️</button></div>').join('') + '</div>' +
     '<button class="btn small" id="s-task-add">➕ Ajouter une tâche</button></div>' +
 
@@ -3791,6 +3835,15 @@ VIEWS.parametres = async function (el) {
       }
     );
   });
+  // Changer la fréquence d'une tâche (quotidien / hebdo / mensuel) en place
+  el.querySelectorAll('[data-freq-task]').forEach(s => s.addEventListener('change', async () => {
+    const t = SETTINGS.cleaningTasks[Number(s.dataset.freqTask)];
+    if (!t) return;
+    t.freq = s.value;
+    await saveSettings();
+    UI.toast('« ' + t.name + ' » : fréquence ' + FREQ_LABEL[t.freq].toLowerCase() + ' ✔', 'ok');
+  }));
+
   el.querySelectorAll('[data-del-task]').forEach(b => b.addEventListener('click', () => requirePin(() => {
     const i = Number(b.dataset.delTask);
     UI.confirm('Supprimer la tâche « ' + SETTINGS.cleaningTasks[i].name + ' » ?', async () => {
