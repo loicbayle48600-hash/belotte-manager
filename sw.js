@@ -1,5 +1,5 @@
 /* Service worker — mode hors ligne (cache d'abord, mise à jour en arrière-plan) */
-const CACHE = 'haccp-v47';
+const CACHE = 'haccp-v48';
 const ASSETS = [
   './',
   './index.html',

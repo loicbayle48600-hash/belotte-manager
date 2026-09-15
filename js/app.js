@@ -2393,9 +2393,11 @@ VIEWS.nettoyage = async function (el) {
   const state = VIEWS.nettoyage._state || (VIEWS.nettoyage._state = {});
   if (state.date !== today) { state.date = today; state.jour = null; }
   const jour = state.jour || today;
-  const recent = alive(await DB.getByTypeAndRange('nettoyage', UI.addDays(today, -31), today));
-  const FREQ_LABEL = { quotidien: 'Quotidien', utilisation: 'À l’utilisation', hebdomadaire: 'Hebdo', mensuel: 'Mensuel' };
-  const FREQ_DAYS = { quotidien: 0, utilisation: 0, hebdomadaire: 6, mensuel: 30 };
+  // 183 jours d'historique : nécessaire pour juger « à jour » les tâches
+  // trimestrielles et semestrielles (le « fait le … » reste exact).
+  const recent = alive(await DB.getByTypeAndRange('nettoyage', UI.addDays(today, -183), today));
+  const FREQ_LABEL = { quotidien: 'Quotidien', utilisation: 'À l’utilisation', hebdomadaire: 'Hebdo', mensuel: 'Mensuel', trimestriel: 'Trimestriel', semestriel: '6 mois' };
+  const FREQ_DAYS = { quotidien: 0, utilisation: 0, hebdomadaire: 6, mensuel: 30, trimestriel: 91, semestriel: 182 };
 
   const lastDone = {};
   recent.forEach(r => {
@@ -2403,7 +2405,7 @@ VIEWS.nettoyage = async function (el) {
   });
 
   // Regroupement par zone, comme les fiches de suivi nettoyage/désinfection du PMS
-  const FREQ_ORDER = { quotidien: 0, utilisation: 1, hebdomadaire: 2, mensuel: 3 };
+  const FREQ_ORDER = { quotidien: 0, utilisation: 1, hebdomadaire: 2, mensuel: 3, trimestriel: 4, semestriel: 5 };
   const zones = [];
   const byZone = {};
   SETTINGS.cleaningTasks.forEach(t => {
@@ -3569,7 +3571,7 @@ function openVerifModal(instrument) {
 }
 
 VIEWS.parametres = async function (el) {
-  const FREQ_LABEL = { quotidien: 'Quotidien', utilisation: 'À l’utilisation', hebdomadaire: 'Hebdomadaire', mensuel: 'Mensuel' };
+  const FREQ_LABEL = { quotidien: 'Quotidien', utilisation: 'À l’utilisation', hebdomadaire: 'Hebdomadaire', mensuel: 'Mensuel', trimestriel: 'Trimestriel', semestriel: 'Tous les 6 mois' };
 
   // dernières vérifications par instrument
   const verifs = alive(await DB.getByType('verif'));
@@ -3631,7 +3633,7 @@ VIEWS.parametres = async function (el) {
       '<div class="rec-item"><div class="body"><div class="title">' + UI.esc(t.name) + '</div>' +
       '<div class="meta">' + UI.esc(t.zone) + '</div></div>' +
       '<select data-freq-task="' + i + '" style="min-height:40px;max-width:150px">' +
-      ['quotidien', 'utilisation', 'hebdomadaire', 'mensuel'].map(f => '<option value="' + f + '"' + (t.freq === f ? ' selected' : '') + '>' + FREQ_LABEL[f] + '</option>').join('') +
+      ['quotidien', 'utilisation', 'hebdomadaire', 'mensuel', 'trimestriel', 'semestriel'].map(f => '<option value="' + f + '"' + (t.freq === f ? ' selected' : '') + '>' + FREQ_LABEL[f] + '</option>').join('') +
       '</select>' +
       '<button class="btn small ghost" data-del-task="' + i + '">🗑️</button></div>').join('') + '</div>' +
     '<button class="btn small" id="s-task-add">➕ Ajouter une tâche</button></div>' +
@@ -3830,6 +3832,8 @@ VIEWS.parametres = async function (el) {
         { value: 'utilisation', label: 'À l’utilisation' },
         { value: 'hebdomadaire', label: 'Hebdo' },
         { value: 'mensuel', label: 'Mensuel' },
+        { value: 'trimestriel', label: 'Trimestriel' },
+        { value: 'semestriel', label: '6 mois' },
       ], 'quotidien') + '</label>' +
       '<div class="actions"><button class="btn ghost" data-x="cancel">Annuler</button><button class="btn" data-x="save">Ajouter</button></div>',
       (m, close) => {
