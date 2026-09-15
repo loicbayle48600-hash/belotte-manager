@@ -1057,8 +1057,11 @@ async function openRefroidFinishModal(id) {
     ' — départ ' + UI.esc(rec.timeStart) + ' à ' + UI.fmtTemp(rec.tempStart) + '</p>' +
     '<label class="field"><span class="lbl">Température finale (°C)</span>' +
     UI.tempInputHTML('temp') + '</label>' +
-    '<label class="field"><span class="lbl">Heure de fin (modifiable si saisie après coup)</span>' +
-    '<input type="time" data-f="heureFin" value="' + UI.nowHM() + '"></label>' +
+    '<div class="row"><div class="grow"><label class="field"><span class="lbl">📅 Date de fin réelle (si oubli de clôture)</span>' +
+    '<input type="date" data-f="dateFin" value="' + (rec.date || UI.todayISO()) + '" min="' + (rec.date || '') + '" max="' + UI.todayISO() + '"></label></div>' +
+    '<div class="grow"><label class="field"><span class="lbl">Heure de fin réelle</span>' +
+    '<input type="time" data-f="heureFin" value="' + UI.nowHM() + '"></label></div></div>' +
+    (rec.date !== UI.todayISO() ? '<p class="pill warn" style="margin-bottom:12px">⏰ Suivi démarré le ' + UI.frDate(rec.date) + ' : saisis la date et l’heure où le produit a RÉELLEMENT atteint la température (relevé de la cellule).</p>' : '') +
     agentField(rec.agent) +
     '<div data-verdict></div>' +
     actionFieldHTML() +
@@ -1073,14 +1076,19 @@ async function openRefroidFinishModal(id) {
       // « dans le futur », c'était hier soir). Une fin antérieure au début est
       // refusée : mins vaut alors null.
       const endInfo = () => {
-        // L'heure de fin est ancrée sur le JOUR DU DÉBUT du suivi (et non sur
-        // aujourd'hui) : un suivi antidaté saisi après coup garde une durée
-        // juste ; une fin « avant » le début = minuit franchi (+1 jour).
+        // Fin = date + heure RÉELLES saisies (oubli de clôture : on enregistre
+        // le moment où la température était effectivement atteinte). Date
+        // laissée au jour du début avec une heure « avant » le début = minuit
+        // franchi (+1 jour) ; date choisie explicitement : fin < début refusée.
         const hm = heureInput.value || UI.nowHM();
+        const dateFin = m.querySelector('[data-f="dateFin"]').value || rec.date || UI.todayISO();
         const start = new Date(rec.startISO);
-        let end = new Date((rec.date || UI.todayISO()) + 'T' + hm + ':00');
-        if (end < start) end = new Date(end.getTime() + 24 * 3600 * 1000);
-        return { hm, mins: Math.round((end - start) / 60000) };
+        let end = new Date(dateFin + 'T' + hm + ':00');
+        if (end < start) {
+          if (dateFin === rec.date) end = new Date(end.getTime() + 24 * 3600 * 1000);
+          else return { hm, dateFin, mins: null };
+        }
+        return { hm, dateFin, mins: Math.round((end - start) / 60000) };
       };
 
       const check = () => {
@@ -1088,7 +1096,7 @@ async function openRefroidFinishModal(id) {
         if (isNaN(v)) { verdict.innerHTML = ''; actionField.style.display = 'none'; return null; }
         const { mins } = endInfo();
         if (mins == null) {
-          verdict.innerHTML = '<p class="pill bad" style="margin-bottom:12px">⚠ Heure de fin antérieure au début (' + UI.esc(rec.timeStart) + ') — vérifie l’heure saisie</p>';
+          verdict.innerHTML = '<p class="pill bad" style="margin-bottom:12px">⚠ Fin antérieure au début (' + UI.frDate(rec.date) + ' ' + UI.esc(rec.timeStart) + ') — vérifie la date et l’heure saisies</p>';
           actionField.style.display = 'none';
           return null;
         }
@@ -1101,20 +1109,21 @@ async function openRefroidFinishModal(id) {
       };
       tempInput.addEventListener('input', check);
       heureInput.addEventListener('input', check);
+      m.querySelector('[data-f="dateFin"]').addEventListener('change', check);
 
       m.querySelector('[data-x="cancel"]').onclick = close;
       m.querySelector('[data-x="save"]').onclick = async () => {
         const v = parseFloat(tempInput.value);
         if (isNaN(v)) { UI.toast('Saisis la température finale', 'bad'); return; }
         const agent = requireAgent(m); if (!agent) return;
-        const { hm, mins } = endInfo();
-        if (mins == null) { UI.toast('Heure de fin antérieure au début du suivi — corrige l’heure', 'bad'); return; }
+        const { hm, dateFin, mins } = endInfo();
+        if (mins == null) { UI.toast('Fin antérieure au début du suivi — corrige la date/heure', 'bad'); return; }
         const tempOK = rec.mode === 'remise' ? v >= target : v <= target;
         const ok = tempOK && mins <= limit;
         const action = m.querySelector('[data-f="action"]').value.trim();
         if (!ok && !action) { UI.toast('Indique l’action corrective (prolongation, jet du produit…)', 'bad'); return; }
         Object.assign(rec, {
-          tempEnd: v, timeEnd: hm, durationMin: mins,
+          tempEnd: v, timeEnd: hm, dateFin, durationMin: mins,
           status: 'fini', conforme: ok, action: ok ? '' : action, agent,
         });
         await DB.updateRecord(rec);
