@@ -45,6 +45,7 @@ const DEFAULT_SETTINGS = {
   webdav: { on: false, url: '', user: '', pass: '' },
   httpPost: { on: false, url: '' },
   pin: '', // vide = Réglages non protégés
+  ecran: 'auto', // veille : 'auto' (éveillé pendant un refroidissement), 'toujours', 'normal'
   // Synchronisation du menu depuis GitHub : l'appli vérifie une fois par jour
   // si le fichier a changé et réimporte automatiquement.
   menuUrl: 'https://raw.githubusercontent.com/loicbayle48600-hash/belotte-manager/claude/haccp-android-tablet-app-sk7oa1/menus/menu-2025-ehpad-fam.xlsx',
@@ -3578,7 +3579,20 @@ VIEWS.parametres = async function (el) {
   const lastVerif = {};
   verifs.forEach(v => { if (!lastVerif[v.instrument] || v.date > lastVerif[v.instrument].date) lastVerif[v.instrument] = v; });
 
-  el.innerHTML = headerHTML('Réglages', 'Configuration de l’établissement') +
+  el.innerHTML = headerHTML('Réglages', 'Configuration de l’établissement — touche un titre de section pour l’ouvrir ou la replier') +
+
+    '<div class="card"><h2>🔄 Mise à jour de l’application</h2>' +
+    '<p class="muted" style="margin-bottom:12px">Version installée : <b>' + UI.esc(window.APP_VERSION_NAME || 'navigateur') + '</b>. L’application vérifie toute seule toutes les heures et propose l’installation dès qu’une nouvelle version est publiée.</p>' +
+    '<button class="btn" id="s-maj-check">🔄 Vérifier maintenant</button></div>' +
+
+    '<div class="card"><h2>📱 Écran & mise en veille</h2>' +
+    '<p class="muted" style="margin-bottom:12px">Le délai de mise en veille se règle dans Android : <b>Paramètres → Affichage → Mise en veille</b> (ex. 5 minutes). Ici, tu choisis ce que fait l’application :</p>' +
+    UI.segHTML('ecran', [
+      { value: 'auto', label: '🔔 Éveillé pendant un refroidissement (conseillé)' },
+      { value: 'toujours', label: '☀️ Écran toujours éveillé' },
+      { value: 'normal', label: '🌙 Veille normale, toujours' },
+    ], SETTINGS.ecran || 'auto') +
+    '<p class="muted" style="font-size:12.5px;margin-top:8px">⚠ En « veille normale », l’alarme 🔔 d’un refroidissement ne sonnera plus une fois l’écran éteint (Android gèle l’application).</p></div>' +
 
     '<div class="card"><h2>🏥 Établissement</h2>' +
     '<label class="field"><span class="lbl">Nom affiché</span><input type="text" id="s-etab" value="' + UI.esc(SETTINGS.etablissement) + '"></label>' +
@@ -3940,6 +3954,36 @@ VIEWS.parametres = async function (el) {
       UI.toast('Fichier de sauvegarde invalide', 'bad');
     }
   });
+
+  // Vérification manuelle des mises à jour de l'APK
+  el.querySelector('#s-maj-check').addEventListener('click', verifierMajManuel);
+
+  // Comportement de l'écran (veille) — appliqué immédiatement
+  UI.segWire(el.querySelector('.seg[data-seg="ecran"]').parentElement);
+  el.querySelector('.seg[data-seg="ecran"]').addEventListener('click', () => setTimeout(async () => {
+    const v = UI.segValue(el, 'ecran');
+    if (v && v !== (SETTINGS.ecran || 'auto')) {
+      SETTINGS.ecran = v;
+      await saveSettings();
+      refroidTick().catch(() => {});
+      UI.toast('Réglage de l’écran enregistré ✔', 'ok');
+    }
+  }, 30));
+
+  // Sections repliables : touche le titre pour ouvrir/replier — l'état est
+  // conservé pendant les re-rendus (chaque enregistrement re-dessine la vue)
+  const ouverts = VIEWS.parametres._open || (VIEWS.parametres._open = new Set());
+  el.querySelectorAll('.card').forEach(card => {
+    const h = card.querySelector('h2');
+    if (!h || h.parentElement !== card) return;
+    const cle = h.textContent.trim().slice(0, 24);
+    h.classList.add('foldable');
+    if (!ouverts.has(cle)) card.classList.add('fold');
+    h.addEventListener('click', () => {
+      const ferme = card.classList.toggle('fold');
+      if (ferme) ouverts.delete(cle); else ouverts.add(cle);
+    });
+  });
 };
 
 /* ---------- Synchronisation automatique du menu depuis GitHub ---------- */
@@ -4143,6 +4187,23 @@ function openMajModal(v) {
   );
 }
 
+/** Bouton « Vérifier maintenant » des Réglages : contrôle immédiat, avec un
+ *  retour clair dans les deux sens (mise à jour proposée / déjà à jour). */
+async function verifierMajManuel() {
+  if (!isNativeApp() || !Number(window.APP_VERSION_CODE)) {
+    UI.toast('Version navigateur : elle se met à jour toute seule à l’ouverture', 'ok');
+    return;
+  }
+  if (!navigator.onLine) { UI.toast('Pas de connexion Internet — réessaie avec le wifi', 'bad'); return; }
+  localStorage.removeItem('haccp-maj-vue'); // re-proposer la fenêtre d'installation
+  await maybeCheckUpdate(true);
+  if (_majDispo) {
+    if (!document.querySelector('.modal-overlay')) openMajModal(_majDispo);
+  } else {
+    UI.toast('✔ L’application est à jour (version ' + (window.APP_VERSION_NAME || window.APP_VERSION_CODE) + ')', 'ok');
+  }
+}
+
 /** Ouvre le téléchargement de l'APK dans le navigateur de la tablette. */
 function telechargerMaj() {
   const w = window.open(APK_TELECHARGEMENT, '_blank');
@@ -4203,8 +4264,10 @@ async function refroidTick() {
   });
   const navBtn = document.querySelector('.nav-btn[data-view="refroidissement"]');
   if (navBtn) navBtn.classList.toggle('has-alert', depasse);
-  // écran éveillé uniquement tant qu'un suivi est en cours
-  setScreenAwake(encours.length > 0);
+  // Écran selon le réglage : toujours éveillé / éveillé pendant un suivi
+  // en cours (défaut) / veille normale quoi qu'il arrive.
+  const modeEcran = SETTINGS.ecran || 'auto';
+  setScreenAwake(modeEcran === 'toujours' ? true : (modeEcran === 'normal' ? false : encours.length > 0));
 }
 
 /* ---------- Démarrage ---------- */
@@ -4232,6 +4295,8 @@ async function refroidTick() {
   // dès que la connexion revient (wifi retrouvé), sauvegarde et menu en retard partent immédiatement
   window.addEventListener('online', () => { setTimeout(tryBackup, 3000); setTimeout(tryMenuSync, 6000); setTimeout(tryMaj, 9000); });
   // chronomètre des refroidissements (compteurs vivants + alerte de dépassement)
+  // — premier passage immédiat pour appliquer le réglage d'écran dès l'ouverture
+  setTimeout(() => { refroidTick().catch(() => {}); }, 1500);
   setInterval(() => { refroidTick().catch(() => {}); }, 30 * 1000);
   // La tablette reste allumée en continu : au passage de minuit (ou au retour
   // au premier plan un autre jour), re-rendre pour afficher la nouvelle journée.

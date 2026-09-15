@@ -321,3 +321,10 @@ hr.sep { border: none; border-top: 1px solid var(--border); margin: 14px 0; }
 
 /* Enregistrement annulé (rature tracée) */
 tr.annule td { text-decoration: line-through; color: var(--muted); background: #f4f4f2; }
+
+/* ---- Réglages : sections repliables (touche le titre) ---- */
+.card h2.foldable { cursor: pointer; user-select: none; position: relative; padding-right: 34px; margin-bottom: 0; }
+.card h2.foldable::after { content: '▾'; position: absolute; right: 4px; top: 50%; transform: translateY(-50%); font-size: 18px; color: var(--muted, #888); transition: transform .15s; }
+.card.fold h2.foldable::after { transform: translateY(-50%) rotate(-90deg); }
+.card:not(.fold) h2.foldable { margin-bottom: 14px; }
+.card.fold > :not(h2) { display: none !important; }
