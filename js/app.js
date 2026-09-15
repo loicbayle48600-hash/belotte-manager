@@ -2394,8 +2394,8 @@ VIEWS.nettoyage = async function (el) {
   if (state.date !== today) { state.date = today; state.jour = null; }
   const jour = state.jour || today;
   const recent = alive(await DB.getByTypeAndRange('nettoyage', UI.addDays(today, -31), today));
-  const FREQ_LABEL = { quotidien: 'Quotidien', hebdomadaire: 'Hebdo', mensuel: 'Mensuel' };
-  const FREQ_DAYS = { quotidien: 0, hebdomadaire: 6, mensuel: 30 };
+  const FREQ_LABEL = { quotidien: 'Quotidien', utilisation: 'À l’utilisation', hebdomadaire: 'Hebdo', mensuel: 'Mensuel' };
+  const FREQ_DAYS = { quotidien: 0, utilisation: 0, hebdomadaire: 6, mensuel: 30 };
 
   const lastDone = {};
   recent.forEach(r => {
@@ -2403,7 +2403,7 @@ VIEWS.nettoyage = async function (el) {
   });
 
   // Regroupement par zone, comme les fiches de suivi nettoyage/désinfection du PMS
-  const FREQ_ORDER = { quotidien: 0, hebdomadaire: 1, mensuel: 2 };
+  const FREQ_ORDER = { quotidien: 0, utilisation: 1, hebdomadaire: 2, mensuel: 3 };
   const zones = [];
   const byZone = {};
   SETTINGS.cleaningTasks.forEach(t => {
@@ -2423,6 +2423,9 @@ VIEWS.nettoyage = async function (el) {
   };
 
   const isDue = t => {
+    // « À l'utilisation » : jamais « à faire » d'office — on coche quand
+    // l'équipement a servi (la coche du jour reste visible et tracée).
+    if (t.freq === 'utilisation') return false;
     const last = lastDone[t.id];
     return !(last && last.date >= UI.addDays(today, -FREQ_DAYS[t.freq]));
   };
@@ -3566,7 +3569,7 @@ function openVerifModal(instrument) {
 }
 
 VIEWS.parametres = async function (el) {
-  const FREQ_LABEL = { quotidien: 'Quotidien', hebdomadaire: 'Hebdomadaire', mensuel: 'Mensuel' };
+  const FREQ_LABEL = { quotidien: 'Quotidien', utilisation: 'À l’utilisation', hebdomadaire: 'Hebdomadaire', mensuel: 'Mensuel' };
 
   // dernières vérifications par instrument
   const verifs = alive(await DB.getByType('verif'));
@@ -3628,7 +3631,7 @@ VIEWS.parametres = async function (el) {
       '<div class="rec-item"><div class="body"><div class="title">' + UI.esc(t.name) + '</div>' +
       '<div class="meta">' + UI.esc(t.zone) + '</div></div>' +
       '<select data-freq-task="' + i + '" style="min-height:40px;max-width:150px">' +
-      ['quotidien', 'hebdomadaire', 'mensuel'].map(f => '<option value="' + f + '"' + (t.freq === f ? ' selected' : '') + '>' + FREQ_LABEL[f] + '</option>').join('') +
+      ['quotidien', 'utilisation', 'hebdomadaire', 'mensuel'].map(f => '<option value="' + f + '"' + (t.freq === f ? ' selected' : '') + '>' + FREQ_LABEL[f] + '</option>').join('') +
       '</select>' +
       '<button class="btn small ghost" data-del-task="' + i + '">🗑️</button></div>').join('') + '</div>' +
     '<button class="btn small" id="s-task-add">➕ Ajouter une tâche</button></div>' +
@@ -3824,6 +3827,7 @@ VIEWS.parametres = async function (el) {
       '<label class="field"><span class="lbl">Fréquence</span>' +
       UI.segHTML('freq', [
         { value: 'quotidien', label: 'Quotidien' },
+        { value: 'utilisation', label: 'À l’utilisation' },
         { value: 'hebdomadaire', label: 'Hebdo' },
         { value: 'mensuel', label: 'Mensuel' },
       ], 'quotidien') + '</label>' +
