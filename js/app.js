@@ -1323,7 +1323,7 @@ async function openServiceModal(prefillPlat, svc, jour) {
     '<label class="field"><span class="lbl">Température (°C)</span>' +
     UI.tempInputHTML('temp') + '</label>' +
     '<label class="field"><span class="lbl">Plat témoin prélevé ?</span>' +
-    UI.segHTML('temoin', [{ value: 'oui', label: '✔ Oui' }, { value: 'non', label: 'Non' }], 'non') + '</label>' +
+    UI.segHTML('temoin', [{ value: 'oui', label: '✔ Oui' }, { value: 'non', label: 'Non' }], 'oui') + '</label>' +
     '<label class="field"><span class="lbl">📅 Date du contrôle (modifiable si saisie le lendemain)</span>' +
     '<input type="date" data-f="dateCtrl" value="' + dateCtrl + '" max="' + UI.todayISO() + '"></label>' +
     '<label class="field"><span class="lbl">🕐 Heure du contrôle</span>' +
