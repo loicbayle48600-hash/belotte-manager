@@ -31,9 +31,15 @@ def _summ(trades: list[dict]) -> dict:
             "profit_factor": round(sum(wins) / -sum(losses), 2) if losses and sum(losses) < 0 else (99.0 if wins else 0.0)}
 
 
+def _day_trades(store: LearningStore, now: datetime) -> list[dict]:
+    """Trades clôturés le jour calendaire UTC de ``now`` (même périmètre que journal.read_day et state.daily)."""
+    day = now.date().isoformat()
+    return [t for t in store.trades(mode="live") if (t.get("closed_at") or "")[:10] == day]
+
+
 def daily_report(store: LearningStore, state: SystemState, journal: Journal, now: Optional[datetime] = None) -> dict:
     now = now or utcnow()
-    trades = _period_trades(store, 1, now)
+    trades = _day_trades(store, now)
     events = journal.read_day(now)
     kinds = {}
     for e in events:

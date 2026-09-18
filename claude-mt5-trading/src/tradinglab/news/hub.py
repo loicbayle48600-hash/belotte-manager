@@ -351,6 +351,10 @@ class NewsHub:
                 failed_any = True
                 log.warning("news provider %s en échec: %s", p.name, e)
                 continue
+            except Exception as e:  # noqa: BLE001 — défense en profondeur : le hub ne doit jamais tuer le cycle live
+                failed_any = True
+                log.warning("news provider %s : exception inattendue %s: %s", p.name, type(e).__name__, e)
+                continue
             for it in items:
                 if self._add_news(it):
                     added += 1
@@ -384,6 +388,10 @@ class NewsHub:
             except ProviderError as e:
                 failed_any = True
                 log.warning("calendar provider %s en échec: %s", p.name, e)
+                continue
+            except Exception as e:  # noqa: BLE001 — défense en profondeur : compté comme échec provider, jamais propagé
+                failed_any = True
+                log.warning("calendar provider %s : exception inattendue %s: %s", p.name, type(e).__name__, e)
                 continue
             for ev in events:
                 if self._add_event(ev):

@@ -12,7 +12,10 @@ from zoneinfo import ZoneInfo
 
 from .types import utcnow
 
-SECRET_PATTERNS = re.compile(r"(password|passwd|secret|api[_-]?key|token)", re.IGNORECASE)
+# `token` n'est masqué que comme mot entier (api_token, access_token, token) : les compteurs
+# `input_tokens` / `output_tokens` / `max_tokens` (comptabilité des appels LLM) restent lisibles.
+SECRET_PATTERNS = re.compile(r"(password|passwd|secret|api[_-]?key|(?<![a-z])token(?![a-z])|authorization|bearer)",
+                             re.IGNORECASE)
 
 
 def _scrub(obj: Any) -> Any:
@@ -38,6 +41,8 @@ class Journal:
         self.tz_local = ZoneInfo(tz_local) if tz_local else timezone.utc
         self.component = component
         self._lock = threading.Lock()
+        # nombre d'écritures JSONL échouées (disque plein, fichier verrouillé…) : exposable dans STATUS
+        self.write_failures = 0
         self.log = logging.getLogger(f"tradinglab.{component}")
         if not self.log.handlers:
             fh = logging.FileHandler(self.logs_dir / f"{component}.log", encoding="utf-8")
@@ -60,11 +65,24 @@ class Journal:
             "kind": kind,
             **_scrub(data),
         }
-        line = json.dumps(rec, ensure_ascii=False, default=str)
-        with self._lock:
-            with open(self._file(now), "a", encoding="utf-8") as f:
-                f.write(line + "\n")
-        getattr(self.log, level.lower(), self.log.info)(f"{kind} {json.dumps(_scrub(data), ensure_ascii=False, default=str)[:600]}")
+        # Une erreur d'écriture du journal ne doit JAMAIS remonter à l'appelant : `event()` est appelé
+        # dans les blocs `except` des boucles orchestrateur/watchdog (« la boucle ne meurt jamais »).
+        try:
+            line = json.dumps(rec, ensure_ascii=False, default=str)
+            with self._lock:
+                with open(self._file(now), "a", encoding="utf-8") as f:
+                    f.write(line + "\n")
+        except (OSError, ValueError, TypeError) as e:  # PermissionError/disque plein/objet non sérialisable
+            self.write_failures += 1
+            try:
+                self.log.error("journal write failed %s: %s: %s", kind, type(e).__name__, e)
+            except Exception:  # noqa: BLE001 - logging n'élève normalement jamais
+                pass
+        try:
+            getattr(self.log, level.lower(), self.log.info)(
+                f"{kind} {json.dumps(_scrub(data), ensure_ascii=False, default=str)[:600]}")
+        except Exception:  # noqa: BLE001
+            pass
         return rec
 
     def info(self, msg: str, **data: Any) -> None:

@@ -9,6 +9,7 @@ import json
 import math
 import sqlite3
 import statistics
+import threading
 from dataclasses import dataclass, field, asdict
 from datetime import datetime
 from pathlib import Path
@@ -104,6 +105,19 @@ class AgentStats:
         return asdict(self)
 
 
+def _num(v) -> Optional[float]:
+    """Valeur numérique exploitable ou None (None, bool, NaN, texte → None : jamais une valeur inventée)."""
+    if v is None or isinstance(v, bool) or not isinstance(v, (int, float)):
+        return None
+    f = float(v)
+    return None if math.isnan(f) else f
+
+
+def _sql_value(v):
+    """NaN → NULL en base (json.dumps produirait `NaN`, relu comme float nan et mal classé ensuite)."""
+    return None if isinstance(v, float) and math.isnan(v) else v
+
+
 def _metrics(rs: list[float]) -> dict:
     if not rs:
         return {"sample_size": 0, "wins": 0, "losses": 0, "win_rate": 0.0, "profit_factor": 0.0, "expectancy_r": 0.0,
@@ -133,10 +147,13 @@ class LearningStore:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.conn = sqlite3.connect(str(self.path), check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
+        # verrou réentrant : la connexion est partagée entre la boucle live et le thread de recherche
+        self._lock = threading.RLock()
         self.conn.executescript(SCHEMA)
 
     def close(self) -> None:
-        self.conn.close()
+        with self._lock:
+            self.conn.close()
 
     # ---------- trades ----------
     def record_trade(self, t: TradeRecord) -> int:
@@ -145,18 +162,25 @@ class LearningStore:
             d[k] = json.dumps(d[k], ensure_ascii=False, default=str)
         cols = ", ".join(d.keys())
         q = ", ".join("?" for _ in d)
-        cur = self.conn.execute(f"INSERT INTO trades ({cols}) VALUES ({q})", list(d.values()))
-        self.conn.commit()
+        with self._lock:
+            cur = self.conn.execute(f"INSERT INTO trades ({cols}) VALUES ({q})", list(d.values()))
+            self.conn.commit()
         return int(cur.lastrowid)
 
-    def trades(self, agent_id: Optional[str] = None, mode: str = "live", limit: Optional[int] = None) -> list[dict]:
+    def trades(self, agent_id: Optional[str] = None, mode: str = "live", limit: Optional[int] = None,
+               since: Optional[str] = None) -> list[dict]:
+        """``since`` (ISO) : uniquement les trades clôturés à partir de cet instant (ex. nouvelle période shadow après rollback)."""
         sql = "SELECT * FROM trades WHERE mode=?"
         args: list = [mode]
         if agent_id:
             sql += " AND agent_id=?"
             args.append(agent_id)
+        if since:
+            sql += " AND closed_at>=?"
+            args.append(since)
         sql += " ORDER BY closed_at ASC, id ASC"
-        rows = [dict(r) for r in self.conn.execute(sql, args)]
+        with self._lock:
+            rows = [dict(r) for r in self.conn.execute(sql, args)]
         if limit:
             rows = rows[-limit:]
         for r in rows:
@@ -168,12 +192,16 @@ class LearningStore:
         return rows
 
     def trade_count(self, mode: str = "live") -> int:
-        return int(self.conn.execute("SELECT COUNT(*) FROM trades WHERE mode=?", (mode,)).fetchone()[0])
+        with self._lock:
+            return int(self.conn.execute("SELECT COUNT(*) FROM trades WHERE mode=?", (mode,)).fetchone()[0])
 
     # ---------- statistiques ----------
     def agent_stats(self, agent_id: str, mode: str = "live", windows: tuple[int, ...] = (20, 30, 50),
-                    min_history: int = 60, pf_drop_ratio: float = 0.6, expectancy_drop_r: float = 0.15) -> AgentStats:
-        rows = self.trades(agent_id, mode)
+                    min_history: int = 60, pf_drop_ratio: float = 0.6, expectancy_drop_r: float = 0.15,
+                    since: Optional[str] = None) -> AgentStats:
+        # un trade dont la clôture n'a pas été retrouvée (exit_reason UNKNOWN) n'a pas de résultat connu :
+        # il n'entre dans aucune statistique (un 0R fictif fausserait expectancy, PF et dégradation)
+        rows = [r for r in self.trades(agent_id, mode, since=since) if r.get("exit_reason") != "UNKNOWN"]
         rs = [float(r["result_r"]) for r in rows if r["result_r"] is not None]
         st = AgentStats(agent_id=agent_id)
         m = _metrics(rs)
@@ -189,7 +217,7 @@ class LearningStore:
             setattr(st, attr, {g: {"n": len(v), "expectancy_r": sum(v) / len(v), "win_rate": sum(1 for x in v if x > 0) / len(v)} for g, v in groups.items()})
         buckets: dict[str, list[float]] = {}
         for r in rows:
-            vp = (r.get("features") or {}).get("vol_pct") if isinstance(r.get("features"), dict) else None
+            vp = _num((r.get("features") or {}).get("vol_pct")) if isinstance(r.get("features"), dict) else None
             b = "UNKNOWN" if vp is None else ("LOW" if vp < 33 else "MID" if vp < 66 else "HIGH")
             buckets.setdefault(b, []).append(float(r["result_r"]))
         st.by_vol_bucket = {b: {"n": len(v), "expectancy_r": sum(v) / len(v)} for b, v in buckets.items()}
@@ -197,8 +225,10 @@ class LearningStore:
             if len(rs) >= w:
                 st.recent_expectancy_r[str(w)] = sum(rs[-w:]) / w
         # calibration : corrélation score de setup / résultat (indicatif, jamais une probabilité)
-        pairs = [(float((r.get("features") or {}).get("setup_score", 0)), float(r["result_r"])) for r in rows
-                 if isinstance(r.get("features"), dict) and "setup_score" in r["features"]]
+        # seules les valeurs numériques comptent : un setup_score absent/None (candidat inconnu, position adoptée)
+        # est UNKNOWN et ne doit ni planter ni valoir 0
+        pairs = [(sc, float(r["result_r"])) for r in rows
+                 if isinstance(r.get("features"), dict) and (sc := _num(r["features"].get("setup_score"))) is not None]
         if len(pairs) >= 10:
             xs, ys = [p[0] for p in pairs], [p[1] for p in pairs]
             mx, my = sum(xs) / len(xs), sum(ys) / len(ys)
@@ -227,7 +257,8 @@ class LearningStore:
         return min(1.0, score)
 
     def all_agent_ids(self, mode: str = "live") -> list[str]:
-        return [r[0] for r in self.conn.execute("SELECT DISTINCT agent_id FROM trades WHERE mode=?", (mode,))]
+        with self._lock:
+            return [r[0] for r in self.conn.execute("SELECT DISTINCT agent_id FROM trades WHERE mode=?", (mode,))]
 
     def leaderboard(self, mode: str = "live", min_sample: int = 1) -> list[dict]:
         out = []
@@ -241,31 +272,37 @@ class LearningStore:
 
     # ---------- événements agents ----------
     def agent_event(self, agent_id: str, event: str, detail: dict | str = "") -> None:
-        self.conn.execute("INSERT INTO agent_events (ts, agent_id, event, detail) VALUES (?,?,?,?)",
-                          (utcnow().isoformat(), agent_id, event, json.dumps(detail, ensure_ascii=False, default=str)))
-        self.conn.commit()
+        with self._lock:
+            self.conn.execute("INSERT INTO agent_events (ts, agent_id, event, detail) VALUES (?,?,?,?)",
+                              (utcnow().isoformat(), agent_id, event, json.dumps(detail, ensure_ascii=False, default=str)))
+            self.conn.commit()
 
     def agent_events(self, agent_id: Optional[str] = None, limit: int = 100) -> list[dict]:
         sql = "SELECT * FROM agent_events" + (" WHERE agent_id=?" if agent_id else "") + " ORDER BY id DESC LIMIT ?"
         args = ([agent_id] if agent_id else []) + [limit]
-        return [dict(r) for r in self.conn.execute(sql, args)]
+        with self._lock:
+            return [dict(r) for r in self.conn.execute(sql, args)]
 
     # ---------- mémoire de marché ----------
     def store_snapshot(self, symbol: str, regime: str, session: str, features: dict, macro: str = "UNKNOWN",
                        news_state: str = "UNKNOWN", outcome_r: Optional[float] = None, trade_id: Optional[int] = None,
                        ts: Optional[datetime] = None) -> int:
-        cur = self.conn.execute(
-            "INSERT INTO market_snapshots (ts, symbol, regime, session, vol_pct, structure, adx, rsi, spread_atr, macro, news_state, features, outcome_r, trade_id)"
-            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-            ((ts or utcnow()).isoformat(), symbol, regime, session, features.get("vol_pct"), features.get("structure"),
-             features.get("adx"), features.get("rsi"), features.get("spread_atr"), macro, news_state,
-             json.dumps(features, ensure_ascii=False, default=str), outcome_r, trade_id))
-        self.conn.commit()
+        # NaN (indicateur non calculable) → NULL : la valeur reste UNKNOWN en base et dans le JSON
+        feats = {k: _sql_value(v) for k, v in features.items()}
+        with self._lock:
+            cur = self.conn.execute(
+                "INSERT INTO market_snapshots (ts, symbol, regime, session, vol_pct, structure, adx, rsi, spread_atr, macro, news_state, features, outcome_r, trade_id)"
+                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                ((ts or utcnow()).isoformat(), symbol, regime, session, feats.get("vol_pct"), feats.get("structure"),
+                 feats.get("adx"), feats.get("rsi"), feats.get("spread_atr"), macro, news_state,
+                 json.dumps(feats, ensure_ascii=False, default=str), outcome_r, trade_id))
+            self.conn.commit()
         return int(cur.lastrowid)
 
     def set_snapshot_outcome(self, snapshot_id: int, outcome_r: float, trade_id: int) -> None:
-        self.conn.execute("UPDATE market_snapshots SET outcome_r=?, trade_id=? WHERE id=?", (outcome_r, trade_id, snapshot_id))
-        self.conn.commit()
+        with self._lock:
+            self.conn.execute("UPDATE market_snapshots SET outcome_r=?, trade_id=? WHERE id=?", (outcome_r, trade_id, snapshot_id))
+            self.conn.commit()
 
     def similar_situations(self, symbol: str, regime: str, session: Optional[str] = None, vol_pct: Optional[float] = None,
                            structure: Optional[str] = None, tol_vol: float = 20.0, limit: int = 200) -> dict:
@@ -283,7 +320,8 @@ class LearningStore:
             args += [vol_pct - tol_vol, vol_pct + tol_vol]
         sql += " ORDER BY ts DESC LIMIT ?"
         args.append(limit)
-        rows = [dict(r) for r in self.conn.execute(sql, args)]
+        with self._lock:
+            rows = [dict(r) for r in self.conn.execute(sql, args)]
         rs = [float(r["outcome_r"]) for r in rows]
         if not rs:
             return {"n": 0, "note": "aucun cas comparable (UNKNOWN)"}

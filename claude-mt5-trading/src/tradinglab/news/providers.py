@@ -10,8 +10,10 @@ Principes :
 """
 from __future__ import annotations
 
+import http.client
 import json
 import os
+import re
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -91,7 +93,11 @@ def parse_number(value: Any) -> Optional[float]:
         return float(value)
     if not isinstance(value, str):
         return None
-    s = value.strip().replace(",", "").replace("%", "").replace("$", "")
+    s = value.strip().replace("%", "").replace("$", "").replace(" ", "")
+    if re.fullmatch(r"-?\d+,\d{1,2}[KkMmBb]?", s) and "." not in s:
+        s = s.replace(",", ".")      # virgule décimale ('-0,5' → -0.5)
+    else:
+        s = s.replace(",", "")       # séparateur de milliers ('1,200' → 1200)
     if s in ("", "-", "--", "n/a", "N/A", "null"):
         return None
     mult = 1.0
@@ -242,8 +248,9 @@ class FMPProvider(NewsProvider):
                 body = resp.read()
         except urllib.error.HTTPError as e:
             raise ProviderError(f"{self.name}: HTTP {e.code} sur /{path.lstrip('/')}") from None
-        except (urllib.error.URLError, TimeoutError, OSError) as e:
-            raise ProviderError(mask_secret(f"{self.name}: erreur réseau sur /{path.lstrip('/')}: {e}", key)) from None
+        except (urllib.error.URLError, TimeoutError, OSError, http.client.HTTPException, ValueError) as e:
+            # http.client.HTTPException (IncompleteRead, BadStatusLine…) n'hérite pas d'OSError ; ValueError = URL mal formée
+            raise ProviderError(mask_secret(f"{self.name}: erreur réseau sur /{path.lstrip('/')}: {type(e).__name__}: {e}", key)) from None
         if status != 200:
             raise ProviderError(f"{self.name}: HTTP {status} sur /{path.lstrip('/')}")
         try:

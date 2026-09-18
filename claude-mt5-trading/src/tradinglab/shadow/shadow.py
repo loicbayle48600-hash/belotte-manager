@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass, field, asdict
 from datetime import datetime
 from pathlib import Path
@@ -10,6 +11,8 @@ from typing import Optional
 from ..core.types import AgentStatus, Side, TradeCandidate, utcnow
 from ..learning.store import LearningStore, TradeRecord
 from ..market_data.feed import MarketSnapshot
+
+MAX_EXECUTED_KEYS = 2000
 
 
 @dataclass
@@ -37,7 +40,8 @@ class ShadowTrader:
         self.risk_money = risk_money
         self.max_open = max_open
         self.positions: dict[str, ShadowPosition] = {}
-        self.executed: set[str] = set()
+        # dict ordonné par ancienneté (insertion) : la troncature garde les clés les plus RÉCENTES, tous symboles confondus
+        self.executed: dict[str, None] = {}
         self._load()
 
     def _load(self) -> None:
@@ -45,14 +49,19 @@ class ShadowTrader:
             try:
                 d = json.loads(self.file.read_text(encoding="utf-8"))
                 self.positions = {k: ShadowPosition(**v) for k, v in d.get("positions", {}).items()}
-                self.executed = set(d.get("executed", [])[-2000:])
+                self.executed = dict.fromkeys(list(d.get("executed", []))[-MAX_EXECUTED_KEYS:])
             except (json.JSONDecodeError, TypeError):
                 pass
 
     def _save(self) -> None:
+        """Écriture atomique (tempfile + os.replace) : un crash pendant l'écriture ne rend jamais l'état illisible."""
         self.file.parent.mkdir(parents=True, exist_ok=True)
-        self.file.write_text(json.dumps({"positions": {k: asdict(v) for k, v in self.positions.items()},
-                                         "executed": sorted(self.executed)[-2000:]}, ensure_ascii=False, indent=1), encoding="utf-8")
+        self.executed = dict.fromkeys(list(self.executed)[-MAX_EXECUTED_KEYS:])
+        payload = json.dumps({"positions": {k: asdict(v) for k, v in self.positions.items()},
+                              "executed": list(self.executed)}, ensure_ascii=False, indent=1)
+        tmp = self.file.with_suffix(".tmp")
+        tmp.write_text(payload, encoding="utf-8")
+        os.replace(tmp, self.file)
 
     def open_from_candidates(self, cands: list[TradeCandidate], now: Optional[datetime] = None) -> list[ShadowPosition]:
         now = now or utcnow()
@@ -66,26 +75,36 @@ class ShadowTrader:
                                tp=c.tp_plan[-1] if c.tp_plan else c.entry + c.side.sign * 2.5 * c.sl_distance,
                                opened_at=now.isoformat(), regime=c.regime.value, session=c.session, setup_score=c.setup_score, bar_time=c.bar_time)
             self.positions[p.id] = p
-            self.executed.add(c.idempotency_key)
+            self.executed[c.idempotency_key] = None
             out.append(p)
         if out:
             self._save()
         return out
 
     def update(self, snapshots: dict[str, MarketSnapshot], now: Optional[datetime] = None, max_hours: float = 72.0) -> list[TradeRecord]:
-        """Vérifie SL/TP sur les barres M5 récentes (high/low), SL prioritaire. Enregistre les trades fermés en mode 'shadow'."""
+        """Vérifie SL/TP sur les barres M5 récentes (high/low), SL prioritaire. Enregistre les trades fermés en mode 'shadow'.
+
+        Une position dont le symbole n'a plus de snapshot ni de barres est abandonnée après ``max_hours`` (événement
+        ``shadow_timeout_no_data``, aucun résultat inventé) pour ne pas occuper un slot indéfiniment.
+        """
         now = now or utcnow()
         closed: list[TradeRecord] = []
+        dirty = False
         for pid, p in list(self.positions.items()):
-            snap = snapshots.get(p.symbol)
-            if snap is None:
-                continue
-            df = snap.frames.get("M5")
-            if df is None:
-                df = snap.frames.get("M15")
-            if df is None or len(df) < 3:
-                continue
             opened = datetime.fromisoformat(p.opened_at)
+            timed_out = (now - opened).total_seconds() > max_hours * 3600
+            snap = snapshots.get(p.symbol)
+            df = None
+            if snap is not None:
+                df = snap.frames.get("M5")
+                if df is None:
+                    df = snap.frames.get("M15")
+            if df is None or len(df) < 3:
+                if timed_out:
+                    self.store.agent_event(p.agent_id, "shadow_timeout_no_data", {"position": pid, "symbol": p.symbol, "opened_at": p.opened_at})
+                    del self.positions[pid]
+                    dirty = True
+                continue
             bars = df[df["time"] > opened].iloc[:-1]
             side = Side(p.side)
             dist = abs(p.entry - p.sl)
@@ -102,7 +121,7 @@ class ShadowTrader:
                 if (side is Side.BUY and hi >= p.tp) or (side is Side.SELL and lo <= p.tp):
                     exit_px, reason = p.tp, "tp"
                     break
-            if exit_px is None and (now - opened).total_seconds() > max_hours * 3600:
+            if exit_px is None and timed_out:
                 exit_px, reason = float(df["close"].iloc[-2]), "timeout"
             if exit_px is None:
                 continue
@@ -115,7 +134,8 @@ class ShadowTrader:
             self.store.record_trade(rec)
             closed.append(rec)
             del self.positions[pid]
-        if closed:
+            dirty = True
+        if dirty:
             self._save()
         return closed
 

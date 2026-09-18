@@ -41,6 +41,7 @@ class MarketSnapshot:
     fetched_at: datetime
     bar_times: dict[str, str]                # tf -> ISO de la dernière barre CLÔTURÉE
     bar_counts: dict[str, int] = field(default_factory=dict)   # tf -> nombre de barres disponibles
+    tick_age_sec: Optional[float] = None     # âge du tick (s) par rapport à `now` ; None si absent ou non fini
 
     def to_public_dict(self) -> dict:
         """Représentation sérialisable sans les DataFrames (pour les agents / le journal)."""
@@ -62,6 +63,7 @@ class MarketSnapshot:
             "atr_h1": self.atr_h1,
             "data_fresh": self.data_fresh,
             "data_quality": self.data_quality,
+            "tick_age_sec": self.tick_age_sec,
             "fetched_at": self.fetched_at.isoformat(),
             "bar_times": dict(self.bar_times),
             "bar_counts": dict(self.bar_counts),
@@ -82,7 +84,8 @@ class MarketDataFeed:
         self.bars = int(bars)
         self.max_tick_age_sec = int(max_tick_age_sec)
         self.min_bars = int(min_bars)
-        self._cache: dict[tuple[str, str], tuple[datetime, pd.DataFrame]] = {}
+        # (symbol, tf) -> (barre courante au chargement, DataFrame, horodatage de la dernière ligne brute)
+        self._cache: dict[tuple[str, str], tuple[datetime, pd.DataFrame, Optional[pd.Timestamp]]] = {}
 
     # ---------- cache ----------
     def invalidate(self, symbol: Optional[str] = None) -> None:
@@ -95,7 +98,12 @@ class MarketDataFeed:
 
     def frame(self, symbol: str, tf: str, now: Optional[datetime] = None) -> pd.DataFrame:
         """DataFrame enrichi (`self.bars` barres) pour (symbol, tf), servi depuis le cache tant que la barre
-        courante (`bar_open_time(now, tf)`) est la même que lors du dernier chargement."""
+        courante (`bar_open_time(now, tf)`) est la même que lors du dernier chargement.
+
+        Le cache n'est écrit que si les données ont réellement avancé : une réponse vide/absente du broker
+        (micro-coupure) ou une dernière barre identique au chargement précédent (barre pas encore créée par
+        MT5 au premier tick après l'ouverture) est servie mais re-lue au cycle suivant, au lieu d'être
+        mémorisée pour toute la durée de la barre. Règle indépendante du fuseau du serveur."""
         tf = tf.upper()
         now = now or utcnow()
         cur_bar = bar_open_time(now, tf)
@@ -104,8 +112,11 @@ class MarketDataFeed:
         if hit is not None and hit[0] == cur_bar:
             return hit[1]
         raw = self.broker.rates(symbol, tf, self.bars)
+        has_data = raw is not None and len(raw) > 0 and "time" in raw.columns
         df = enrich(raw.reset_index(drop=True)) if raw is not None else enrich(pd.DataFrame())
-        self._cache[key] = (cur_bar, df)
+        last_t = pd.Timestamp(raw["time"].iloc[-1]) if has_data else None
+        if has_data and not (hit is not None and last_t == hit[2]):
+            self._cache[key] = (cur_bar, df, last_t)
         return df
 
     # ---------- snapshot ----------
@@ -136,7 +147,11 @@ class MarketDataFeed:
             atr_h1 = 0.0 if math.isnan(v) else v
         regime = classify_regime(pdf, spread_points=spread_points, point=spec.point, news_shock=news_shock)
 
-        data_fresh = tick is not None and tick.age_seconds(now) <= self.max_tick_age_sec
+        # fraîcheur : l'âge doit rester dans [-max, +max]. Un âge négatif au-delà de la tolérance (heure serveur
+        # MT5 non calibrée) devient STALE = refus déterministe, jamais une valeur inventée ni un tick « frais »
+        age = tick.age_seconds(now) if tick is not None else None
+        data_fresh = age is not None and -self.max_tick_age_sec <= age <= self.max_tick_age_sec
+        tick_age = round(float(age), 3) if age is not None and math.isfinite(age) else None
         if tick is None:
             quality = "NO_TICK"
         elif len(pdf) < self.min_bars:
@@ -148,7 +163,7 @@ class MarketDataFeed:
         return MarketSnapshot(
             symbol=symbol, spec=spec, tick=tick, frames=frames, regime=regime, session=current_session(now),
             spread_points=int(spread_points), atr_h1=atr_h1, data_fresh=bool(data_fresh), data_quality=quality,
-            fetched_at=now, bar_times=bar_times, bar_counts=bar_counts,
+            fetched_at=now, bar_times=bar_times, bar_counts=bar_counts, tick_age_sec=tick_age,
         )
 
     def snapshots(self, symbols: list[str], now: Optional[datetime] = None, news_shock: bool = False) -> dict[str, MarketSnapshot]:

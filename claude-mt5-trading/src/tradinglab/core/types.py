@@ -12,6 +12,11 @@ def utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
+# Tolérance (secondes) pour un tick daté légèrement dans le futur (dérive d'horloge normale).
+# Au-delà, `Tick.age_seconds()` renvoie `inf` : données considérées non fraîches (fail-safe).
+TICK_FUTURE_TOLERANCE_SEC = 5.0
+
+
 def new_id(prefix: str = "id") -> str:
     return f"{prefix}_{uuid.uuid4().hex[:12]}"
 
@@ -134,8 +139,17 @@ class Tick:
         return int(round((self.ask - self.bid) / spec.point))
 
     def age_seconds(self, now: Optional[datetime] = None) -> float:
+        """Âge du tick en secondes par rapport à `now`.
+
+        Garde-fou déterministe : un tick daté dans le futur au-delà de `TICK_FUTURE_TOLERANCE_SEC`
+        (horloge PC / heure serveur incohérentes, décalage non calibré) est traité comme infiniment
+        périmé (`inf`) au lieu de renvoyer un âge négatif qui passerait tout contrôle `age <= max`.
+        """
         now = now or utcnow()
-        return (now - self.time).total_seconds()
+        age = (now - self.time).total_seconds()
+        if age < -TICK_FUTURE_TOLERANCE_SEC:
+            return float("inf")
+        return age
 
 
 @dataclass

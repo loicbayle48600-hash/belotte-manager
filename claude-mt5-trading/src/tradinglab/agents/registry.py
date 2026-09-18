@@ -8,11 +8,17 @@ data/agent_status.json ; toute promotion passe par research.pipeline.
 from __future__ import annotations
 
 import json
+import logging
+import os
+import tempfile
+import threading
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from typing import Iterable, Optional
 
 from ..core.types import AgentStatus, Regime
+
+log = logging.getLogger(__name__)
 
 ALL_REGIMES = [r.value for r in Regime if r not in (Regime.NEWS_SHOCK,)]
 TREND_REGIMES = [Regime.TRENDING.value, Regime.RISK_ON.value, Regime.RISK_OFF.value, Regime.BREAKOUT.value]
@@ -203,10 +209,19 @@ def default_agents() -> list[AgentSpec]:  # noqa: C901 - registre déclaratif
 
 
 class AgentRegistry:
-    def __init__(self, agents: Optional[Iterable[AgentSpec]] = None, status_file: Optional[Path] = None):
+    def __init__(self, agents: Optional[Iterable[AgentSpec]] = None, status_file: Optional[Path] = None, journal=None):
+        # verrou réentrant : le thread de recherche (add/set_status/save) et le thread principal (generators…) partagent le registre
+        self._lock = threading.RLock()
+        self.journal = journal
         self.agents: dict[str, AgentSpec] = {a.agent_id: a for a in (agents or default_agents())}
         self.status_file = status_file
         self._load_overrides()
+
+    def _warn(self, msg: str, **data) -> None:
+        if self.journal is not None:
+            self.journal.warn(msg, **data)
+        else:
+            log.warning("%s %s", msg, data)
 
     # ---------- persistance des statuts / challengers ----------
     def _load_overrides(self) -> None:
@@ -214,22 +229,56 @@ class AgentRegistry:
             return
         try:
             data = json.loads(self.status_file.read_text(encoding="utf-8"))
-        except json.JSONDecodeError:
+            if not isinstance(data, dict):
+                raise ValueError("contenu attendu : objet JSON")
+        except (OSError, json.JSONDecodeError, ValueError) as e:
+            # fichier illisible/tronqué : mis de côté et journalisé (les statuts repartent des valeurs par défaut,
+            # jamais silencieusement) ; le processus ne doit pas mourir en boucle sous l'autostart
+            corrupt = self.status_file.with_name("agent_status.corrupt.json")
+            try:
+                os.replace(self.status_file, corrupt)
+            except OSError:
+                corrupt = None
+            self._warn("agent_status.json illisible : statuts par défaut", error=f"{type(e).__name__}: {e}",
+                       renamed_to=str(corrupt) if corrupt else None)
             return
-        for aid, st in data.get("status", {}).items():
-            if aid in self.agents:
-                self.agents[aid].status = st
-        for spec in data.get("challengers", []):
-            a = AgentSpec(**{k: v for k, v in spec.items() if k in AgentSpec.__dataclass_fields__})
+        valid = {st.value for st in AgentStatus}
+        status = data.get("status", {})
+        if isinstance(status, dict):
+            for aid, st in status.items():
+                if aid in self.agents and st in valid:
+                    self.agents[aid].status = st
+                elif aid in self.agents:
+                    self._warn("agent_status.json : statut invalide ignoré", agent_id=aid, status=str(st))
+        for spec in data.get("challengers", []) or []:
+            try:
+                if not isinstance(spec, dict):
+                    raise TypeError("challenger non-objet")
+                a = AgentSpec(**{k: v for k, v in spec.items() if k in AgentSpec.__dataclass_fields__})
+            except TypeError as e:
+                self._warn("agent_status.json : challenger ignoré", error=f"{type(e).__name__}: {e}",
+                           agent_id=spec.get("agent_id") if isinstance(spec, dict) else None)
+                continue
+            if a.status not in valid:
+                a.status = AgentStatus.RESEARCH.value
             self.agents.setdefault(a.agent_id, a)
 
     def save(self) -> None:
         if not self.status_file:
             return
-        self.status_file.parent.mkdir(parents=True, exist_ok=True)
-        data = {"status": {a.agent_id: a.status for a in self.agents.values()},
-                "challengers": [a.to_dict() for a in self.agents.values() if a.created_by != "registry"]}
-        self.status_file.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
+        with self._lock:
+            self.status_file.parent.mkdir(parents=True, exist_ok=True)
+            data = {"status": {a.agent_id: a.status for a in list(self.agents.values())},
+                    "challengers": [a.to_dict() for a in list(self.agents.values()) if a.created_by != "registry"]}
+            # écriture atomique (tempfile + os.replace) : jamais de fichier tronqué/entrelacé entre threads ou après un crash
+            fd, tmp = tempfile.mkstemp(dir=self.status_file.parent, prefix=".agent_status-", suffix=".tmp")
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    f.write(json.dumps(data, ensure_ascii=False, indent=1))
+                os.replace(tmp, self.status_file)
+            finally:
+                if os.path.exists(tmp):
+                    os.unlink(tmp)
 
     # ---------- accès ----------
     def __len__(self) -> int:
@@ -240,26 +289,29 @@ class AgentRegistry:
 
     def by_status(self, *statuses: AgentStatus | str) -> list[AgentSpec]:
         ss = {s.value if isinstance(s, AgentStatus) else s for s in statuses}
-        return [a for a in self.agents.values() if a.status in ss]
+        return [a for a in list(self.agents.values()) if a.status in ss]   # copie : insertion concurrente possible
 
     def generators(self, statuses: Iterable[str] = (AgentStatus.LIVE.value,)) -> list[AgentSpec]:
         ss = set(statuses)
-        return [a for a in self.agents.values() if a.generates_trades and a.status in ss]
+        return [a for a in list(self.agents.values()) if a.generates_trades and a.status in ss]
 
     def set_status(self, agent_id: str, status: AgentStatus, reason: str = "") -> None:
-        a = self.agents[agent_id]
-        a.status = status.value
-        self.save()
+        with self._lock:
+            a = self.agents[agent_id]
+            a.status = status.value
+            self.save()
 
     def add(self, spec: AgentSpec) -> None:
-        self.agents[spec.agent_id] = spec
-        self.save()
+        with self._lock:
+            self.agents[spec.agent_id] = spec
+            self.save()
 
     def next_challenger_id(self, parent: AgentSpec) -> str:
-        n = 101
-        while f"CH{n}" in self.agents:
-            n += 1
-        return f"CH{n}"
+        with self._lock:
+            n = 101
+            while f"CH{n}" in self.agents:
+                n += 1
+            return f"CH{n}"
 
     @staticmethod
     def matches_market(a: AgentSpec, asset_class: str, root: str, group: Optional[str] = None) -> bool:
@@ -279,6 +331,7 @@ class AgentRegistry:
 
     def summary(self) -> dict:
         by = {}
-        for a in self.agents.values():
+        agents = list(self.agents.values())
+        for a in agents:
             by[a.status] = by.get(a.status, 0) + 1
-        return {"total": len(self.agents), "generators": len([a for a in self.agents.values() if a.generates_trades]), "by_status": by}
+        return {"total": len(agents), "generators": len([a for a in agents if a.generates_trades]), "by_status": by}

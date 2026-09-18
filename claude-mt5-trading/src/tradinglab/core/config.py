@@ -5,7 +5,9 @@ les YAML : uniquement depuis l'environnement (fichier .env chargé par l'appelan
 """
 from __future__ import annotations
 
+import logging
 import os
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -23,18 +25,51 @@ def project_home() -> Path:
     return Path(__file__).resolve().parents[3]
 
 
-def load_dotenv(path: Path | None = None) -> None:
-    """Charge un .env minimal (KEY=VALUE) sans écraser l'environnement existant."""
+def _parse_dotenv_value(v: str) -> str:
+    """Valeur d'une ligne .env : guillemets (le `#` intérieur est conservé) ou commentaire ` #` en fin de ligne."""
+    v = v.strip()
+    if len(v) >= 2 and v[0] in "\"'" and v[-1] == v[0]:
+        return v[1:-1]
+    if v and v[0] in "\"'":
+        # guillemet ouvrant sans fermant : on coupe au guillemet fermant s'il existe, sinon on garde tel quel
+        end = v.find(v[0], 1)
+        if end > 0:
+            return v[1:end]
+    return re.split(r"\s+#", v, 1)[0].strip()
+
+
+def load_dotenv(path: Path | None = None) -> list[str]:
+    """Charge un .env minimal (KEY=VALUE) sans écraser l'environnement existant.
+
+    - `utf-8-sig` : un BOM (Bloc-notes, `Out-File -Encoding UTF8`) ne pollue plus la première clé ;
+    - `export KEY=VALUE` accepté ; commentaire en fin de ligne coupé au premier ` #` (hors guillemets) ;
+    - renvoie la liste des **noms** chargés (jamais les valeurs) et la journalise pour le diagnostic.
+    """
     path = path or project_home() / ".env"
     if not path.exists():
-        return
-    for line in path.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
+        return []
+    loaded: list[str] = []
+    try:
+        text = path.read_text(encoding="utf-8-sig")
+    except (OSError, UnicodeDecodeError) as e:
+        logging.getLogger("tradinglab.config").warning(".env illisible (%s): %s", type(e).__name__, e)
+        return []
+    for line in text.splitlines():
+        line = line.strip().lstrip("\ufeff")
         if not line or line.startswith("#") or "=" not in line:
             continue
+        if line.startswith("export "):
+            line = line[7:].lstrip()
         k, v = line.split("=", 1)
-        k, v = k.strip(), v.split("  #")[0].strip().strip('"').strip("'")
-        os.environ.setdefault(k, v)
+        k = k.strip().replace("\u00a0", "")
+        if not k or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", k):
+            logging.getLogger("tradinglab.config").warning(".env : ligne ignorée (clé invalide)")
+            continue
+        os.environ.setdefault(k, _parse_dotenv_value(v))
+        loaded.append(k)
+    if loaded:
+        logging.getLogger("tradinglab.config").info(".env chargé : variables %s", ", ".join(loaded))
+    return loaded
 
 
 def _deep_get(d: dict, path: str, default: Any = None) -> Any:

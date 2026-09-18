@@ -49,6 +49,9 @@ class GateContext:
     deviation_points: int = 20
     magic: int = 51000
     comment_prefix: str = "TLAB"
+    # identité du compte attendue (account_expected) : 0 / "" = non vérifiée par le gate (compatibilité)
+    expected_login: int = 0
+    expected_server: str = ""
 
 
 class ExecutionGate:
@@ -59,6 +62,9 @@ class ExecutionGate:
         self.prop = prop
         self.daily = daily
         self.corr = corr
+        # les lignes d'exposition existantes utilisent les devises réelles des specs broker (cf. CorrelationGuard)
+        if getattr(self.corr, "spec_lookup", None) is None:
+            self.corr.spec_lookup = broker.symbol_info
 
     def evaluate(self, ctx: GateContext) -> tuple[GateResult, Optional[OrderRequest]]:
         c = ctx.candidate
@@ -70,12 +76,23 @@ class ExecutionGate:
             checks.append(CheckResult(name, bool(ok), detail))
             return bool(ok)
 
-        # 1. health
-        add("01_health", self.broker.is_connected() and ctx.watchdog_alive,
-            "connecté" if self.broker.is_connected() else "broker déconnecté" if not ctx.watchdog_alive else "watchdog absent")
-        # 2. account
+        # 1. health : chaque cause manquante est nommée explicitement dans le journal
+        connected = self.broker.is_connected()
+        problems = [m for ok, m in ((connected, "broker déconnecté"), (ctx.watchdog_alive, "watchdog absent")) if not ok]
+        add("01_health", not problems, "; ".join(problems) or "ok")
+        # 2. account : equity > 0 et identité (login/serveur) conforme à account_expected si fournie
         acc_ok = ctx.account is not None and ctx.account.equity > 0
-        add("02_account", acc_ok, f"equity={ctx.account.equity if ctx.account else 'UNKNOWN'}")
+        acc_detail = f"equity={ctx.account.equity if ctx.account else 'UNKNOWN'}"
+        if ctx.account is not None:
+            unexpected = []
+            if ctx.expected_login and int(ctx.account.login) != int(ctx.expected_login):
+                unexpected.append(f"login {ctx.account.login} ≠ attendu {ctx.expected_login}")
+            if ctx.expected_server and str(ctx.account.server) != str(ctx.expected_server):
+                unexpected.append(f"serveur {ctx.account.server} ≠ attendu {ctx.expected_server}")
+            if unexpected:
+                acc_ok = False
+                acc_detail += "; compte inattendu : " + "; ".join(unexpected)
+        add("02_account", acc_ok, acc_detail)
         # 3. autorisation demo/prop
         auth = self.prop.authorization(ctx.account.trade_mode if ctx.account else TradeMode.UNKNOWN)
         add("03_authorization", auth.ok, auth.detail)

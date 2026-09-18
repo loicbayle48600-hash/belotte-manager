@@ -11,15 +11,40 @@ TF_SECONDS = {
 }
 
 
+# Décalage heure serveur broker − UTC (secondes). Les barres H4/D1/W1 de MT5 sont alignées sur minuit
+# **serveur** (MetaQuotes-Demo : UTC+2/UTC+3), pas sur minuit UTC. Réglé par `set_server_utc_offset()`
+# (calibration `MT5Adapter.connect()` ou clé `system.server_utc_offset_hours`). 0 = alignement UTC (mock).
+SERVER_UTC_OFFSET_SEC: int = 0
+
+# L'epoch 0 (1970-01-01) est un jeudi ; les barres W1 de MT5 ouvrent le dimanche 00:00 serveur.
+# Décalage à retrancher pour ancrer le modulo hebdomadaire sur un dimanche : jeudi → dimanche = 3 jours.
+_W1_ANCHOR_SHIFT_SEC = 3 * 86400
+
+
+def set_server_utc_offset(seconds: float | int | None) -> None:
+    """Fixe le décalage serveur−UTC utilisé par `bar_open_time()` (None → 0)."""
+    global SERVER_UTC_OFFSET_SEC
+    SERVER_UTC_OFFSET_SEC = int(round(seconds or 0))
+
+
 def tf_seconds(tf: str) -> int:
     return TF_SECONDS[tf.upper()]
 
 
-def bar_open_time(ts: datetime, tf: str) -> datetime:
-    """Début de la barre contenant ts (UTC)."""
+def bar_open_time(ts: datetime, tf: str, server_offset_sec: int | None = None) -> datetime:
+    """Début (UTC) de la barre contenant ts, alignée comme le fait le serveur MT5.
+
+    - M1…H1 : alignement identique quel que soit le décalage (diviseurs de l'heure).
+    - H4/D1 : alignement sur minuit **serveur** (`server_offset_sec`, défaut `SERVER_UTC_OFFSET_SEC`).
+    - W1 : ancrage sur le dimanche 00:00 serveur (l'epoch 0 est un jeudi).
+    """
     s = tf_seconds(tf)
-    epoch = int(ts.timestamp())
-    return datetime.fromtimestamp(epoch - epoch % s, tz=timezone.utc)
+    off = SERVER_UTC_OFFSET_SEC if server_offset_sec is None else int(server_offset_sec)
+    e = int(ts.timestamp()) + off
+    if tf.upper() == "W1":
+        e -= _W1_ANCHOR_SHIFT_SEC
+        return datetime.fromtimestamp(e - e % s + _W1_ANCHOR_SHIFT_SEC - off, tz=timezone.utc)
+    return datetime.fromtimestamp(e - e % s - off, tz=timezone.utc)
 
 
 def is_new_bar(tf: str, last_seen: datetime | None, now: datetime | None = None) -> tuple[bool, datetime]:

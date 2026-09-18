@@ -19,7 +19,7 @@ from ..agents.registry import AgentRegistry, AgentSpec
 from ..backtest.engine import BTCosts, monte_carlo, parameter_sensitivity, run_backtest, split_in_out_of_sample, walk_forward
 from ..core.types import AgentStatus, SymbolSpec, utcnow
 from ..learning.store import LearningStore
-from .adapters import make_signal_factory, make_signal_fn
+from .adapters import make_signal_factory, make_signal_fn, required_bars
 
 
 class Stage(str, Enum):
@@ -127,6 +127,22 @@ class ResearchPipeline:
                        commission_per_lot=float(self.bt_cfg.get("commission_per_lot", 0.0)),
                        slippage_points=int(self.bt_cfg.get("slippage_points", 3)), point=ss.point, tick_value=ss.tick_value, tick_size=ss.tick_size)
 
+    def _entry_tf(self, spec: AgentSpec) -> str:
+        """Le backtest mesure la stratégie telle qu'elle tourne en live : tf d'entrée de l'agent (repli : celui du pipeline)."""
+        return str(spec.timeframes.get("entry") or self.entry_tf)
+
+    def _load(self, spec: AgentSpec, sym: str) -> tuple[pd.DataFrame, str]:
+        """(barres, tf d'entrée). ``bars`` s'applique au tf de l'agent (H1 : 3000 barres ≈ 6 mois)."""
+        tf = self._entry_tf(spec)
+        return self.data(sym, tf, self.bars), tf
+
+    def _data_error(self, df: pd.DataFrame, spec: AgentSpec, tf: str) -> Optional[str]:
+        """Message explicite si l'échantillon ne permet pas de calculer le régime de tendance (jamais un 0 silencieux)."""
+        need = required_bars(tf, str(spec.timeframes.get("trend", "H1")))
+        if len(df) < need:
+            return f"données insuffisantes : {len(df)} barres {tf} < {need} requises (tendance {spec.timeframes.get('trend', 'H1')})"
+        return None
+
     def _thresholds(self) -> tuple[int, float, float, float]:
         return (int(self.cfg.get("min_sample_size", 40)), float(self.cfg.get("min_profit_factor", 1.2)),
                 float(self.cfg.get("min_expectancy_r", 0.10)), float(self.cfg.get("max_drawdown_r", 15.0)))
@@ -136,15 +152,19 @@ class ResearchPipeline:
         rec = self.record(spec.agent_id)
         sym = self._symbol_for(spec)
         ss = self.specs[sym]
-        df = self.data(sym, self.entry_tf, self.bars)
+        df, tf = self._load(spec, sym)
         df_is, df_oos = split_in_out_of_sample(df, 0.3)
-        fn = make_signal_fn(spec, ss, self.entry_tf)
+        err = self._data_error(df_is, spec, tf)
+        if err:
+            self._set(rec, Stage.BACKTEST, False, {"symbol": sym, "entry_tf": tf, "error": err})
+            return rec
+        fn = make_signal_fn(spec, ss, tf)
         res = run_backtest(df_is, fn, self._costs(ss))
         n, pf, ex, dd = self._thresholds()
         m = res.metrics
         # en backtest on exige la moitié de l'échantillon minimal (le reste vient du shadow)
         passed = m.sample_size >= max(10, n // 2) and m.profit_factor >= pf and m.expectancy_r >= ex and m.max_drawdown_r <= dd
-        self._set(rec, Stage.BACKTEST, passed, {"symbol": sym, **m.to_dict()})
+        self._set(rec, Stage.BACKTEST, passed, {"symbol": sym, "entry_tf": tf, **m.to_dict(), **({"error": fn.data_error} if fn.data_error else {})})
         if passed and spec.status == AgentStatus.RESEARCH.value:
             self.registry.set_status(spec.agent_id, AgentStatus.BACKTEST)
         return rec
@@ -156,9 +176,9 @@ class ResearchPipeline:
             return rec
         sym = rec.stages[Stage.BACKTEST.value]["metrics"]["symbol"]
         ss = self.specs[sym]
-        df = self.data(sym, self.entry_tf, self.bars)
+        df, tf = self._load(spec, sym)
         _, df_oos = split_in_out_of_sample(df, 0.3)
-        res = run_backtest(df_oos, make_signal_fn(spec, ss, self.entry_tf), self._costs(ss))
+        res = run_backtest(df_oos, make_signal_fn(spec, ss, tf), self._costs(ss))
         n, pf, ex, dd = self._thresholds()
         m = res.metrics
         passed = m.sample_size >= 5 and m.expectancy_r > 0 and m.profit_factor >= 1.0
@@ -172,15 +192,15 @@ class ResearchPipeline:
             return rec
         sym = rec.stages[Stage.BACKTEST.value]["metrics"]["symbol"]
         ss = self.specs[sym]
-        df = self.data(sym, self.entry_tf, self.bars)
+        df, tf = self._load(spec, sym)
         grid = [dict(spec.params)]
         jit = float(self.cfg.get("challenger_generation", {}).get("parameter_jitter_percent", 20)) / 100
         for k, v in spec.params.items():
             if isinstance(v, (int, float)) and not isinstance(v, bool):
                 grid.append({**spec.params, k: v * (1 + jit)})
                 grid.append({**spec.params, k: v * (1 - jit)})
-        wf = walk_forward(df, make_signal_factory(spec, ss, self.entry_tf), grid, self._costs(ss), folds=int(self.bt_cfg.get("walk_forward_folds", 4)))
-        sens = parameter_sensitivity(df.iloc[: len(df) // 2], make_signal_factory(spec, ss, self.entry_tf), spec.params, jit * 100, self._costs(ss))
+        wf = walk_forward(df, make_signal_factory(spec, ss, tf), grid, self._costs(ss), folds=int(self.bt_cfg.get("walk_forward_folds", 4)))
+        sens = parameter_sensitivity(df.iloc[: len(df) // 2], make_signal_factory(spec, ss, tf), spec.params, jit * 100, self._costs(ss))
         passed = wf.robustness_ratio >= 0.5 and wf.oos_metrics.expectancy_r > 0 and bool(sens.get("stable", False))
         self._set(rec, Stage.WALK_FORWARD, passed, {"robustness_ratio": wf.robustness_ratio, "oos": wf.oos_metrics.to_dict(),
                                                     "sensitivity_stable": sens.get("stable"), "folds": len(wf.folds)})
@@ -193,8 +213,8 @@ class ResearchPipeline:
             return rec
         sym = rec.stages[Stage.BACKTEST.value]["metrics"]["symbol"]
         ss = self.specs[sym]
-        df = self.data(sym, self.entry_tf, self.bars)
-        res = run_backtest(df, make_signal_fn(spec, ss, self.entry_tf), self._costs(ss))
+        df, tf = self._load(spec, sym)
+        res = run_backtest(df, make_signal_fn(spec, ss, tf), self._costs(ss))
         rs = [t.r_multiple for t in res.trades]
         mc = monte_carlo(rs, runs=int(self.bt_cfg.get("monte_carlo_runs", 500)))
         n, pf, ex, dd = self._thresholds()
@@ -209,11 +229,22 @@ class ResearchPipeline:
         if not rec.passed(Stage.MONTE_CARLO):
             self._set(rec, Stage.SHADOW, False, {"error": "MONTE_CARLO non validé"})
             return rec
-        st = self.store.agent_stats(spec.agent_id, mode="shadow")
+        # après un rollback, seule une NOUVELLE période shadow compte (trades clôturés après le rollback)
+        since = self._shadow_since(rec)
+        st = self.store.agent_stats(spec.agent_id, mode="shadow", since=since)
         min_shadow = int(self.cfg.get("min_shadow_trades", max(20, int(self.cfg.get("min_sample_size", 40)) // 2)))
         passed = st.sample_size >= min_shadow and st.expectancy_r > 0 and st.profit_factor >= 1.0
-        self._set(rec, Stage.SHADOW, passed, {"shadow_sample": st.sample_size, "expectancy_r": st.expectancy_r, "profit_factor": st.profit_factor, "required": min_shadow})
+        self._set(rec, Stage.SHADOW, passed, {"shadow_sample": st.sample_size, "expectancy_r": st.expectancy_r, "profit_factor": st.profit_factor,
+                                              "required": min_shadow, **({"since": since} if since else {})})
         return rec
+
+    @staticmethod
+    def _shadow_since(rec: ValidationRecord) -> Optional[str]:
+        """Horodatage du dernier rollback (ISO) : les trades shadow antérieurs ne comptent plus pour l'étape SHADOW."""
+        for h in reversed(rec.history):
+            if isinstance(h, dict) and h.get("rollback_to"):
+                return h.get("ts")
+        return None
 
     def stage_statistical_review(self, spec: AgentSpec) -> ValidationRecord:
         rec = self.record(spec.agent_id)
@@ -257,13 +288,23 @@ class ResearchPipeline:
         self.registry.set_status(agent_id, AgentStatus.LIVE)
         return rec
 
+    # étapes à re-valider après un rollback vers un statut donné (jamais de retour LIVE sans refaire le pipeline)
+    ROLLBACK_INVALIDATES = {
+        AgentStatus.SHADOW: (Stage.SHADOW, Stage.STATISTICAL_REVIEW, Stage.RISK_REVIEW, Stage.PROMOTION),
+        AgentStatus.CANDIDATE: (Stage.STATISTICAL_REVIEW, Stage.RISK_REVIEW, Stage.PROMOTION),
+    }
+
     def rollback(self, agent_id: str, to_status: AgentStatus = AgentStatus.SHADOW) -> None:
+        """Retire l'agent du LIVE. Les étapes postérieures au statut cible sont invalidées (archivées dans history) :
+        sans cela advance() re-promouvrait l'agent au cycle suivant sans nouvelle période shadow ni revue."""
         rec = self.record(agent_id)
-        rec.stages.pop(Stage.PROMOTION.value, None)
-        rec.history.append({"rollback_to": to_status.value, "ts": utcnow().isoformat()})
+        # BACKTEST/RESEARCH ou tout autre statut : le pipeline complet est à refaire
+        invalidate = self.ROLLBACK_INVALIDATES.get(to_status, tuple(STAGE_ORDER[1:]))
+        archived = {s.value: rec.stages.pop(s.value) for s in invalidate if s.value in rec.stages}
+        rec.history.append({"rollback_to": to_status.value, "ts": utcnow().isoformat(), "stages": archived})
         self.save(rec)
         self.registry.set_status(agent_id, to_status)
-        self.store.agent_event(agent_id, "rollback", {"to": to_status.value})
+        self.store.agent_event(agent_id, "rollback", {"to": to_status.value, "invalidated": sorted(archived)})
 
     def advance(self, agent_id: str) -> ValidationRecord:
         """Exécute la prochaine étape non validée (sans jamais sauter d'étape)."""

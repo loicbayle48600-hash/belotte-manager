@@ -46,7 +46,9 @@ def _clamp(x: float, lo: float = 0.0, hi: float = 100.0) -> float:
 def _build(spec: AgentSpec, snap, side: Side, entry: float, sl: float, rr: float, score: float, pros: list[str],
            cons: list[str], invalidation: str, bar_time: str) -> Optional[TradeCandidate]:
     dist = abs(entry - sl)
-    if dist <= 0 or not np.isfinite(dist):
+    # refus déterministe (aucune valeur corrigée à la volée) : SL absent/NaN, distance nulle ou SL du mauvais côté
+    # (BUY → SL strictement sous l'entrée, SELL → strictement au-dessus)
+    if not np.isfinite(dist) or dist <= 0 or side.sign * (entry - sl) <= 0:
         return None
     tp1 = entry + side.sign * dist * 1.5
     tp2 = entry + side.sign * dist * 2.5

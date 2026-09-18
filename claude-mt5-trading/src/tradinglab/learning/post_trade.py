@@ -42,6 +42,10 @@ class PostTradeReview:
         return self.__dict__
 
 
+class ClosedTradeUnknown(RuntimeError):
+    """Aucun deal de sortie retrouvé pour la position : le résultat est UNAVAILABLE (pas 0)."""
+
+
 def close_deals_summary(deals: list[Deal], position_id: int) -> tuple[float, float, float, str, Optional[str]]:
     """(pnl_total, volume_sorti, prix_moyen_sortie, raison, closed_at) à partir des deals OUT."""
     outs = [d for d in deals if d.position_id == position_id and d.entry in ("OUT", "OUT_BY")]
@@ -65,8 +69,17 @@ def close_deals_summary(deals: list[Deal], position_id: int) -> tuple[float, flo
 
 
 def build_trade_record(plan: BotPositionPlan, deals: list[Deal], candidate: dict | None, closed_at: str,
-                       session: str = "", news_context: str = "", macro_context: str = "") -> TradeRecord:
+                       session: str = "", news_context: str = "", macro_context: str = "", strict: bool = False) -> TradeRecord:
+    """Construit le TradeRecord d'une position fermée à partir des deals OUT.
+
+    Sans deal de sortie retrouvé (historique MT5 pas encore synchronisé, fenêtre d'historique dépassée…), le résultat
+    n'est PAS connu : avec ``strict=True`` on lève ``ClosedTradeUnknown`` (l'appelant réessaie plus tard) ; sinon le
+    record est renvoyé avec ``exit_reason="UNKNOWN"`` et ``features["outcome_provenance"]="UNAVAILABLE"`` — les
+    statistiques (``LearningStore.agent_stats``) et la revue post-trade l'excluent comme résultat inconnu.
+    """
     pnl, vol, px, reason, _ = close_deals_summary(deals, plan.ticket)
+    if reason == "UNKNOWN" and strict:
+        raise ClosedTradeUnknown(f"aucun deal de sortie pour la position {plan.ticket} ({plan.symbol})")
     result_r = pnl / plan.initial_risk_money if plan.initial_risk_money else 0.0
     from datetime import datetime
     try:
@@ -76,6 +89,10 @@ def build_trade_record(plan: BotPositionPlan, deals: list[Deal], candidate: dict
     c = candidate or {}
     feats = {"setup_score": c.get("setup_score"), "atr": c.get("atr"), "rr": c.get("rr"), "spread_points": c.get("spread_points")}
     feats.update(c.get("features", {}) if isinstance(c.get("features"), dict) else {})
+    # jamais de None persisté : une valeur inconnue (candidat absent après redémarrage, position adoptée) = clé absente
+    feats = {k: v for k, v in feats.items() if v is not None}
+    if reason == "UNKNOWN":
+        feats["outcome_provenance"] = Provenance.UNAVAILABLE.value
     return TradeRecord(
         ticket=plan.ticket, agent_id=plan.agent_id, symbol=plan.symbol, side=plan.side, entry=plan.entry, sl=plan.initial_sl,
         risk_money=plan.initial_risk_money, risk_percent=plan.risk_percent, result_r=round(result_r, 4), pnl=round(pnl, 2),
@@ -96,6 +113,15 @@ class PostTradeAnalyzer:
         self.cfg = learning_cfg or {}
 
     def analyze(self, rec: TradeRecord, stats: Optional[AgentStats] = None) -> PostTradeReview:
+        if rec.exit_reason == "UNKNOWN":
+            # résultat inconnu : aucune leçon à tirer, aucun LLM, aucun challenger (rien n'est inventé)
+            return PostTradeReview(
+                ticket=rec.ticket, agent_id=rec.agent_id, result_r=rec.result_r, pnl=rec.pnl, exit_reason=rec.exit_reason,
+                scenario=rec.reasoning_summary or "UNKNOWN", regime=rec.regime, news_macro=f"{rec.news_context}/{rec.macro_context}",
+                execution_quality="UNKNOWN", sl_quality="UNKNOWN", exit_quality="UNKNOWN", mfe_r=rec.mfe_r, mae_r=rec.mae_r,
+                rule_compliance=rec.rule_compliance, what_failed=["aucun deal de sortie retrouvé : résultat UNAVAILABLE"],
+                verdict="INDETERMINE", challenger_needed=False, provenance=Provenance.UNAVAILABLE.value,
+            )
         worked, failed = [], []
         mfe, mae = rec.mfe_r, rec.mae_r
         sl_quality = "OK"

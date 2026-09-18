@@ -1,6 +1,7 @@
 """Validation déterministe du Stop Loss. Aucune position sans SL valide."""
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import Optional
 
@@ -23,9 +24,12 @@ def validate_stop_loss(side: Side, entry: float, sl: Optional[float], spec: Symb
         sl = float(sl)
     except (TypeError, ValueError):
         return SLCheck(False, "SL non numérique")
+    ref = reference_price if reference_price else entry
+    # NaN/inf rendent toutes les comparaisons fausses : refus explicite avant tout test de distance
+    if not (math.isfinite(sl) and math.isfinite(entry) and math.isfinite(ref)):
+        return SLCheck(False, "SL/entrée/prix de référence non finis (NaN/inf)")
     if sl <= 0:
         return SLCheck(False, "SL = 0 ou négatif")
-    ref = reference_price if reference_price else entry
     if side is Side.BUY and sl >= ref:
         return SLCheck(False, f"SL {sl} du mauvais côté pour un BUY (ref {ref})")
     if side is Side.SELL and sl <= ref:

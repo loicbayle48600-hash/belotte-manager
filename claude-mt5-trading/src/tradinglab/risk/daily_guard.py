@@ -27,6 +27,10 @@ class DailyGuard:
                                     float(daily_cfg.get(f"level_{i}_setup_score_bonus", 0))))
         self.levels.sort()
         self.max_giveback_pct = float(daily_cfg.get("max_giveback_percent", 25))
+        # pic minimal (% de l'equity de départ) à partir duquel le Giveback Guard s'applique : un pic de
+        # quelques euros de flottant ne doit pas verrouiller la journée ; défaut = premier palier de profit
+        self.giveback_min_peak_pct = float(daily_cfg.get("giveback_min_peak_percent",
+                                                         self.levels[0][0] if self.levels else 0.5))
 
     def evaluate(self, state: SystemState) -> DailyDecision:
         """Met à jour les verrous de l'état et renvoie le risque autorisé pour une nouvelle entrée."""
@@ -57,7 +61,9 @@ class DailyGuard:
 
         # 4. Giveback Guard : ne pas rendre plus de X % du pic de profit du jour
         peak = state.daily.peak_daily_pnl
-        if peak > 0:
+        start_eq = state.daily.starting_equity
+        peak_pct = 100.0 * peak / start_eq if start_eq else 0.0
+        if peak > 0 and peak_pct >= self.giveback_min_peak_pct:
             floor = peak * (1 - self.max_giveback_pct / 100.0)
             if state.daily_pnl() <= floor:
                 state.lock_entries("GIVEBACK_FLOOR")

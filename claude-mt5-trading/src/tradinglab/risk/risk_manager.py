@@ -58,10 +58,11 @@ def compute_volume(equity: float, risk_percent: float, entry: float, sl: float, 
                    max_risk_percent: float) -> SizingResult:
     if equity <= 0:
         return SizingResult(False, reason="equity nulle")
-    if entry <= 0 or sl <= 0 or entry == sl:
-        return SizingResult(False, reason="entry/SL invalides")
-    if spec.tick_value <= 0 or spec.tick_size <= 0:
-        return SizingResult(False, reason="spécifications symbole incomplètes (tick_value/tick_size)")
+    # NaN/inf ne sont détectés par aucune comparaison : refus explicite (jamais d'exception dans le sizing)
+    if not all(math.isfinite(x) for x in (equity, entry, sl)) or entry <= 0 or sl <= 0 or entry == sl:
+        return SizingResult(False, reason="entry/SL invalides (NaN/inf/0)")
+    if spec.tick_value <= 0 or spec.tick_size <= 0 or spec.volume_step <= 0 or spec.volume_min <= 0:
+        return SizingResult(False, reason="spécifications symbole incomplètes (tick_value/tick_size/volume_step/volume_min)")
     risk_money = equity * risk_percent / 100.0
     lpl = loss_per_lot(entry, sl, spec)
     if lpl <= 0:

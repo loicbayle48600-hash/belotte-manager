@@ -177,7 +177,10 @@ class MockBroker(BrokerAdapter):
 
     # ---------- compte ----------
     def floating_pnl(self) -> float:
-        return sum(self._pnl(p) for p in self._positions.values())
+        # mode live : avancer les barres (et déclencher SL/TP) AVANT d'itérer, puis itérer sur une copie,
+        # sinon `_close_at` supprime une entrée pendant l'itération → RuntimeError « dictionary changed size »
+        self._maybe_advance()
+        return sum(self._pnl(p) for p in list(self._positions.values()))
 
     def _pnl(self, p: Position) -> float:
         spec = self.specs[p.symbol]
@@ -189,6 +192,7 @@ class MockBroker(BrokerAdapter):
     def account_info(self) -> Optional[AccountInfo]:
         if not self._connected:
             return None
+        self._maybe_advance()
         eq = self.balance + self.floating_pnl()
         return AccountInfo(login=self.login, server=self.server, trade_mode=self.trade_mode, balance=self.balance,
                            equity=eq, margin=0.0, margin_free=eq, currency=self.currency, leverage=100,
@@ -247,8 +251,11 @@ class MockBroker(BrokerAdapter):
 
     # ---------- positions ----------
     def positions(self, magic: Optional[int] = None) -> list[Position]:
+        self._maybe_advance()
         out = []
-        for p in self._positions.values():
+        for p in list(self._positions.values()):
+            if p.ticket not in self._positions:  # fermée par un stop déclenché pendant la mise à jour
+                continue
             if magic is not None and p.magic != magic:
                 continue
             p.price_current = self.tick(p.symbol, force=True).bid
@@ -335,6 +342,9 @@ class MockBroker(BrokerAdapter):
             return OrderResult(ok=False, retcode=-2, comment="position introuvable")
         if self.reject_modify:
             return OrderResult(ok=False, retcode=10016, comment="modify rejeté (simulé)")
+        if not sl or sl <= 0:
+            # défense en profondeur : l'adaptateur lui-même refuse de retirer un SL (never_remove_stop)
+            return OrderResult(ok=False, retcode=-4, comment="refus : SL absent (never_remove_stop)")
         spec = self.specs[p.symbol]
         t = self.tick(p.symbol, force=True)
         ref = t.bid if p.side is Side.BUY else t.ask
@@ -406,5 +416,11 @@ def make_broker(kind: str, settings=None, **kw) -> BrokerAdapter:
             raise RuntimeError("MetaTrader5 indisponible sur cette plateforme : utiliser TRADINGLAB_BROKER=mock")
         rules = settings.markets.get("asset_class_rules", {}) if settings else {}
         return MT5Adapter(asset_rules=rules, deviation=int(settings.execution.get("slippage_deviation_points", 20)) if settings else 20)
+    if settings is not None:
+        # décalage serveur explicite (heures) pour l'alignement H4/D1/W1 de `clock.bar_open_time`
+        off_h = (settings.system or {}).get("server_utc_offset_hours")
+        if off_h is not None:
+            from ..core.clock import set_server_utc_offset
+            set_server_utc_offset(float(off_h) * 3600)
     kw.setdefault("live", True)
     return MockBroker(**kw)

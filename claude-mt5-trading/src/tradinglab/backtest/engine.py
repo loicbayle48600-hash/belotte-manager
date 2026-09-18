@@ -236,6 +236,11 @@ def run_backtest(df: pd.DataFrame, signal_fn: SignalFn, costs: BTCosts, params: 
     df = _check_df(df)
     n = len(df)
     params = dict(params or {})
+    # pré-calcul optionnel (indicateurs causaux) : signal_fn ne verra toujours que df.iloc[:i+1] à chaque barre ;
+    # assert_no_lookahead vérifie que le résultat ne dépend pas des barres futures
+    prep = getattr(signal_fn, "prepare", None)
+    if callable(prep):
+        prep(df)
     opens = df["open"].to_numpy(dtype=float)
     highs = df["high"].to_numpy(dtype=float)
     lows = df["low"].to_numpy(dtype=float)

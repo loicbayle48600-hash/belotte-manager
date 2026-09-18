@@ -31,10 +31,13 @@ class ReviewResult:
     rationale: str = ""
     cost_usd: float = 0.0
     provenance: Provenance = Provenance.CALCULATED
+    hard: bool = False              # verdict de sécurité déterministe (news…) : jamais soumis à l'arbitre LLM
+    llm_consulted: bool = False     # True si des appels LLM ont été tentés pour cette revue
 
     def to_dict(self) -> dict:
         return {"verdict": self.verdict.value, "arbiter": self.arbiter, "bull": self.bull, "bear": self.bear,
-                "devil": self.devil, "rationale": self.rationale, "cost_usd": self.cost_usd, "provenance": self.provenance.value}
+                "devil": self.devil, "rationale": self.rationale, "cost_usd": self.cost_usd, "provenance": self.provenance.value,
+                "hard": self.hard, "llm_consulted": self.llm_consulted}
 
 
 class AdversarialReview:
@@ -49,9 +52,10 @@ class AdversarialReview:
         need = self.required_score + score_bonus
         reasons = []
         if c.data_quality != "OK":
-            return ReviewResult(Verdict.REJECT, "deterministic", rationale=f"data_quality={c.data_quality}")
+            return ReviewResult(Verdict.REJECT, "deterministic", rationale=f"data_quality={c.data_quality}", hard=True)
         if c.news_state.startswith("BLOCKED") or c.news_state == "SHOCK":
-            return ReviewResult(Verdict.WAIT, "deterministic", rationale=f"news_state={c.news_state}")
+            # WAIT de sécurité (règle news déterministe) : aucun LLM ne peut le transformer en APPROVE
+            return ReviewResult(Verdict.WAIT, "deterministic", rationale=f"news_state={c.news_state}", hard=True)
         if c.rr < self.min_rr:
             return ReviewResult(Verdict.REJECT, "deterministic", rationale=f"rr {c.rr:.2f} < {self.min_rr}")
         stats = c.historical_stats or {}
@@ -79,17 +83,21 @@ class AdversarialReview:
         resp = self.llm.complete(role, SYSTEM_COMMON, user, max_tokens=500, financial_importance=importance, cache_key_extra=c.id)
         if resp is None:
             return {}, 0.0
-        data = resp.json() or {"raw": resp.text[:500]}
+        data = resp.json()
+        if not isinstance(data, dict):
+            # JSON valide mais non-objet (liste, chaîne, nombre) ou absent : sortie non exploitable, jamais une exception
+            data = {"raw": resp.text[:500], "parse_error": "réponse non-objet"}
         data["_model"] = resp.model
         data["_provenance"] = Provenance.MODEL_INTERPRETATION.value
         return data, resp.cost_usd
 
     def review(self, c: TradeCandidate, score_bonus: float = 0.0) -> ReviewResult:
         det = self.deterministic(c, score_bonus)
-        if self.llm is None or det.verdict is Verdict.REJECT:
+        if self.llm is None or det.verdict is Verdict.REJECT or det.hard:
             c.verdict = det.verdict
             c.review = det.to_dict()
             return det
+        det.llm_consulted = True
         bull, c1 = self._ask("bull_thesis", 'Construis la meilleure thèse HAUSSIÈRE/pour ce trade. JSON: {"arguments": [...], "conviction_0_100": n, "unknowns": [...]}', c)
         bear, c2 = self._ask("bear_thesis", 'Construis la meilleure thèse CONTRE ce trade. JSON: {"arguments": [...], "conviction_0_100": n, "unknowns": [...]}', c)
         devil, c3 = self._ask("devil_advocate", 'Cherche les failles : faux breakout, surapprentissage, corrélation, qualité des données, exécution. JSON: {"flaws": [...], "severity_0_100": n}', c)
@@ -108,6 +116,6 @@ class AdversarialReview:
         if det.verdict is Verdict.WAIT and v is Verdict.APPROVE and c.setup_score < self.required_score + score_bonus - 10:
             v = Verdict.WAIT
         res = ReviewResult(v, f"llm:{arb.get('_model', '?')}", bull, bear, devil, str(arb.get("rationale", ""))[:800], total,
-                           Provenance.MODEL_INTERPRETATION)
+                           Provenance.MODEL_INTERPRETATION, llm_consulted=True)
         c.verdict, c.review = v, res.to_dict()
         return res

@@ -15,12 +15,27 @@ import json
 import os
 import tempfile
 import threading
+import time
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, date
 from pathlib import Path
 from typing import Any, Optional
 
 from .types import SystemMode, utcnow
+
+
+def _replace_with_retry(src: str | Path, dst: str | Path, attempts: int = 6) -> None:
+    """`os.replace` avec quelques tentatives : sous Windows, MoveFileEx(REPLACE_EXISTING) échoue par
+    `PermissionError` (ERROR_SHARING_VIOLATION) si la cible est ouverte par un autre processus
+    (watchdog/dashboard/CLI relisent le fichier en permanence)."""
+    for i in range(attempts):
+        try:
+            os.replace(src, dst)
+            return
+        except PermissionError:
+            if i == attempts - 1:
+                raise
+            time.sleep(0.05 * (i + 1))
 
 
 @dataclass
@@ -100,6 +115,7 @@ class SystemState:
     regimes: dict[str, str] = field(default_factory=dict)
     started_at: str = ""
     restarts: int = 0
+    load_warnings: list[str] = field(default_factory=list)   # sections ignorées au chargement (diagnostic)
     version: int = 1
 
     # ---------- helpers ----------
@@ -173,14 +189,23 @@ class SystemState:
     def roll_day_if_needed(self, equity: float, balance: float, today: Optional[date] = None) -> bool:
         today = today or utcnow().date()
         d = today.isoformat()
-        if self.daily.day != d:
-            self.daily = DailyStats(day=d, starting_equity=equity, starting_balance=balance, peak_equity=equity)
-            self.consecutive_losses = 0
-            self.unlock_entries("DAILY_LOSS_LIMIT")
-            self.unlock_entries("GIVEBACK_FLOOR")
-            self.unlock_entries("MAX_CONSECUTIVE_LOSSES")
-            return True
-        return False
+        if self.daily.day == d:
+            # journée déjà ouverte avec une equity nulle (compte pas encore synchronisé) : on fixe la
+            # référence dès la première equity valide, sinon perte journalière/drawdown resteraient à 0 %.
+            if self.daily.starting_equity <= 0 and equity > 0:
+                self.daily.starting_equity = equity
+                self.daily.starting_balance = balance
+                self.daily.peak_equity = max(self.daily.peak_equity, equity)
+            return False
+        if equity <= 0:
+            # equity inconnue/nulle : ne pas figer starting_equity=0 pour toute la journée, réessayer au cycle suivant
+            return False
+        self.daily = DailyStats(day=d, starting_equity=equity, starting_balance=balance, peak_equity=equity)
+        self.consecutive_losses = 0
+        self.unlock_entries("DAILY_LOSS_LIMIT")
+        self.unlock_entries("GIVEBACK_FLOOR")
+        self.unlock_entries("MAX_CONSECUTIVE_LOSSES")
+        return True
 
     def update_equity(self, equity: float, balance: float) -> None:
         self.equity = equity
@@ -216,17 +241,35 @@ class StateStore:
 
     @staticmethod
     def _from_dict(d: dict) -> SystemState:
+        """Reconstruit l'état ; une sous-section invalide (daily/model_budget/une bot_position) est ignorée
+        et consignée dans `load_warnings` plutôt que de jeter tout l'état (clés d'idempotence comprises)."""
         st = SystemState()
+        if not isinstance(d, dict):
+            raise TypeError("system_state.json : objet JSON attendu")
         for k, v in d.items():
             if k == "daily":
-                st.daily = DailyStats(**{kk: vv for kk, vv in v.items() if kk in DailyStats.__dataclass_fields__})
+                if isinstance(v, dict):
+                    st.daily = DailyStats(**{kk: vv for kk, vv in v.items() if kk in DailyStats.__dataclass_fields__})
+                else:
+                    st.load_warnings.append("daily invalide : valeur par défaut")
             elif k == "model_budget":
-                st.model_budget = ModelBudget(**{kk: vv for kk, vv in v.items() if kk in ModelBudget.__dataclass_fields__})
+                if isinstance(v, dict):
+                    st.model_budget = ModelBudget(**{kk: vv for kk, vv in v.items() if kk in ModelBudget.__dataclass_fields__})
+                else:
+                    st.load_warnings.append("model_budget invalide : valeur par défaut")
             elif k == "bot_positions":
-                st.bot_positions = {
-                    t: BotPositionPlan(**{kk: vv for kk, vv in p.items() if kk in BotPositionPlan.__dataclass_fields__})
-                    for t, p in v.items()
-                }
+                st.bot_positions = {}
+                if not isinstance(v, dict):
+                    st.load_warnings.append("bot_positions invalide : ignoré (ré-adoption par PositionManager.sync)")
+                    continue
+                for t, p in v.items():
+                    try:
+                        st.bot_positions[str(t)] = BotPositionPlan(
+                            **{kk: vv for kk, vv in p.items() if kk in BotPositionPlan.__dataclass_fields__})
+                    except (TypeError, ValueError, AttributeError, KeyError) as e:
+                        st.load_warnings.append(f"bot_position {t} invalide ({type(e).__name__}) : ignorée")
+            elif k == "load_warnings":
+                continue  # diagnostic du chargement courant uniquement, jamais rechargé depuis le fichier
             elif k in SystemState.__dataclass_fields__:
                 setattr(st, k, v)
         return st
@@ -236,8 +279,13 @@ class StateStore:
             if not self.path.exists():
                 return SystemState()
             try:
-                return self._from_dict(json.loads(self.path.read_text(encoding="utf-8")))
-            except (json.JSONDecodeError, TypeError, ValueError):
+                text = self.path.read_text(encoding="utf-8")
+            except OSError:
+                # fichier momentanément verrouillé (Windows) : conserver le dernier état connu
+                return getattr(self, "state", None) or SystemState()
+            try:
+                return self._from_dict(json.loads(text))
+            except (json.JSONDecodeError, TypeError, ValueError, AttributeError, KeyError):
                 backup = self.path.with_suffix(".corrupt.json")
                 try:
                     os.replace(self.path, backup)
@@ -259,7 +307,7 @@ class StateStore:
             try:
                 with os.fdopen(fd, "w", encoding="utf-8") as f:
                     f.write(data)
-                os.replace(tmp, self.path)
+                _replace_with_retry(tmp, self.path)
             finally:
                 if os.path.exists(tmp):
                     os.unlink(tmp)
@@ -275,19 +323,57 @@ class StateStore:
             f.write(json.dumps(rec, ensure_ascii=False) + "\n")
         return rec
 
-    def pop_commands(self) -> list[dict]:
-        p = self.commands_path
-        if not p.exists():
-            return []
-        with self._lock:
+    @property
+    def commands_processing_path(self) -> Path:
+        return self.dir / "commands.processing.jsonl"
+
+    @staticmethod
+    def _read_jsonl(p: Path) -> list[dict]:
+        out: list[dict] = []
+        try:
             lines = p.read_text(encoding="utf-8").splitlines()
-            p.write_text("", encoding="utf-8")
-        out = []
+        except OSError:
+            return out
         for line in lines:
             try:
-                out.append(json.loads(line))
+                rec = json.loads(line)
             except json.JSONDecodeError:
                 continue
+            if isinstance(rec, dict):
+                out.append(rec)
+        return out
+
+    def pop_commands(self) -> list[dict]:
+        """Dépile les commandes CLI/MCP sans course inter-processus.
+
+        Lecture+troncature laissait une fenêtre où une commande (PANIC compris) poussée par un autre
+        processus était effacée sans être exécutée. On renomme atomiquement `commands.jsonl` en
+        `commands.processing.jsonl` : les appends postérieurs recréent un nouveau `commands.jsonl`.
+        Un fichier `processing` laissé par un crash (entre rename et exécution) est relu en premier.
+        """
+        p = self.commands_path
+        work = self.commands_processing_path
+        out: list[dict] = []
+        with self._lock:
+            if work.exists():
+                out.extend(self._read_jsonl(work))
+                try:
+                    os.unlink(work)
+                except OSError:
+                    pass
+            if p.exists():
+                try:
+                    _replace_with_retry(p, work, attempts=3)
+                except FileNotFoundError:
+                    return out
+                except OSError:
+                    # fichier encore ouvert par la CLI (Windows) : rien n'est perdu, on réessaie au cycle suivant
+                    return out
+                out.extend(self._read_jsonl(work))
+                try:
+                    os.unlink(work)
+                except OSError:
+                    pass
         return out
 
     def heartbeat_age(self, which: str = "orchestrator") -> float:

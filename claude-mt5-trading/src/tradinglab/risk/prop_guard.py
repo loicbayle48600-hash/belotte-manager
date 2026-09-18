@@ -33,7 +33,9 @@ class PropProfile:
     def from_config(cls, cfg: dict) -> "PropProfile":
         p = cls(**{k: cfg[k] for k in cls.__dataclass_fields__ if k in cfg and k not in ("unknown_rules", "raw")})
         p.raw = dict(cfg)
-        p.unknown_rules = [r for r in CRITICAL_RULES if str(cfg.get(r, "UNKNOWN")).upper() == "UNKNOWN"]
+        # une règle absente, `null`/`~`, vide ou "UNKNOWN" n'est PAS renseignée : elle rend le profil ambigu
+        p.unknown_rules = [r for r in CRITICAL_RULES
+                           if cfg.get(r) is None or str(cfg.get(r)).strip().upper() in ("UNKNOWN", "", "NONE", "NULL")]
         return p
 
     @property

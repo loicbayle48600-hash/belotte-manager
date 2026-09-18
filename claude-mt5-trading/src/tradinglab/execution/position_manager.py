@@ -12,7 +12,7 @@ from ..core.journal import Journal
 from ..core.state import BotPositionPlan, StateStore
 from ..core.types import Position, Side, SymbolSpec, utcnow
 from ..mt5.adapter import BrokerAdapter
-from ..risk.risk_manager import round_volume_down
+from ..risk.risk_manager import loss_per_lot, round_volume_down
 from ..risk.stop_loss import is_tighter_or_equal, normalize_price
 
 
@@ -77,9 +77,20 @@ class PositionManager:
 
     # ---------- synchronisation ----------
     def sync(self) -> list[BotPositionPlan]:
-        """Retire de l'état les positions disparues (fermées) et renvoie celles restantes."""
+        """Retire de l'état les positions disparues (fermées) et renvoie celles-ci.
+
+        Une liste vide obtenue pendant une déconnexion ou une erreur API n'est PAS une fermeture : dans ce cas
+        la synchronisation est ignorée (aucune position retirée de l'état, aucun trade fantôme).
+        """
         state = self.store.state
-        live = {p.ticket: p for p in self.broker.positions(magic=self.magic)}
+        if not self.broker.is_connected():
+            self.journal.warn("broker déconnecté : synchronisation des positions ignorée")
+            return []
+        try:
+            live = {p.ticket: p for p in self.broker.positions(magic=self.magic)}
+        except Exception as e:  # noqa: BLE001 - positions indisponibles : ne jamais conclure à une fermeture
+            self.journal.warn("positions indisponibles, sync ignorée", error=str(e))
+            return []
         closed = []
         for t, plan in list(state.bot_positions.items()):
             if int(t) not in live:
@@ -89,15 +100,32 @@ class PositionManager:
         for ticket, p in live.items():
             if str(ticket) not in state.bot_positions:
                 sl = p.sl if p.has_sl else 0.0
+                # risque réel estimé depuis le SL connu : la position adoptée compte dans max_total_open_risk
+                # et le Correlation Guard (jamais un risque « 0 » invisible)
+                risk = self._estimate_risk(p, sl)
+                risk_pct = 100.0 * risk / state.equity if state.equity else 0.0
                 state.bot_positions[str(ticket)] = BotPositionPlan(
                     ticket=ticket, symbol=p.symbol, side=p.side.value, agent_id="ADOPTED", candidate_id="",
                     entry=p.price_open, initial_sl=sl or p.price_open, initial_volume=p.volume,
-                    initial_risk_money=0.0, risk_percent=0.0, opened_at=p.time_open.isoformat(), last_sl=sl,
+                    initial_risk_money=risk, risk_percent=risk_pct, opened_at=p.time_open.isoformat(), last_sl=sl,
                     notes=["adoptée après redémarrage"])
-                self.journal.warn("position bot adoptée après redémarrage", ticket=ticket, symbol=p.symbol, sl=p.sl)
+                self.journal.warn("position bot adoptée après redémarrage", ticket=ticket, symbol=p.symbol, sl=p.sl,
+                                  risk_estimated=risk)
         if closed:
             self.store.save()
         return closed
+
+    def _estimate_risk(self, p: Position, sl: float) -> float:
+        """Perte au SL (devise du compte) d'une position adoptée ; 0.0 si SL ou spec indisponibles."""
+        if not sl or sl <= 0:
+            return 0.0
+        try:
+            spec = self.broker.symbol_info(p.symbol)
+        except Exception:  # noqa: BLE001
+            spec = None
+        if spec is None or spec.tick_size <= 0 or spec.tick_value <= 0:
+            return 0.0
+        return loss_per_lot(p.price_open, sl, spec) * p.volume
 
     # ---------- gestion ----------
     def manage(self, plan: BotPositionPlan, pos: Position, spec: SymbolSpec, ctx: MarketContext) -> list[str]:
@@ -149,14 +177,16 @@ class PositionManager:
             else:
                 plan.tp2_done = True
 
-        # 3. break-even
+        # 3. break-even (le drapeau break_even_done n'est posé qu'une fois le SL effectivement au-delà du BE :
+        #    un BE refusé par le broker ou trop proche du prix est retenté au cycle suivant)
         new_sl: Optional[float] = None
+        be_pending = False
         if cfg.break_even_enabled and not plan.break_even_done and r >= cfg.break_even_r:
             if not cfg.break_even_requires_structure or ctx.structure_ok:
                 dist = abs(plan.entry - plan.initial_sl)
                 be = plan.entry + side.sign * dist * cfg.break_even_offset_r
                 new_sl = be
-                plan.break_even_done = True
+                be_pending = True
                 actions.append(f"break-even {be}")
 
         # 4. trailing (ATR + structure)
@@ -177,6 +207,8 @@ class PositionManager:
             current = pos.sl if pos.has_sl else plan.last_sl
             if cfg.never_widen_stop and not is_tighter_or_equal(side, new_sl, current):
                 actions.append(f"SL {new_sl} refusé (élargirait {current})")
+                if be_pending:
+                    plan.break_even_done = True   # le SL courant est déjà au-delà du break-even
             else:
                 min_dist = spec.min_stop_distance
                 too_close = abs(price - new_sl) < min_dist or (side is Side.BUY and new_sl >= price) or (side is Side.SELL and new_sl <= price)
@@ -186,19 +218,29 @@ class PositionManager:
                     res = self.broker.modify_position(pos.ticket, new_sl, pos.tp)
                     if res.ok:
                         plan.last_sl = new_sl
+                        if be_pending:
+                            plan.break_even_done = True
                         actions.append(f"SL → {new_sl}")
                         self.journal.event("sl_modified", ticket=pos.ticket, old=current, new=new_sl, r=r)
                     else:
                         actions.append(f"modify refusé: {res.comment}")
+                else:
+                    # SL courant déjà au niveau demandé (écart < tick) : le break-even est acquis
+                    if be_pending:
+                        plan.break_even_done = True
         self.store.save()
         return actions
 
     # ---------- commandes toujours autorisées ----------
     def close(self, ticket: int, reason: str = "manual") -> bool:
+        """Ferme une position du bot. Le plan reste dans l'état : c'est sync() qui constate la disparition
+        au cycle suivant, comme pour une sortie par SL/TP, afin que post-trade, stats journalières et
+        apprentissage soient toujours produits (tout est journalisé)."""
         res = self.broker.close_position(ticket, comment=f"TLAB {reason}"[:31])
         self.journal.event("close_command", ticket=ticket, reason=reason, result=res.to_dict())
-        if res.ok:
-            self.store.state.bot_positions.pop(str(ticket), None)
+        plan = self.store.state.bot_positions.get(str(ticket))
+        if plan is not None:
+            plan.notes.append(f"close_command:{reason}" + ("" if res.ok else ":refusée"))
             self.store.save()
         return res.ok
 
@@ -216,14 +258,22 @@ class PositionManager:
                 done.append(o.ticket)
         return done
 
-    def move_to_break_even(self, ticket: int, spec: SymbolSpec) -> bool:
+    def move_to_break_even(self, ticket: int, spec: Optional[SymbolSpec]) -> bool:
         plan = self.store.state.bot_positions.get(str(ticket))
         pos = self.broker.position(ticket)
-        if not plan or not pos:
+        if not plan or not pos or spec is None:
+            if plan and pos and spec is None:
+                self.journal.warn("break-even impossible : spécifications symbole indisponibles", ticket=ticket)
             return False
         side = Side(plan.side)
         be = normalize_price(plan.entry + side.sign * abs(plan.entry - plan.initial_sl) * self.cfg.break_even_offset_r, spec)
         if not is_tighter_or_equal(side, be, pos.sl):
+            return False
+        # jamais au-delà du prix courant ni sous stops_level (même règle que manage())
+        tick = self.broker.tick(pos.symbol)
+        price = pos.price_current or ((tick.bid if side is Side.BUY else tick.ask) if tick else pos.price_open)
+        if abs(price - be) < spec.min_stop_distance or (side is Side.BUY and be >= price) or (side is Side.SELL and be <= price):
+            self.journal.warn("break-even trop proche du prix", ticket=ticket, sl=be, price=price)
             return False
         res = self.broker.modify_position(ticket, be, pos.tp)
         if res.ok:

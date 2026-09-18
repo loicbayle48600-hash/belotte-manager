@@ -16,9 +16,12 @@ from ..core.state import SystemState
 from ..core.types import Provenance, utcnow
 from .router import ModelRouter, RouteDecision
 
-# prix indicatifs USD / million de tokens (entrée, sortie) — utilisés pour la mesure de coût ; à ajuster via models.yaml
-DEFAULT_PRICES = {"claude-fable-5-1": (15.0, 75.0), "claude-opus-5": (5.0, 25.0), "claude-sonnet-5": (3.0, 15.0),
-                  "claude-haiku-4-5-20251001": (1.0, 5.0)}
+# prix indicatifs USD / million de tokens (entrée, sortie) — tarifs API Anthropic (référence vérifiée) ;
+# surcharge possible via `prices` (models.yaml) : LLMClient(prices={...}) fusionne avec ces valeurs
+DEFAULT_PRICES = {"claude-fable-5-1": (10.0, 50.0), "claude-opus-5": (5.0, 25.0), "claude-sonnet-5": (2.0, 10.0),
+                  "claude-haiku-4-5-20251001": (1.0, 5.0), "claude-haiku-4-5": (1.0, 5.0)}
+DEFAULT_REQUEST_TIMEOUT_SEC = 30.0   # un appel LLM bloqué ne doit jamais geler la boucle live (heartbeat 45 s)
+MAX_CACHE_ENTRIES = 500
 
 
 @dataclass
@@ -51,11 +54,14 @@ class LLMResponse:
 
 class LLMClient:
     def __init__(self, router: ModelRouter, state: SystemState, cache_ttl_sec: int = 240, prices: dict | None = None,
-                 sdk_client: Any = None, journal=None):
+                 sdk_client: Any = None, journal=None, request_timeout_sec: float = DEFAULT_REQUEST_TIMEOUT_SEC,
+                 max_retries: int = 1):
         self.router = router
         self.state = state
         self.cache_ttl = cache_ttl_sec
-        self.prices = prices or DEFAULT_PRICES
+        self.prices = {**DEFAULT_PRICES, **{k: tuple(v) for k, v in (prices or {}).items()}}
+        self.request_timeout = float(request_timeout_sec)
+        self.max_retries = int(max_retries)
         self._cache: dict[str, tuple[float, LLMResponse]] = {}
         self._sdk = sdk_client
         self.journal = journal
@@ -64,8 +70,16 @@ class LLMClient:
     def _client(self):
         if self._sdk is None:
             import anthropic  # import paresseux
-            self._sdk = anthropic.Anthropic()
+            # timeout borné (secondes) et un seul retry : mur d'horloge max ≈ timeout × 2 au lieu de 600 s × 3
+            self._sdk = anthropic.Anthropic(timeout=self.request_timeout, max_retries=self.max_retries)
         return self._sdk
+
+    def _prune_cache(self) -> None:
+        """Purge les entrées périmées (TTL) et borne la taille : le processus tourne des jours, le cache ne doit pas croître sans limite."""
+        now = time.time()
+        self._cache = {k: v for k, v in self._cache.items() if now - v[0] < self.cache_ttl}
+        while len(self._cache) >= MAX_CACHE_ENTRIES:
+            self._cache.pop(next(iter(self._cache)))
 
     def _cost(self, model: str, inp: int, out: int) -> float:
         pi, po = self.prices.get(model, (3.0, 15.0))
@@ -89,13 +103,16 @@ class LLMClient:
             text = "".join(getattr(b, "text", "") for b in msg.content)
             inp, out = int(msg.usage.input_tokens), int(msg.usage.output_tokens)
         except Exception as e:  # noqa: BLE001
+            # timeout / erreur SDK : repli déterministe journalisé comme llm_skipped (l'appelant dégrade proprement)
             if self.journal:
                 self.journal.warn("appel LLM échoué", role=role, model=decision.model, error=type(e).__name__)
+                self.journal.event("llm_skipped", role=role, reason=f"erreur appel: {type(e).__name__}")
             return None
         cost = self._cost(decision.model, inp, out)
         self.router.record_call(self.state, decision.tier, cost)
         self.calls += 1
         resp = LLMResponse(text, decision.model, decision.tier, inp, out, cost)
+        self._prune_cache()
         self._cache[key] = (time.time(), resp)
         if self.journal:
             self.journal.event("llm_call", role=role, model=decision.model, tier=decision.tier, input_tokens=inp,

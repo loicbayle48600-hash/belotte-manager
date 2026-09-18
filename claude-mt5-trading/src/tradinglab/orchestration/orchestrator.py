@@ -17,7 +17,7 @@ import sys
 import threading
 import time
 import traceback
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -54,6 +54,7 @@ from .market_router import MarketRouter
 from .scheduler import Scheduler
 
 MAX_ENTRIES_PER_CYCLE = 2
+MAX_LLM_REVIEWS_PER_CYCLE = 3   # revue LLM limitée aux N meilleurs candidats non rejetés (le reste : déterministe)
 
 
 class Orchestrator:
@@ -79,7 +80,7 @@ class Orchestrator:
         self.feed = MarketDataFeed(broker, tfs, bars=max(300, int(settings.system.get("min_bars_required", 250)) + 50),
                                    max_tick_age_sec=int(settings.system.get("data_max_age_sec", 30)),
                                    min_bars=int(settings.system.get("min_bars_required", 250)))
-        self.registry = AgentRegistry(status_file=settings.data_dir / "agent_status.json")
+        self.registry = AgentRegistry(status_file=settings.data_dir / "agent_status.json", journal=self.journal)
         self.router_ = MarketRouter(self.registry, settings.markets)
         self.model_router = ModelRouter(settings.models)
         self.llm: Optional[LLMClient] = None
@@ -105,6 +106,7 @@ class Orchestrator:
         self._research_lock = threading.Lock()
         self._research_thread: Optional[threading.Thread] = None
         self._bar_candidates: dict[str, TradeCandidate] = {}
+        self._initialized = False   # initialisation post-connexion (compte, univers, adoption, modèles, recherche)
 
     # ------------------------------------------------------------------ démarrage
     def startup(self) -> bool:
@@ -124,11 +126,19 @@ class Orchestrator:
             return False
         acc = self.broker.account_info()
         if acc is None:
-            self.journal.error("account_info indisponible")
+            self.journal.error("account_info indisponible : SAFE_MODE, initialisation reportée au prochain cycle")
             return False
+        self._post_connect_init(acc)
+        return True
+
+    def _check_account(self, acc) -> list[str]:
+        """Contrôle déterministe du compte connecté par rapport à `account_expected` (login, serveur, DEMO).
+
+        Met à jour l'état, journalise l'événement `account` et pose/retire le verrou ACCOUNT_MISMATCH.
+        Renvoie la liste des écarts (vide si le compte est conforme).
+        """
+        st = self.state
         st.mt5_connected, st.account_trade_mode, st.account_login, st.account_server, st.currency = True, acc.trade_mode.value, acc.login, acc.server, acc.currency
-        st.roll_day_if_needed(acc.equity, acc.balance, self.now_fn().date())
-        st.update_equity(acc.equity, acc.balance)
         exp = self.s.get("account_expected", {}) or {}
         mismatch = []
         if exp.get("login") and int(exp["login"]) != acc.login:
@@ -144,6 +154,16 @@ class Orchestrator:
         else:
             st.unlock_entries("ACCOUNT_MISMATCH")
             self.journal.info("DEMO ACCOUNT CONFIRMED", login=acc.login, server=acc.server)
+        return mismatch
+
+    def _post_connect_init(self, acc) -> None:
+        """Initialisation qui exige un broker connecté : contrôle du compte, univers, adoption des positions,
+        modèles et pipeline de recherche. Appelée par `startup()` ou, si la connexion a échoué au démarrage,
+        par le premier `cycle()` connecté (sinon l'orchestrateur tournerait sans univers ni adoption)."""
+        st = self.state
+        st.roll_day_if_needed(acc.equity, acc.balance, self.now_fn().date())
+        st.update_equity(acc.equity, acc.balance)
+        self._check_account(acc)
         self._build_universe()
         # reprise : adopter les positions existantes du bot, ne jamais ré-ouvrir
         self.pm.sync()
@@ -152,8 +172,8 @@ class Orchestrator:
         self._setup_research()
         self.scheduler.due("research", self.now_fn())   # pas de recherche au premier cycle (chemin critique)
         self.scheduler.due("models", self.now_fn())
+        self._initialized = True
         self.store.save()
-        return True
 
     def _build_universe(self) -> None:
         avail = self.broker.symbols()
@@ -199,6 +219,7 @@ class Orchestrator:
         if not self.broker.is_connected() and not self.broker.connect():
             st.mt5_connected = False
             st.set_mode(SystemMode.SAFE_MODE, "broker déconnecté")
+            self._healthy_cycles = 0
             self.store.save()
             summary["error"] = "broker déconnecté"
             return summary
@@ -208,6 +229,20 @@ class Orchestrator:
             self.store.save()
             summary["error"] = "account_info None"
             return summary
+        if not self._initialized:
+            # connexion refusée au démarrage : on rejoue ici l'initialisation post-connexion
+            self._post_connect_init(acc)
+        elif acc.login != st.account_login or acc.server != st.account_server or acc.trade_mode.value != st.account_trade_mode:
+            # le terminal MT5 a changé de compte en cours d'exécution : verrou + SAFE_MODE jusqu'à décision humaine (RESUME)
+            previous = {"login": st.account_login, "server": st.account_server, "trade_mode": st.account_trade_mode}
+            st.mt5_connected, st.account_trade_mode, st.account_login, st.account_server, st.currency = True, acc.trade_mode.value, acc.login, acc.server, acc.currency
+            st.lock_entries("ACCOUNT_MISMATCH")
+            st.set_mode(SystemMode.SAFE_MODE, "compte changé en cours d'exécution")
+            self.requested_mode = "SAFE"
+            self._healthy_cycles = 0
+            self.journal.event("account", level="ERROR", account_changed=True, previous=previous, mismatch=["compte changé en cours d'exécution"],
+                               **acc.public_dict())
+            self.journal.error("compte changé en cours d'exécution : entrées verrouillées, SAFE_MODE", previous=previous, login=acc.login, server=acc.server)
         st.mt5_connected = True
         st.account_trade_mode = acc.trade_mode.value
         if st.roll_day_if_needed(acc.equity, acc.balance, now.date()):
@@ -232,8 +267,8 @@ class Orchestrator:
             shock = self.news.news_shock(ccys, now) if ccys else False
             try:
                 self.snapshots[sym] = self.feed.snapshot(sym, now=now, news_shock=shock)
-            except ValueError as e:
-                self.journal.warn("snapshot impossible", symbol=sym, error=str(e))
+            except Exception as e:  # noqa: BLE001 - dégradation par symbole : absent des snapshots ce cycle, jamais inventé
+                self.journal.warn("snapshot impossible", symbol=sym, error=f"{type(e).__name__}: {e}")
         st.regimes = {s: snap.regime.regime.value for s, snap in self.snapshots.items()}
         summary["macro"] = self._macro_context()
         # 4. gestion des positions ouvertes (cadence courte)
@@ -310,6 +345,11 @@ class Orchestrator:
         # enrichissement + revue
         macro = out.get("macro") or self._macro_context()
         reviewed: list[TradeCandidate] = []
+        entries_ok, entries_reason = st.entries_allowed()
+        llm_reviews = 0
+        # heartbeat persisté avant la revue (appels LLM potentiellement longs) pour ne pas être déclaré mort par le watchdog
+        self.store.save()
+        cands = sorted(cands, key=lambda x: x.setup_score, reverse=True)
         for c in cands:
             spec = self.registry.get(c.agent_id)
             nc = self.news.check(self._symbol_currencies(c.symbol), now, news_sensitive_strategy=bool(spec and spec.news_sensitive))
@@ -320,7 +360,18 @@ class Orchestrator:
             c.sample_size = stats.sample_size
             snap = self.snapshots[c.symbol]
             c.review["similar_situations"] = self.learning.similar_situations(c.symbol, c.regime.value, c.session, snap.regime.features.get("vol_pct"))
-            self.review.review(c, dd.setup_score_bonus)
+            if self.review.llm is not None and entries_ok and llm_reviews < MAX_LLM_REVIEWS_PER_CYCLE:
+                res = self.review.review(c, dd.setup_score_bonus)
+                if res.llm_consulted:
+                    llm_reviews += 1
+            else:
+                # verdict déterministe seul : aucun appel LLM quand le gate refusera de toute façon (mode/verrous)
+                # ou au-delà des N meilleurs candidats
+                det = self.review.deterministic(c, dd.setup_score_bonus)
+                c.verdict, c.review = det.verdict, det.to_dict()
+                if self.review.llm is not None:
+                    c.review["llm_skipped"] = entries_reason if not entries_ok else f"au-delà des {MAX_LLM_REVIEWS_PER_CYCLE} meilleurs candidats"
+            self.store.save()
             reviewed.append(c)
         reviewed.sort(key=lambda x: x.setup_score, reverse=True)
         st.top_setups = [{"symbol": c.symbol, "side": c.side.value, "setup_score": c.setup_score, "agent_id": c.agent_id,
@@ -365,8 +416,17 @@ class Orchestrator:
         spec = self.broker.symbol_info(c.symbol)
         tick = self.broker.tick(c.symbol)
         wd = read_watchdog_report(self.s.state_dir)
-        wd_alive = bool(wd) and (now - datetime.fromisoformat(wd["heartbeat"])).total_seconds() <= float(self.s.system.get("heartbeat_max_age_sec", 45)) \
-            if wd and wd.get("heartbeat") else self.broker.name == "mock"
+        if not wd:
+            # aucun rapport : le watchdog n'est optionnel qu'avec le broker mock
+            wd_alive = self.broker.name == "mock"
+        else:
+            # fichier écrit par un autre processus : un heartbeat absent/non ISO/naïf vaut « watchdog absent », jamais une exception
+            try:
+                hb = datetime.fromisoformat(str(wd["heartbeat"]))
+                hb = hb if hb.tzinfo else hb.replace(tzinfo=timezone.utc)
+                wd_alive = (now - hb).total_seconds() <= float(self.s.system.get("heartbeat_max_age_sec", 45))
+            except (ValueError, TypeError, KeyError):
+                wd_alive = False
         agent = self.registry.get(c.agent_id)
         nc = self.news.check(self._symbol_currencies(c.symbol), now, news_sensitive_strategy=bool(agent and agent.news_sensitive))
         bot_pos = list(st.bot_positions.values())
@@ -491,10 +551,15 @@ class Orchestrator:
     # ------------------------------------------------------------------ commandes
     def _process_commands(self) -> None:
         for cmd in self.store.pop_commands():
-            self.handle_command(cmd.get("command", ""), cmd.get("args", {}) or {}, cmd.get("source", "?"))
+            try:
+                self.handle_command(str(cmd.get("command", "")), cmd.get("args", {}) or {}, cmd.get("source", "?"))
+            except Exception as e:  # noqa: BLE001 - une commande malformée ne doit ni tuer le cycle ni perdre les suivantes (PANIC…)
+                self.journal.error("commande en échec", command=cmd, error=f"{type(e).__name__}: {e}")
 
     def handle_command(self, command: str, args: dict, source: str = "cli") -> dict:
         st = self.state
+        if not isinstance(args, dict):
+            args = {}
         c = command.upper()
         res: dict = {"command": c, "ok": True}
         if c == "PAUSE":
@@ -506,7 +571,10 @@ class Orchestrator:
             else:
                 res.update(ok=False, reason="RESUME refusé : compte non DEMO ou automatisation désactivée")
         elif c == "SAFE_MODE":
+            # symétrique de RESUME : le mode demandé devient SAFE, sinon _maybe_go_auto repasserait en AUTO au même cycle
             st.set_mode(SystemMode.SAFE_MODE, f"commande ({source})")
+            self.requested_mode = "SAFE"
+            self._healthy_cycles = 0
         elif c == "PANIC":
             st.set_mode(SystemMode.PANIC, f"PANIC ({source})")
             st.lock_entries("PANIC")
@@ -523,9 +591,13 @@ class Orchestrator:
         elif c == "CLOSE_ALL_BOT":
             res["closed"] = self.pm.close_all_bot("manual")
         elif c == "BREAK_EVEN":
-            t = int(args.get("target", 0) or 0)
-            plan = st.bot_positions.get(str(t))
-            res["ok"] = bool(plan) and self.pm.move_to_break_even(t, self.broker.symbol_info(plan.symbol))
+            target = str(args.get("target", ""))
+            if not target.isdigit():
+                res.update(ok=False, reason="ticket invalide")
+            else:
+                t = int(target)
+                plan = st.bot_positions.get(str(t))
+                res["ok"] = bool(plan) and self.pm.move_to_break_even(t, self.broker.symbol_info(plan.symbol))
         else:
             res.update(ok=False, reason="commande inconnue ou en lecture seule (traitée par la CLI)")
         self.journal.event("command", source=source, **res)
@@ -544,6 +616,9 @@ class Orchestrator:
             except Exception as e:  # noqa: BLE001 - la boucle ne meurt pas, on journalise et on passe en SAFE_MODE
                 self.journal.error("cycle exception", error=f"{type(e).__name__}: {e}", trace=traceback.format_exc()[-1500:])
                 self.state.set_mode(SystemMode.SAFE_MODE, f"exception cycle: {type(e).__name__}")
+                # SAFE_MODE conservé jusqu'à une commande RESUME : jamais de retour automatique en AUTO après une exception
+                self.requested_mode = "SAFE"
+                self._healthy_cycles = 0
                 self.store.save()
             n += 1
             if max_cycles and n >= max_cycles:

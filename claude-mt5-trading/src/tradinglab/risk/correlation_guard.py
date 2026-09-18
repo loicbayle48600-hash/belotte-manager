@@ -7,13 +7,14 @@ Trois plafonds (en % de l'equity) :
 """
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
-from typing import Optional
+from typing import Callable, Optional
 
 import pandas as pd
 
 from ..core.state import SystemState
-from ..core.types import CheckResult, Side
+from ..core.types import CheckResult, Side, SymbolSpec
 from ..portfolio.exposure import ExposureLine, build_line, compute_exposure
 
 
@@ -31,13 +32,39 @@ class CorrelationLimits:
 
 
 class CorrelationGuard:
-    def __init__(self, limits: CorrelationLimits, asset_rules: dict | None = None):
+    def __init__(self, limits: CorrelationLimits, asset_rules: dict | None = None,
+                 spec_lookup: Optional[Callable[[str], Optional[SymbolSpec]]] = None):
         self.limits = limits
         self.asset_rules = asset_rules or {}
+        # accès (optionnel) aux spécifications broker : devises réelles des positions ouvertes (indices/métaux
+        # cotés en EUR par exemple), afin que les lignes existantes soient comparables à la nouvelle ligne
+        self.spec_lookup = spec_lookup
 
     def _open_lines(self, state: SystemState) -> list[ExposureLine]:
-        return [build_line(p.symbol, Side(p.side), p.initial_risk_money, asset_rules=self.asset_rules)
-                for p in state.bot_positions.values()]
+        lines: list[ExposureLine] = []
+        for p in state.bot_positions.values():
+            base = quote = ""
+            if self.spec_lookup is not None:
+                try:
+                    spec = self.spec_lookup(p.symbol)
+                except Exception:  # noqa: BLE001 - une spec indisponible ne doit jamais bloquer le contrôle
+                    spec = None
+                if spec is not None:
+                    base, quote = spec.currency_base, spec.currency_profit
+            lines.append(build_line(p.symbol, Side(p.side), p.initial_risk_money, base, quote, self.asset_rules))
+        return lines
+
+    @staticmethod
+    def _corr_value(correlations: Optional[pd.DataFrame], a: str, b: str) -> Optional[float]:
+        """Corrélation a/b, ou None si matrice absente, symbole manquant ou valeur NaN (donnée inconnue)."""
+        if correlations is None or a not in correlations.columns or b not in correlations.columns \
+                or a not in correlations.index:
+            return None
+        try:
+            c = float(correlations.loc[a, b])
+        except (TypeError, ValueError, KeyError):
+            return None
+        return None if math.isnan(c) else c
 
     def check(self, state: SystemState, symbol: str, side: Side, risk_money: float,
               correlations: Optional[pd.DataFrame] = None, spec_base: str = "", spec_quote: str = "") -> list[CheckResult]:
@@ -58,28 +85,27 @@ class CorrelationGuard:
         out.append(CheckResult("asset_class_risk", pct_cls <= L.max_asset_class_risk_percent + 1e-9,
                                f"{new.asset_class} {pct_cls:.3f}% / {L.max_asset_class_risk_percent}%"))
 
-        # cluster corrélé : positions existantes dont la corrélation signée avec le nouveau pari dépasse le seuil
+        # cluster corrélé : positions existantes dont la corrélation signée avec le nouveau pari dépasse le seuil.
+        # Ligne par ligne : corrélation inconnue (matrice absente, symbole manquant, NaN) → repli prudent par
+        # devise commune dans le même sens de facteur (donnée inconnue = prudence, jamais « non corrélé »).
         cluster = risk_money
         members = []
-        if correlations is not None and symbol in correlations.columns:
-            for ln in lines:
-                if ln.symbol in correlations.columns:
-                    c = float(correlations.loc[symbol, ln.symbol]) if ln.symbol in correlations.index else 0.0
-                    signed = c * side.sign * ln.side.sign
-                    if signed >= L.correlation_threshold:
-                        cluster += ln.risk_money
-                        members.append(f"{ln.symbol}({c:.2f})")
-        else:
-            # sans matrice : cluster par devise commune dans le même sens de facteur
-            for ln in lines:
-                shared = ({new.base, new.quote} & {ln.base, ln.quote})
-                if shared:
-                    ccy = shared.pop()
-                    new_sign = side.sign * (1 if ccy == new.base else -1)
-                    old_sign = ln.side.sign * (1 if ccy == ln.base else -1)
-                    if new_sign == old_sign:
-                        cluster += ln.risk_money
-                        members.append(f"{ln.symbol}[{ccy}]")
+        for ln in lines:
+            c = self._corr_value(correlations, symbol, ln.symbol)
+            if c is not None:
+                signed = c * side.sign * ln.side.sign
+                if signed >= L.correlation_threshold:
+                    cluster += ln.risk_money
+                    members.append(f"{ln.symbol}({c:.2f})")
+                continue
+            shared = ({new.base, new.quote} & {ln.base, ln.quote})
+            if shared:
+                ccy = shared.pop()
+                new_sign = side.sign * (1 if ccy == new.base else -1)
+                old_sign = ln.side.sign * (1 if ccy == ln.base else -1)
+                if new_sign == old_sign:
+                    cluster += ln.risk_money
+                    members.append(f"{ln.symbol}[{ccy}]")
         pct_cluster = 100.0 * cluster / eq
         out.append(CheckResult("correlated_cluster_risk", pct_cluster <= L.max_correlated_cluster_risk_percent + 1e-9,
                                f"cluster {pct_cluster:.3f}% / {L.max_correlated_cluster_risk_percent}% {members}"))
