@@ -979,7 +979,8 @@ def strategy_m06(spec: AgentSpec, snap) -> Optional[TradeCandidate]:
     net / chemin parcouru) qui mesure si cette montée est une ligne ou un aller-retour déguisé. Un escalier meurt
     à sa première marche cassée : c'est exactement là que se place le stop, et nulle part ailleurs.
 
-    Entrée : au moins `min_steps` (6) barres clôturées consécutives dont les plus bas sont non décroissants à
+    Entrée : au moins `min_steps` barres clôturées consécutives (paramètre optionnel de `spec.params`,
+    défaut 6, plancher 3) dont les plus bas sont non décroissants à
     0,05 ATR près (miroir sur les plus hauts pour une vente), et l'escalier opposé plus court d'au moins
     2 marches (sinon la série est ambiguë : simple plage) ; déplacement net des clôtures de l'escalier dans le
     sens du trade ; ratio d'efficience de l'escalier >= 0,35.
@@ -1014,7 +1015,7 @@ def strategy_m06(spec: AgentSpec, snap) -> Optional[TradeCandidate]:
     cl = closed["close"].to_numpy(dtype=float)
     tol = 0.05 * atr
     up, dn = _stair_run(lows, tol), _stair_run(-highs, tol)
-    min_steps = 6
+    min_steps = max(3, int(p.get("min_steps", 6)))   # paramétrable, jamais en dessous de 3 marches
     if up >= min_steps and up >= dn + 2:
         side, run = Side.BUY, min(up, 30)
     elif dn >= min_steps and dn >= up + 2:
@@ -1038,7 +1039,8 @@ def strategy_m06(spec: AgentSpec, snap) -> Optional[TradeCandidate]:
     if _spread_ratio_h1(snap) > 0.12:
         return None
     rail = lows[-run:] if side is Side.BUY else highs[-run:]      # la rampe de l'escalier
-    raw = (float(min(rail[-2], rail[-1])) - 0.25 * atr) if side is Side.BUY else (float(max(rail[-2], rail[-1])) + 0.25 * atr)
+    base = float(min(rail[-2], rail[-1])) if side is Side.BUY else float(max(rail[-2], rail[-1]))
+    raw = base - s * 0.25 * atr            # derrière le plus bas (haut) des DEUX dernières marches
     sl = _bound_sl(snap, side, entry, raw, atr, 0.5, 2.0 * float(p.get("sl_atr", 1.5)))
     if sl is None:
         return None

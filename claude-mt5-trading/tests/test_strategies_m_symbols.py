@@ -597,7 +597,8 @@ def test_m09_accepte_la_premiere_barre_apres_l_opening_range(specs, broker_specs
 
 
 def test_m09_refuse_une_cassure_contre_un_gap_significatif(specs, broker_specs):
-    """Le filtre propre de M09 (cohérence gap / cassure) reste actif : cassure haussière après un gap baissier → None."""
+    """Le filtre propre de M09 (cohérence gap / cassure) reste actif : cassure haussière
+    après un gap baissier significatif → aucun signal."""
     assert screeners.SCREENERS["M09"](specs["M09"], _snap_m09(broker_specs, gap_contraire=True)) is None
 
 

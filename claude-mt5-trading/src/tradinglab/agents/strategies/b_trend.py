@@ -81,6 +81,16 @@ def _bound_sl(side: Side, entry: float, sl: float, atr: float, lo: float, hi: fl
     return entry - side.sign * dist
 
 
+# Tolérance (en points de RSI) appliquée par B04 à la borne d'épuisement de sa zone de continuation : une barre
+# d'englobement en tendance sort mécaniquement de la fourchette du paramètre sans être pour autant en excès.
+RSI_TOL = 10.0
+
+# B06 : plancher de volume (fraction de la moyenne 20 barres) sous lequel la cassure est jugée non soutenue, et
+# dépassement maximal du niveau cassé (en ATR) au-delà duquel on ne poursuit plus le mouvement.
+VOL_MIN_RATIO = 0.8
+OVERSHOOT_MAX = 1.0
+
+
 def _di(df: pd.DataFrame, n: int = 14) -> tuple[pd.Series, pd.Series]:
     """+DI / -DI de Wilder (0-100) calculés sur les barres fournies — `adx14` d'`enrich` ne donne pas la direction."""
     h = df["high"].astype(float)
@@ -339,16 +349,21 @@ def strategy_b03(spec: AgentSpec, snap) -> Optional[TradeCandidate]:
 # --------------------------------------------------------------------------------------------------------------
 @register("B04")
 def strategy_b04(spec: AgentSpec, snap) -> Optional[TradeCandidate]:
-    """B04 — Continuation H4/H1 : impulsion H4 puis micro-repli H1 englobé.
+    """B04 — Continuation H4/H1 : impulsion H4 récente puis micro-repli H1 englobé.
 
     Thèse : une bougie H4 d'impulsion (corps >= 0,6 ATR H4) dans le sens de la tendance H4 est rarement suivie d'un
-    retournement immédiat ; on attend une barre H1 de repli puis une barre H1 qui l'englobe (clôture au-delà de son
-    extrême) pour rejoindre le mouvement.
+    retournement immédiat ; on attend une barre H1 de repli puis une barre H1 qui l'englobe (dépassement de son
+    extrême en séance et clôture au-delà de son corps) pour rejoindre le mouvement.
 
-    Entrée : `_trend_of` H4 UP/DOWN et dernière H4 clôturée impulsive dans ce sens ; sur H1, barre précédente
-    contraire (repli) et barre de signal qui clôture au-dessus (sous) du plus haut (bas) de cette barre de repli,
-    au-dessus (sous) de son EMA50 H1.
-    Confirmation : RSI14 H1 dans [`rsi_lo`, `rsi_hi`] (ni épuisé, ni survendu).
+    Entrée : `_trend_of` H4 UP/DOWN et impulsion sur L'UNE DES 2 DERNIÈRES barres H4 clôturées (une barre H4 couvre
+    4 barres H1 : exiger que l'impulsion soit précisément la dernière H4 clôturée élimine les trois quarts des
+    replis H1 exploitables, sans rien ajouter à la thèse) ; sur H1, barre précédente contraire (repli) et barre de
+    signal qui l'englobe : son plus haut (bas) dépasse celui du repli et sa clôture repasse au-delà du corps du
+    repli (son ouverture), dans le sens du trade et au-delà de l'EMA50 H1. Exiger une clôture au-delà de la MÈCHE
+    du repli est quasi introuvable en H1 (1 cas sur 71 replis mesurés) et n'ajoute rien à la thèse de reprise.
+    Confirmation : RSI14 H1 dans [`rsi_lo`, `rsi_hi`] élargi de `RSI_TOL` points du côté de l'épuisement — une barre
+    d'englobement en tendance sort mécaniquement par le haut (bas) de la zone du paramètre ; la borne élargie reste
+    en deçà des seuils d'excès 75/25 retenus ailleurs dans le module (ni épuisé, ni survendu).
     Filtres : ATR H1 <= 1,8 × sa moyenne 20 barres (pas de choc) ; spread <= 12 % ATR H1.
     SL : sous (au-dessus) du plus bas (haut) des 3 dernières barres H1 clôturées − 0,3 ATR, borné à
     [0,6 ATR ; 3 ATR] puis plafonné à `sl_atr` ATR.
@@ -368,25 +383,38 @@ def strategy_b04(spec: AgentSpec, snap) -> Optional[TradeCandidate]:
     side = _side_from(tr)
     if side is None:
         return None
-    atr_h4 = float(lt["atr14"])
-    if atr_h4 <= 0:
+    # impulsion récente : la plus forte des 2 dernières barres H4 CLÔTURÉES (la barre H4 en formation est exclue)
+    t_closed = _closed(t)
+    if len(t_closed) < 2:
         return None
-    impulse = side.sign * (lt["close"] - lt["open"]) / atr_h4
+    impulse = -1.0
+    for h4 in (t_closed.iloc[-1], t_closed.iloc[-2]):
+        if not _valid(h4, "atr14", "open", "close"):
+            continue
+        atr_h4 = float(h4["atr14"])
+        if atr_h4 > 0:
+            impulse = max(impulse, side.sign * float(h4["close"] - h4["open"]) / atr_h4)
     if impulse < 0.6:
         return None
     prev = closed.iloc[-2]
     if side.sign * (prev["close"] - prev["open"]) >= 0:
         return None  # pas de barre de repli
     entry = float(le["close"])
-    if side is Side.BUY and not (entry > prev["high"] and entry > le["ema50"]):
+    # englobement : la barre de signal dépasse l'extrême du repli EN SÉANCE et clôture au-delà de son corps
+    # (l'ouverture de la barre de repli), dans le sens du trade et au-delà de l'EMA50 du tf d'entrée.
+    sig_ext = float(le["high"]) if side is Side.BUY else float(le["low"])
+    pull_high = float(prev["high"]) if side is Side.BUY else float(prev["low"])
+    if side.sign * (sig_ext - pull_high) <= 0:
         return None
-    if side is Side.SELL and not (entry < prev["low"] and entry < le["ema50"]):
+    if side.sign * (entry - float(prev["open"])) <= 0:
+        return None
+    if side.sign * (entry - float(le["open"])) <= 0 or side.sign * (entry - float(le["ema50"])) <= 0:
         return None
     lo, hi = float(p.get("rsi_lo", 40)), float(p.get("rsi_hi", 65))
     rsi = float(le["rsi14"])
-    if side is Side.BUY and not (lo <= rsi <= hi):
+    if side is Side.BUY and not (lo <= rsi <= hi + RSI_TOL):
         return None
-    if side is Side.SELL and not (100 - hi <= rsi <= 100 - lo):
+    if side is Side.SELL and not (100 - hi - RSI_TOL <= rsi <= 100 - lo):
         return None
     atr_ma = closed["atr14"].iloc[-20:].mean()
     if atr_ma > 0 and atr > 1.8 * atr_ma:
@@ -398,7 +426,7 @@ def strategy_b04(spec: AgentSpec, snap) -> Optional[TradeCandidate]:
     raw_sl = pull_ext - side.sign * 0.3 * atr
     sl = _bound_sl(side, entry, raw_sl, atr, 0.6, min(3.0, float(p.get("sl_atr", 1.5))))
     score = 20.0 + _clamp((impulse - 0.6) * 10, 0, 10) + 15.0 + 15.0 + 10.0
-    pros = [f"impulsion H4 {tr} de {impulse:.1f} ATR H4", "barre H1 de repli englobée par la barre de signal",
+    pros = [f"impulsion H4 {tr} récente de {impulse:.1f} ATR H4", "corps de la barre H1 de repli englobé par la barre de signal",
             f"RSI H1 {rsi:.0f} dans la zone de continuation"]
     cons = []
     if _trend_of(le) == tr:
@@ -497,19 +525,24 @@ def strategy_b05(spec: AgentSpec, snap) -> Optional[TradeCandidate]:
 def strategy_b06(spec: AgentSpec, snap) -> Optional[TradeCandidate]:
     """B06 — Cassure de structure (BOS) H1 confirmée par les EMA et le volume, cible = projection du swing.
 
-    Thèse : en structure HH/HL (LH/LL), la cassure du dernier swing haut (bas) par une clôture, avec volume
-    supérieur à la moyenne et EMA alignées, prolonge la tendance d'au moins la hauteur du dernier swing.
+    Thèse : en structure HH/HL (LH/LL), la cassure du dernier swing haut (bas) par une clôture, avec un volume
+    soutenu et des EMA alignées, prolonge la tendance d'au moins la hauteur du dernier swing.
 
     Entrée : `structure_label` H1 = HH_HL (BUY) / LH_LL (SELL) ; clôture au-delà du dernier swing haut (bas) alors
-    que la clôture précédente ne l'était pas (cassure fraîche).
-    Confirmation : `require_ema` → `_trend_of` H1 aligné ; tick_volume de la barre >= moyenne 20 barres
-    (>= 1,2 × moyenne = bonus volatilité/volume).
-    Filtres : tendance H4 non opposée ; clôture à plus de 0,5 ATR au-delà du niveau = pénalité (poursuite).
-    SL : sous (au-dessus) le dernier swing bas (haut) − 0,2 ATR ; si > 3 ATR → `sl_atr` ATR ; plancher 0,5 ATR.
+    que l'une des 3 clôtures précédentes était encore en deçà (cassure récente, fenêtre de 4 barres : une cassure
+    valable une seule barre n'est visible qu'un cycle H1 sur quatre).
+    Confirmation : `require_ema` → EMA20/EMA50 H1 alignées et clôture au-delà de l'EMA20 ; tick_volume >= `VOL_MIN_RATIO` × moyenne
+    20 barres (>= 1,0 × = bonus, >= 1,2 × = bonus renforcé) : on écarte une cassure anémique sans exiger un pic.
+    Filtres : tendance H4 non opposée ; clôture à plus de `OVERSHOOT_MAX` ATR au-delà du niveau = refus (cassure
+    déjà courue), au-delà de 0,5 ATR = pénalité.
+    SL : derrière le NIVEAU CASSÉ (− 0,3 ATR : le niveau devient support/résistance), ou derrière le swing opposé
+    (− 0,2 ATR) s'il est plus proche ; distance bornée à [0,5 ATR ; `sl_atr` ATR]. Ancrer le stop sur le seul swing
+    opposé rendait le risque égal à la hauteur du swing, donc la projection de cette même hauteur mathématiquement
+    inférieure à 1 R : l'agent ne pouvait jamais passer son propre seuil de 1,5 R.
     TP : cible structurelle = niveau cassé + hauteur du swing (swing haut − swing bas) ; rr = max(`rr`,
     min(cible/R, 4)) ; refus si la cible est à moins de 1,5 R.
-    Invalidation : clôture H1 au-delà du swing opposé.
-    Score : structure 25 + tendance 15 + MTF 0-15 + volatilité/volume 0-10 + exécution 10 (pas de poursuite).
+    Invalidation : clôture H1 de retour sous (au-dessus) du niveau cassé.
+    Score : structure 25 + tendance 15 + MTF 0-15 + volume 0-10 + exécution 10 (pas de poursuite).
     """
     c = _ctx(spec, snap)
     if not c:
@@ -524,25 +557,38 @@ def strategy_b06(spec: AgentSpec, snap) -> Optional[TradeCandidate]:
     if not sh or not sl_:
         return None
     entry = float(le["close"])
-    prev_close = float(closed["close"].iloc[-2])
-    if label == "HH_HL" and entry > sh[-1][1] >= prev_close:
+    prev3 = closed["close"].iloc[-4:-1]  # les 3 clôtures qui précèdent la barre de signal (barres clôturées)
+    if prev3.isna().any():
+        return None
+    if label == "HH_HL" and entry > sh[-1][1] >= float(prev3.min()):
         side, level, opp = Side.BUY, sh[-1][1], sl_[-1][1]
-    elif label == "LH_LL" and entry < sl_[-1][1] <= prev_close:
+    elif label == "LH_LL" and entry < sl_[-1][1] <= float(prev3.max()):
         side, level, opp = Side.SELL, sl_[-1][1], sh[-1][1]
     else:
         return None
+    overshoot = side.sign * (entry - level) / atr
+    if overshoot > OVERSHOOT_MAX:
+        return None  # cassure déjà courue : le stop derrière le niveau deviendrait trop large
     tr = "UP" if side is Side.BUY else "DOWN"
-    if p.get("require_ema", True) and _trend_of(le) != tr:
+    # confirmation EMA COURT TERME (EMA20/EMA50 alignées + clôture au-delà de l'EMA20) : la thèse porte sur la
+    # cassure de structure, pas sur une tendance déjà mûre — exiger en plus l'EMA200 (`_trend_of`) écartait la
+    # moitié des cassures propres sans rien dire de la structure.
+    if p.get("require_ema", True) and not (side.sign * (le["ema20"] - le["ema50"]) > 0
+                                           and side.sign * (le["close"] - le["ema20"]) > 0):
         return None
     if _trend_of(lt) not in (tr, "FLAT"):
         return None
     vol_ma = float(closed["tick_volume"].iloc[-21:-1].mean())
-    if not (vol_ma > 0) or float(le["tick_volume"]) < vol_ma:
+    if not (vol_ma > 0) or pd.isna(le["tick_volume"]):
         return None
-    raw_sl = opp - side.sign * 0.2 * atr
-    if abs(entry - raw_sl) > 3 * atr:
-        raw_sl = entry - side.sign * float(p.get("sl_atr", 1.5)) * atr
-    sl = _bound_sl(side, entry, raw_sl, atr, 0.5, 3.0)
+    vol_ratio = float(le["tick_volume"]) / vol_ma
+    if vol_ratio < VOL_MIN_RATIO:
+        return None
+    # risque ancré sur le niveau cassé (devenu support/résistance) ou sur le swing opposé s'il est plus proche
+    sl_level = level - side.sign * 0.3 * atr
+    sl_swing = opp - side.sign * 0.2 * atr
+    raw_sl = entry - side.sign * min(abs(entry - sl_level), abs(entry - sl_swing))
+    sl = _bound_sl(side, entry, raw_sl, atr, 0.5, min(3.0, float(p.get("sl_atr", 1.5))))
     dist = abs(entry - sl)
     height = abs(level - opp)
     target = level + side.sign * height
@@ -553,19 +599,22 @@ def strategy_b06(spec: AgentSpec, snap) -> Optional[TradeCandidate]:
     score = 25.0 + 15.0
     b, pros = _mtf_bonus(le, lt, side)
     score += b
-    pros += [f"structure {label} + cassure de swing par clôture", f"volume {le['tick_volume'] / vol_ma:.1f}× la moyenne",
-             f"cible structurelle à {rr_struct:.1f} R (projection du swing)"]
+    pros += [f"structure {label} + cassure récente du swing par clôture", f"volume {vol_ratio:.1f}× la moyenne 20 barres",
+             f"cible structurelle à {rr_struct:.1f} R (projection du swing)", "stop ancré 0,3 ATR derrière le niveau cassé"]
     cons = []
-    if float(le["tick_volume"]) >= 1.2 * vol_ma:
+    if vol_ratio >= 1.2:
         score += 10
-    else:
+    elif vol_ratio >= 1.0:
+        score += 5
         cons.append("volume seulement au niveau de la moyenne")
-    overshoot = side.sign * (entry - level) / atr
+    else:
+        cons.append(f"volume {vol_ratio:.1f}× la moyenne : cassure peu soutenue")
     if overshoot <= 0.5:
         score += 10
     else:
         cons.append(f"clôture {overshoot:.1f} ATR au-delà du niveau : poursuite")
-    return _build(spec, snap, side, entry, sl, rr, score, pros, cons, "clôture H1 au-delà du swing opposé", bt)
+    return _build(spec, snap, side, entry, sl, rr, score, pros, cons,
+                  "clôture H1 de retour sous/au-dessus du niveau cassé", bt)
 
 
 # --------------------------------------------------------------------------------------------------------------

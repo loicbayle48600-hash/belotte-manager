@@ -659,18 +659,19 @@ def test_sl_deplace_est_signale(agent_id, specs, scenario_snaps):
     base = fn(spec, snap)
     assert base is not None
     atr_entry = float(snap.frames[spec.timeframes["entry"]].iloc[-2]["atr14"])
-    cible = 2.0 * atr_entry
-    if base.sl_distance >= cible:                           # SL déjà au moins aussi large : rien à forcer
-        return
+    plafond = min(float(spec.params.get("sl_atr", 1.5)), L.SL_MAX_ATR) * atr_entry
+    if snap.atr_h1 and snap.atr_h1 > 0:                      # le plafond en ATR H1 peut être le plus contraignant
+        plafond = min(plafond, L.SL_MAX_H1_ATR * float(snap.atr_h1))
+    cible = min(base.sl_distance * 1.2, plafond)            # un peu plus large, sans dépasser le plafond
+    if cible <= base.sl_distance * (1.0 + 1e-9):
+        return      # l'agent est déjà à son plafond de distance : impossible d'élargir (cas couvert par le test
+        #             `test_sl_note_present_quand_le_plafond_mord`, qui vérifie la mention « SL ramené »)
     forced = _copy_snap(snap, atr_h1=cible / L.SL_MIN_H1_ATR)   # plancher de distance = `cible`
     c = fn(spec, forced)
     if c is None:                                           # refus déterministe du gate de SL : acceptable
         return
     assert c.sl_distance == pytest.approx(cible, rel=1e-9)
-    # la mention est « SL élargi » (plancher) ou « SL ramené » (le niveau de la thèse était encore plus loin) :
-    # dans les deux cas le candidat dit que le SL proposé n'est plus le niveau décrit par la thèse.
-    assert any(x.startswith("SL élargi") or x.startswith("SL ramené") for x in c.arguments_against), \
-        c.arguments_against
+    assert any(x.startswith("SL élargi") for x in c.arguments_against), c.arguments_against
 
 
 def test_sl_note_present_quand_le_plafond_mord(specs, scenario_snaps):
@@ -844,3 +845,27 @@ def test_agents_h4_survivent_a_un_atr_h1_bas(agent_id, specs, scenario_snaps):
         assert c is not None, f"{agent_id} muet avec atr_h1 = ATR tf / {diviseur}"
         _check_candidate(c, spec, forced)
         assert any(x.startswith("SL ramené") for x in c.arguments_against), c.arguments_against
+
+
+def test_spread_ratio_atr_inconnu_refuse():
+    """Un ATR inconnu (NaN) rend le ratio de spread infini : le filtre REFUSE, il ne se désactive pas.
+
+    Régression : `_spread_ratio_h1` renvoyait `NaN` quand `snap.atr_h1` valait NaN ; `NaN > 0.15` étant faux, le
+    filtre de spread de L01 était silencieusement neutralisé alors que la donnée manquait.
+    """
+    class _Snap:
+        def __init__(self, atr_h1, spread=10):
+            self.atr_h1 = atr_h1
+            self.spread_points = spread
+            self.spec = _spec_of("metals", "XAUUSD", 2, 0.01)
+
+    assert L._spread_ratio_h1(_Snap(float("nan"))) == float("inf")
+    assert L._spread_ratio_h1(_Snap(0.0)) == float("inf")
+    assert L._spread_ratio_h1(_Snap(-1.0)) == float("inf")
+    assert L._spread_ratio_h1(_Snap(1.0)) == pytest.approx(0.1)
+    sans_spec = _Snap(1.0)
+    sans_spec.spec = None
+    assert L._spread_ratio_h1(sans_spec) == float("inf")
+    assert L._spread_ratio(_Snap(1.0), float("nan")) == float("inf")
+    assert L._spread_ratio(_Snap(1.0), 0.0) == float("inf")
+    assert L._spread_ratio(_Snap(1.0), 1.0) == pytest.approx(0.1)

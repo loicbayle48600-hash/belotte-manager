@@ -151,3 +151,69 @@ def test_rejections_counter_is_diagnostic_only(specs, snapshots):
         b = _signature(SCREENERS[agent_id](specs[agent_id], snap))
         assert a == b
     assert all(v > 0 for v in c_breakout.REJECTIONS.values())
+
+
+# ---------------------------------------------------------------- (5) vitalité agent par agent
+# Les agents de session (C01, C02, C03, C08, C09) ne peuvent être jugés sur quelques instants : leur fenêtre
+# horaire n'est atteinte que sur certains créneaux. On balaie donc une fenêtre élargie (52 instants espacés de
+# 4 h, deux graines) et on exige de CHACUN au moins un candidat, toujours conforme au contrat de risque.
+VITALITE_IDS = ["C01", "C02", "C03", "C08", "C09"]
+VITALITE_TIMEFRAMES = ["M15", "H1", "H4", "D1"]
+VITALITE_SCAN = ((7, 12), (11, 40))   # (graine, nombre d'instants de 4 h)
+
+
+@pytest.fixture(scope="module")
+def candidats_fenetre_elargie(specs):
+    """Candidats produits par C01, C02, C03, C08, C09 sur une fenêtre élargie.
+
+    Protocole : broker simulé déterministe (9000 barres M5), horloge avancée de 4 h (48 barres M5) entre
+    chaque instant, tous les symboles du broker. Les heures des barres clôturées balaient ainsi les six
+    créneaux 01:30 … 21:30 UTC, ce qui couvre les fenêtres de session propres à chaque agent.
+    Renvoie {agent_id: [(graine, snapshot, candidat), …]}.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    from tradinglab.mt5.mock_adapter import MockBroker
+
+    out: dict = {aid: [] for aid in VITALITE_IDS}
+    instants = 0
+    for graine, pas in VITALITE_SCAN:
+        broker = MockBroker(seed=graine, bars=9000)
+        broker.connect()
+        now = datetime(2026, 1, 5, tzinfo=timezone.utc)
+        for _ in range(pas):
+            broker.set_now(now)
+            feed = MarketDataFeed(broker, VITALITE_TIMEFRAMES)
+            snaps = feed.snapshots(broker.symbols(), now=now)
+            instants += 1
+            for agent_id in VITALITE_IDS:
+                for snap in snaps.values():
+                    c = SCREENERS[agent_id](specs[agent_id], snap)
+                    if c is not None:
+                        out[agent_id].append((graine, snap, c))
+            broker.advance_bars(48)
+            now += timedelta(hours=4)
+    assert instants >= 20, "la fenêtre de vitalité doit couvrir au moins 20 instants"
+    return out
+
+
+@pytest.mark.parametrize("agent_id", VITALITE_IDS)
+def test_agent_declenche_et_reste_conforme_sur_fenetre_elargie(agent_id, candidats_fenetre_elargie):
+    trouves = candidats_fenetre_elargie[agent_id]
+    assert trouves, f"{agent_id} ne déclenche jamais sur la fenêtre élargie : stratégie inutilisable"
+    for graine, snap, c in trouves:
+        ou = f"{agent_id} (graine {graine}, {c.symbol}, {c.bar_time})"
+        chk = validate_stop_loss(c.side, c.entry, c.sl, snap.spec, atr=c.atr)
+        assert chk.ok, f"{ou} : {chk.reason}"
+        assert c.side.sign * (c.entry - c.sl) > 0, f"{ou} : SL du mauvais côté"
+        assert c.atr == 0 or 0.3 * c.atr <= c.sl_distance <= 3.0 * c.atr, f"{ou} : SL hors bornes ATR"
+        assert c.rr >= 1.5, f"{ou} : rr {c.rr} < 1.5"
+        assert 0 <= c.setup_score <= 100, f"{ou} : score {c.setup_score} hors bornes"
+        assert c.tp_plan and c.side.sign * (c.tp_plan[-1] - c.entry) > 0, f"{ou} : plan de TP du mauvais côté"
+        assert c.invalidation and c.arguments_for, f"{ou} : candidat non documenté"
+
+
+def test_vitalite_par_agent_couvre_bien_les_cinq_agents(candidats_fenetre_elargie):
+    """Filet : la fenêtre élargie doit faire vivre les cinq agents de session simultanément."""
+    morts = sorted(a for a, v in candidats_fenetre_elargie.items() if not v)
+    assert not morts, f"agents sans aucun candidat sur la fenêtre élargie : {morts}"

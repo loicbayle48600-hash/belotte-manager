@@ -151,17 +151,23 @@ def _wick_against(row: pd.Series, side: Side) -> float:
 
 def _spread_ratio(snap, atr: float) -> float:
     """Spread courant en fraction de l'ATR du tf d'entrée (inf si inconnu : le filtre refuse alors)."""
-    if atr <= 0 or snap.spec is None:
+    if not np.isfinite(atr) or atr <= 0 or snap.spec is None:
         return float("inf")
-    return float(snap.spread_points * snap.spec.point / atr)
+    ratio = float(snap.spread_points * snap.spec.point / atr)
+    return ratio if np.isfinite(ratio) else float("inf")
 
 
 def _spread_ratio_h1(snap) -> float:
-    """Spread courant en fraction de l'ATR H1 (référence du gate : <= 0,15 ATR H1) ; inf si l'ATR H1 est inconnu."""
+    """Spread courant en fraction de l'ATR H1 (référence du gate : <= 0,15 ATR H1) ; inf si l'ATR H1 est inconnu.
+
+    `NaN` doit renvoyer `inf`, pas `NaN` : une comparaison `NaN > seuil` est fausse, donc un ATR H1 manquant
+    DÉSACTIVERAIT silencieusement le filtre de spread au lieu de le faire refuser.
+    """
     atr_h1 = float(snap.atr_h1 or 0.0)
-    if atr_h1 <= 0 or snap.spec is None:
+    if not np.isfinite(atr_h1) or atr_h1 <= 0 or snap.spec is None:
         return float("inf")
-    return float(snap.spread_points * snap.spec.point / atr_h1)
+    ratio = float(snap.spread_points * snap.spec.point / atr_h1)
+    return ratio if np.isfinite(ratio) else float("inf")
 
 
 def _bound_sl(snap, side: Side, entry: float, sl: float, atr: float, lo: float, hi: float) -> Optional[float]:

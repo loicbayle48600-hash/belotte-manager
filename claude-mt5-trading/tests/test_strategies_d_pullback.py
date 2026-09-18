@@ -1,8 +1,9 @@
 """Tests des stratégies propres de la famille D (replis dans la tendance) : D01 … D07.
 
 Vérifie pour chaque agent : enregistrement dans SCREENERS, robustesse (aucune exception, candidat valide ou None),
-absence de lookahead (la barre en formation n'influence pas la décision) et vitalité du module (au moins un
-candidat sur l'ensemble des snapshots).
+absence de lookahead (la barre en formation n'influence pas la décision), vitalité du module (au moins un
+candidat sur l'ensemble des snapshots) et, pour les agents les plus sélectifs, vitalité individuelle sur une
+fenêtre de données simulées élargie.
 """
 from __future__ import annotations
 
@@ -20,6 +21,11 @@ from tradinglab.risk.stop_loss import validate_stop_loss
 
 AGENT_IDS = [f"D{i:02d}" for i in range(1, 8)]
 TIMEFRAMES = ["M5", "M15", "H1", "H4", "D1"]
+# Agents dont la vitalité individuelle est vérifiée sur une fenêtre élargie (voir `wide_window_candidates`)
+WIDE_AGENT_IDS = ["D01", "D03"]
+WIDE_STEPS = 24            # instants examinés par graine (>= 20)
+WIDE_STEP_BARS = 3         # 3 barres M5 = 1 barre M15 : chaque instant apporte une nouvelle barre clôturée
+WIDE_SEEDS = (7, 11)
 
 
 @pytest.fixture(scope="module")
@@ -144,6 +150,66 @@ def test_module_alive(specs, snapshots):
         per_agent[agent_id] = n
         total += n
     assert total >= 1, f"aucun candidat produit par la famille D : {per_agent}"
+
+
+@pytest.fixture(scope="module")
+def wide_window_candidates(specs):
+    """Premier candidat valide de chaque agent de `WIDE_AGENT_IDS` sur une fenêtre de données simulées élargie.
+
+    Parcours déterministe : graines 7 puis 11, `WIDE_STEPS` instants espacés de 15 min (le broker simulé avance de
+    `WIDE_STEP_BARS` barres M5, soit exactement une barre M15, entre deux instants), tous les symboles. Le pas est
+    volontairement court : le broker simulé fabrique les barres ajoutées avec une graine commune à tous les
+    symboles, un pas long ferait donc évoluer les 16 symboles à l'identique et appauvrirait l'échantillon.
+    L'exploration s'arrête dès que chaque agent suivi a produit un candidat : les données sont déterministes,
+    l'arrêt anticipé ne change donc aucun résultat, il évite seulement de recalculer des snapshots inutiles.
+    """
+    from datetime import datetime, timezone
+
+    from tradinglab.mt5.mock_adapter import MockBroker
+
+    found: dict[str, tuple] = {}
+    for seed in WIDE_SEEDS:
+        if len(found) == len(WIDE_AGENT_IDS):
+            break
+        broker = MockBroker(seed=seed, bars=9000)
+        broker.connect()
+        now = datetime(2026, 1, 5, tzinfo=timezone.utc)
+        for _ in range(WIDE_STEPS):
+            broker.set_now(now)
+            feed = MarketDataFeed(broker, TIMEFRAMES)
+            snaps = feed.snapshots(broker.symbols(), now=now)
+            for agent_id in WIDE_AGENT_IDS:
+                if agent_id in found:
+                    continue
+                spec = specs[agent_id]
+                fn = screeners.SCREENERS[agent_id]
+                for snap in snaps.values():
+                    c = fn(spec, snap)
+                    if c is not None:
+                        found[agent_id] = (c, spec, snap, seed)
+                        break
+            if len(found) == len(WIDE_AGENT_IDS):
+                break
+            broker.advance_bars(WIDE_STEP_BARS)
+            now += timedelta(minutes=15)
+    return found
+
+
+@pytest.mark.parametrize("agent_id", WIDE_AGENT_IDS)
+def test_declenche_sur_fenetre_elargie(agent_id, wide_window_candidates):
+    """Un agent qui ne signale jamais rien est inutilisable : chacun doit produire un candidat CONFORME."""
+    assert agent_id in wide_window_candidates, (
+        f"{agent_id} n'a produit aucun candidat sur {WIDE_STEPS} instants x {len(WIDE_SEEDS)} graines "
+        f"{WIDE_SEEDS} : stratégie inerte"
+    )
+    c, spec, snap, _seed = wide_window_candidates[agent_id]
+    # conformité complète (côté du SL, distance en ATR, TP croissants, bar_time de la barre clôturée…)
+    _check_candidate(c, spec, snap)
+    # et, explicitement, les trois garde-fous non négociables
+    chk = validate_stop_loss(c.side, c.entry, c.sl, snap.spec, atr=c.atr)
+    assert chk.ok, f"{agent_id} : SL refusé ({chk.reason})"
+    assert c.rr >= 1.5, f"{agent_id} : rr {c.rr} < 1.5"
+    assert 0 <= c.setup_score <= 100, f"{agent_id} : setup_score {c.setup_score} hors bornes"
 
 
 def test_module_loaded():

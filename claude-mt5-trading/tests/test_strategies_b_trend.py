@@ -143,6 +143,55 @@ def test_module_alive(specs, snapshots):
     assert total >= 1, f"aucun candidat produit par la famille B : {per_agent}"
 
 
+# Agents dont la vitalité individuelle est vérifiée sur une fenêtre élargie (diagnostic + correction dédiés).
+VITALITY_AGENT_IDS = ["B04", "B06"]
+
+
+@pytest.fixture(scope="module")
+def wide_snapshots():
+    """Snapshots sur une fenêtre élargie : 2 graines x 20 instants (le broker avance de 4 h entre chaque)."""
+    from datetime import datetime, timezone
+
+    from tradinglab.mt5.mock_adapter import MockBroker
+
+    out = []
+    for seed in (7, 11):
+        broker = MockBroker(seed=seed, bars=6000)
+        broker.connect()
+        now = datetime(2026, 1, 5, tzinfo=timezone.utc)
+        for _ in range(20):
+            broker.set_now(now)
+            feed = MarketDataFeed(broker, TIMEFRAMES)
+            out.append(feed.snapshots(broker.symbols(), now=now))
+            broker.advance_bars(48)
+            now += timedelta(hours=4)
+    return out
+
+
+@pytest.mark.parametrize("agent_id", VITALITY_AGENT_IDS)
+def test_vitalite_agent_sur_fenetre_elargie(agent_id, specs, wide_snapshots):
+    """Chaque agent listé doit produire au moins un candidat CONFORME sur la fenêtre élargie.
+
+    Une stratégie qui ne déclenche jamais est inutilisable : ce test échoue si une condition d'entrée
+    redevient impossible à satisfaire (colonne absente, seuil inatteignable, géométrie SL/cible incohérente).
+    """
+    spec = specs[agent_id]
+    fn = screeners.SCREENERS[agent_id]
+    candidats = []
+    for snaps in wide_snapshots:
+        for snap in snaps.values():
+            c = fn(spec, snap)
+            if c is not None:
+                candidats.append((c, snap))
+    assert candidats, f"{agent_id} : aucun candidat sur la fenêtre élargie (stratégie inexploitable)"
+    for c, snap in candidats:
+        _check_candidate(c, spec, snap)
+        assert c.rr >= 1.5
+        assert 0 <= c.setup_score <= 100
+        chk = validate_stop_loss(c.side, c.entry, c.sl, snap.spec, atr=c.atr)
+        assert chk.ok, f"{agent_id} : {chk.reason}"
+
+
 def test_module_loaded():
     from tradinglab.agents import strategies
 

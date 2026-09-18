@@ -42,6 +42,26 @@ SL_MAX_ATR = 3.0
 # tient aussi compte de l'ATR H1 afin de ne jamais proposer un stop que le gate d'exécution refuserait
 SL_MIN_H1_ATR = 0.3
 
+# E02 — écart minimal, en POINTS DE RSI, entre les deux swings pour parler de divergence : le RSI doit refuser de
+# confirmer le nouvel extrême du prix. Sur des barres M15 le RSI bouge peu d'un swing à l'autre ; exiger un écart
+# large revenait à n'accepter aucune divergence (condition jamais vraie).
+E02_RSI_DIVERGENCE_MIN = 1.5
+# E02 — borne de la zone d'excès du RSI au PREMIER swing (miroir en vente : 100 − valeur).
+E02_RSI_EXCESS = 45.0
+# E03 — seuils des trois confluences de climax (amplitude, mèche de rejet, volume) ; deux sur trois suffisent.
+E03_RANGE_RATIO = 1.3
+E03_WICK_MIN = 0.35
+E03_VOLUME_RATIO = 1.2
+E03_CLOSE_POS_MIN = 0.40
+# E04 — l'excès de RSI se mesure sur les barres d'EXCURSION (hors bande), pas sur la barre de réintégration :
+# marge ajoutée au `rsi_lo` de l'agent (miroir en vente sur `rsi_hi`).
+E04_RSI_EXCESS_MARGIN = 15.0
+# E04 — distance minimale entre l'entrée et la médiane de Bollinger, en ATR du tf d'entrée (le trajet de retour à
+# la moyenne doit rester réel ; l'exprimer en R le rendait dépendant de la profondeur de l'excursion).
+E04_MID_MIN_ATR = 0.5
+# E07 — espace minimal, en R, jusqu'au niveau S/R suivant : le premier TP partiel doit tenir avant ce niveau.
+E07_SPACE_MIN_R = 1.0
+
 
 # --------------------------------------------------------------------------------------------------------------
 # Utilitaires locaux (purs, déterministes)
@@ -331,9 +351,11 @@ def strategy_e02(spec: AgentSpec, snap) -> Optional[TradeCandidate]:
     swings, pas un multiple de R arbitraire.
 
     Entrée : deux swings bas (hauts) confirmés par `swing_points`, écartés de 5 à 30 barres, le second au moins
-    0,15 ATR plus bas (haut) que le premier ; RSI14 du second swing supérieur d'au moins 5 points à celui du
-    premier (miroir en vente) ; RSI du premier swing <= 38 (>= 62 en vente) — la divergence doit partir d'une
-    zone d'excès ; second swing confirmé depuis 3 à 12 barres.
+    0,15 ATR plus bas (haut) que le premier ; RSI14 du second swing supérieur d'au moins `E02_RSI_DIVERGENCE_MIN`
+    (1,5 point) à celui du premier (miroir en vente) — sur M15 le RSI se déplace peu d'un swing à l'autre, exiger
+    un écart large revenait à ne jamais signaler ; RSI du premier swing <= `E02_RSI_EXCESS` (45 ; >= 55 en vente),
+    la divergence doit partir de la moitié basse (haute) de l'oscillateur ; second swing confirmé depuis 3 à
+    12 barres.
     Confirmation : histogramme MACD M15 en amélioration sur les deux dernières barres clôturées ; barre de signal
     dans le sens du trade qui clôture au-delà du plus haut (bas) de la barre précédente ET au-delà de la clôture
     du second swing.
@@ -344,7 +366,8 @@ def strategy_e02(spec: AgentSpec, snap) -> Optional[TradeCandidate]:
     TP : premier TP à 1,5 R, cible structurelle = sommet (creux) intermédiaire entre les deux swings, cible finale
     = max(`rr` R, sommet intermédiaire).
     Invalidation : nouveau plus bas (haut) sous (au-dessus de) l'extrême du second swing : la divergence est niée.
-    Score : divergence 25 + écart RSI 0-15 + excès du premier swing 0-10 + MACD 10 + fraîcheur du swing 0-9
+    Score : divergence 25 + écart RSI 0-15 (3 points par point de RSI) + excès du premier swing 0-10 + MACD 10
+    + fraîcheur du swing 0-9
     (le swing est confirmé au plus tôt 3 barres après son extrême : la composante ne peut pas atteindre 10)
     + exécution 0-10 + H1 non opposée 10.
     """
@@ -378,9 +401,9 @@ def strategy_e02(spec: AgentSpec, snap) -> Optional[TradeCandidate]:
     if not (5 <= i2 - i1 <= 30) or not (3 <= (n - 1) - i2 <= 12):
         return None
     r1, r2 = closed["rsi14"].iloc[i1], closed["rsi14"].iloc[i2]
-    if pd.isna(r1) or pd.isna(r2) or s * (float(r2) - float(r1)) < 5.0:
+    if pd.isna(r1) or pd.isna(r2) or s * (float(r2) - float(r1)) < E02_RSI_DIVERGENCE_MIN:
         return None
-    if (side is Side.BUY and float(r1) > 38.0) or (side is Side.SELL and float(r1) < 62.0):
+    if (side is Side.BUY and float(r1) > E02_RSI_EXCESS) or (side is Side.SELL and float(r1) < 100.0 - E02_RSI_EXCESS):
         return None
     since = closed.iloc[i2:n - 1]                   # barres entre le second swing et la barre de signal (exclue)
     if since.empty:
@@ -407,7 +430,7 @@ def strategy_e02(spec: AgentSpec, snap) -> Optional[TradeCandidate]:
     between = closed.iloc[i1:i2 + 1]
     target = float(between["high"].max()) if side is Side.BUY else float(between["low"].min())
     score = 25.0
-    score += _clamp(abs(float(r2) - float(r1)) * 1.5, 0, 15)
+    score += _clamp(abs(float(r2) - float(r1)) * 3.0, 0, 15)
     score += _clamp(abs(50.0 - float(r1)) - 5.0, 0, 10)
     score += 10.0
     score += _clamp(12.0 - ((n - 1) - i2), 0, 10)
@@ -443,16 +466,21 @@ def strategy_e03(spec: AgentSpec, snap) -> Optional[TradeCandidate]:
     dernières barres atteint >= 2 ATR ; extension de l'extrême par rapport à l'EMA50 M15 >= 2 ATR ; RSI14 M15
     >= 100 − `rsi_ext` pour une VENTE (course haussière épuisée), <= `rsi_ext` pour un ACHAT (course baissière
     épuisée), sur la barre de signal ou la précédente.
-    Confirmation : amplitude de la barre >= 1,3 × l'amplitude moyenne des 20 barres précédentes, mèche de rejet
-    >= 40 % de l'amplitude, clôture dans les 45 % favorables au retournement, et volume >= 1,4 × le volume moyen
-    des 20 barres précédentes (climax : sans volume exploitable, pas de signal).
+    Confirmation : clôture dans les 40 % favorables au retournement (`E03_CLOSE_POS_MIN`, condition obligatoire :
+    la barre doit refermer du côté du retournement) PLUS au moins DEUX des trois confluences de climax —
+    amplitude >= 1,3 × l'amplitude moyenne des 20 barres précédentes, mèche de rejet >= 35 % de l'amplitude,
+    volume >= 1,2 × le volume moyen des 20 barres précédentes. Exiger les trois simultanément ne se produisait
+    jamais : le volume d'un climax n'est pas toujours mesurable (tick_volume absent ou plat) et une bougie à la
+    fois très ample et très mèchée est rare. Un volume indisponible ne compte pas comme confluence (aucune donnée
+    inventée) et est signalé dans les arguments contre.
     Filtres : veto si la tendance H1 est opposée avec ADX H1 >= 35 ; spread <= 12 % de l'ATR H1.
     SL : au-delà de l'extrême du climax + 0,25 ATR, borné à [0,5 ATR ; min(3 ; 2,5 × `sl_atr`) ATR] — le stop est
     derrière la mèche de capitulation, pas derrière une structure.
     TP : premier TP à 1 R, cibles de retour à la moyenne (EMA20 puis médiane de Bollinger M15) ; cible finale
     = max(`rr` R, moyenne la plus lointaine).
     Invalidation : nouvel extrême au-delà de la mèche du climax.
-    Score : climax 20 + extension 0-15 + volume 0-15 + rejet 0-15 + RSI 0-10 + amplitude 0-10 − 10 si H1 opposée.
+    Score : climax 20 + extension 0-15 + volume 0-15 (0 si indisponible) + rejet 0-15 + RSI 0-10
+    + amplitude 0-10 − 10 si H1 opposée (borné 0-100).
     """
     c = _ctx(spec, snap)
     if not c:
@@ -484,13 +512,17 @@ def strategy_e03(spec: AgentSpec, snap) -> Optional[TradeCandidate]:
         return None
     rng = _range(le)
     mean_rng = _mean_range(ref)
-    if mean_rng <= 0 or rng < 1.3 * mean_rng:
+    if mean_rng <= 0:
         return None
     wick = _wick_against(le, side)
-    if wick < 0.40 or _close_pos(le, side) < 0.45:
+    if _close_pos(le, side) < E03_CLOSE_POS_MIN:
         return None
     vr = _vol_ratio(ref, le)
-    if vr is None or vr < 1.4:
+    # climax = au moins 2 confluences sur 3 (amplitude, mèche de rejet, volume) ; un volume indisponible (`None`)
+    # ne compte pas comme confluence, il n'est jamais remplacé par une valeur supposée
+    confluences = [rng >= E03_RANGE_RATIO * mean_rng, wick >= E03_WICK_MIN,
+                   vr is not None and vr >= E03_VOLUME_RATIO]
+    if sum(confluences) < 2:
         return None
     if _htf_veto(lt, side, 35.0):
         return None
@@ -503,15 +535,22 @@ def strategy_e03(spec: AgentSpec, snap) -> Optional[TradeCandidate]:
         return None
     score = 20.0
     score += _clamp((stretch - 2.0) * 10, 0, 15)
-    score += _clamp((vr - 1.4) * 20, 0, 15)
-    score += _clamp((wick - 0.40) * 50, 0, 15)
+    score += _clamp(((vr or 0.0) - 1.0) * 40, 0, 15)
+    score += _clamp((wick - 0.30) * 50, 0, 15)
     score += _clamp(abs(50.0 - rsi_now) - 15.0, 0, 10)
-    score += _clamp((rng / mean_rng - 1.3) * 20, 0, 10)
+    score += _clamp((rng / mean_rng - 1.2) * 20, 0, 10)
     pros = [f"climax : nouvel extrême sur 20 barres après une course de {abs(run) / atr:.1f} ATR",
-            f"extension de {stretch:.1f} ATR au-delà de l'EMA50 M15", f"volume ×{vr:.1f} (capitulation)",
+            f"extension de {stretch:.1f} ATR au-delà de l'EMA50 M15",
             f"bougie de rejet (mèche {wick:.0%}, amplitude {rng / mean_rng:.1f}× la moyenne)",
-            f"RSI {rsi_now:.0f} en zone d'excès"]
+            f"RSI {rsi_now:.0f} en zone d'excès",
+            f"{sum(confluences)}/3 confluences de climax (amplitude, mèche, volume)"]
     cons = ["épuisement : un climax peut être suivi d'un second climax dans le même sens"]
+    if vr is None:
+        cons.append("volume indisponible : la capitulation n'est pas mesurée")
+    elif vr >= E03_VOLUME_RATIO:
+        pros.append(f"volume ×{vr:.1f} (capitulation)")
+    else:
+        cons.append(f"volume ×{vr:.1f} : pas de pic de participation")
     if _opposed(lt, side):
         score -= 10
         cons.append(f"tendance {spec.timeframes['trend']} opposée : retour à la moyenne uniquement, pas de retournement")
@@ -534,19 +573,24 @@ def strategy_e04(spec: AgentSpec, snap) -> Optional[TradeCandidate]:
     distribution locale des clôtures : écart à la médiane en écarts-types et largeur de bande en percentile.
 
     Entrée : parmi les 3 barres clôturées précédant la barre de signal, au moins une clôture hors bande
-    (< bb_low / > bb_up) avec un écart à la médiane >= `z_min` (2,2) écarts-types ; la barre de signal clôture de
-    nouveau à l'intérieur de la bande, dans le sens du trade, au-dessus (sous) de la clôture précédente, avec
-    RSI14 <= `rsi_lo` + 10 (>= `rsi_hi` − 10 en vente).
+    (< bb_low / > bb_up) avec un écart à la médiane >= `z_min` (2,2) écarts-types ; RSI14 minimal (maximal) de
+    ces MÊMES barres d'excursion <= `rsi_lo` + `E04_RSI_EXCESS_MARGIN` (>= `rsi_hi` − marge en vente) — l'excès
+    appartient à l'excursion, pas à la barre de rebond : le mesurer sur la barre de signal, dont le RSI est déjà
+    remonté, rendait la condition inatteignable ; la barre de signal clôture de nouveau à l'intérieur de la
+    bande, dans le sens du trade, au-dessus (sous) de la clôture précédente, et son RSI14 n'est pas encore
+    revenu au neutre (<= 50 à l'achat, >= 50 à la vente).
     Confirmation : histogramme MACD M15 en amélioration sur la dernière barre clôturée.
     Filtres : ADX14 M15 <= 25 (régime de retour à la moyenne) ; largeur de bande au-dessus du 30e percentile des
-    100 dernières barres (une bande écrasée ne laisse aucune amplitude) ; médiane à >= 1 R du prix d'entrée ;
-    veto si la tendance H1 est opposée avec ADX H1 >= 28 ; spread <= 12 % de l'ATR H1.
+    100 dernières barres (une bande écrasée ne laisse aucune amplitude) ; médiane à >= `E04_MID_MIN_ATR` (0,5)
+    ATR du prix d'entrée — mesure indépendante de la profondeur de l'excursion, contrairement à un seuil en R qui
+    se durcissait mécaniquement quand le SL s'éloignait ; veto si la tendance H1 est opposée avec ADX H1 >= 28 ;
+    spread <= 12 % de l'ATR H1.
     SL : au-delà de l'extrême de l'excursion (mèches comprises) − 0,4 ATR, borné à
     [0,4 ATR ; min(3 ; 3 × `sl_atr`) ATR].
     TP : premier TP à 1 R, médiane de Bollinger, puis bande opposée ; cible finale = max(`rr` R, médiane).
     Invalidation : clôture M15 au-delà de l'extrême de l'excursion (la réintégration a échoué).
-    Score : excursion 20 + écart-type 0-15 + largeur de bande 0-10 + RSI 0-10 + MACD 10 + ADX bas 0-10
-    + exécution 0-10 + H1 non opposée 10.
+    Score : excursion 20 + écart-type 0-15 + largeur de bande 0-10 + excès du RSI d'excursion 0-10 + MACD 10
+    + ADX bas 0-10 + exécution 0-10 + H1 non opposée 10 (borné 0-100).
     """
     c = _ctx(spec, snap)
     if not c:
@@ -561,7 +605,7 @@ def strategy_e04(spec: AgentSpec, snap) -> Optional[TradeCandidate]:
     if not np.isfinite(sd) or sd <= 0:
         return None
     exc = closed.iloc[-4:-1]                                   # 3 barres clôturées avant la barre de signal
-    if len(exc) < 3 or exc[["bb_low", "bb_up", "bb_mid", "close"]].isna().any().any():
+    if len(exc) < 3 or exc[["bb_low", "bb_up", "bb_mid", "close", "rsi14"]].isna().any().any():
         return None
     # Chaque barre d'excursion est mesurée avec SON PROPRE écart-type (bandes de la barre concernée) : utiliser
     # celui de la barre de signal fausserait le z dès que les bandes se sont élargies ou resserrées entre-temps.
@@ -574,13 +618,19 @@ def strategy_e04(spec: AgentSpec, snap) -> Optional[TradeCandidate]:
     z_dn = float(((exc["bb_mid"] - exc["close"]) / sd_exc).max())
     z_up = float(((exc["close"] - exc["bb_mid"]) / sd_exc).max())
     rsi_lo, rsi_hi = float(p.get("rsi_lo", 25)), float(p.get("rsi_hi", 75))
+    # RSI de l'EXCURSION (le plus extrême des 3 barres hors bande) : c'est là que se situe l'excès, la barre de
+    # réintégration a déjà fait remonter (redescendre) l'oscillateur
+    rsi_dn, rsi_up = float(exc["rsi14"].min()), float(exc["rsi14"].max())
+    rsi_sig = float(le["rsi14"])
     if (exc["close"] < exc["bb_low"]).any() and z_dn >= z_min and entry > float(le["bb_low"]) \
-            and le["close"] > le["open"] and entry > float(prev["close"]) and float(le["rsi14"]) <= rsi_lo + 10.0:
-        side, z = Side.BUY, z_dn
+            and le["close"] > le["open"] and entry > float(prev["close"]) \
+            and rsi_dn <= rsi_lo + E04_RSI_EXCESS_MARGIN and rsi_sig <= 50.0:
+        side, z, rsi_x = Side.BUY, z_dn, rsi_dn
         extreme = min(float(exc["low"].min()), float(le["low"]))
     elif (exc["close"] > exc["bb_up"]).any() and z_up >= z_min and entry < float(le["bb_up"]) \
-            and le["close"] < le["open"] and entry < float(prev["close"]) and float(le["rsi14"]) >= rsi_hi - 10.0:
-        side, z = Side.SELL, z_up
+            and le["close"] < le["open"] and entry < float(prev["close"]) \
+            and rsi_up >= rsi_hi - E04_RSI_EXCESS_MARGIN and rsi_sig >= 50.0:
+        side, z, rsi_x = Side.SELL, z_up, rsi_up
         extreme = max(float(exc["high"].max()), float(le["high"]))
     else:
         return None
@@ -606,20 +656,20 @@ def strategy_e04(spec: AgentSpec, snap) -> Optional[TradeCandidate]:
         return None
     dist = abs(entry - sl)
     mid = float(le["bb_mid"])
-    if s * (mid - entry) < 1.0 * dist:
+    if s * (mid - entry) < E04_MID_MIN_ATR * atr:
         return None                                            # la médiane est déjà atteinte : plus d'excès à jouer
     opposite = float(le["bb_up"]) if side is Side.BUY else float(le["bb_low"])
     score = 20.0
     score += _clamp((z - z_min) * 12, 0, 15)
     score += _clamp((bw_pct - 30.0) * 0.2, 0, 10)
-    score += _clamp(abs(50.0 - float(le["rsi14"])) - 15.0, 0, 10)
+    score += _clamp(abs(50.0 - rsi_x) - 10.0, 0, 10)
     score += 10.0
     score += _clamp((25.0 - float(le["adx14"])) * 0.8, 0, 10)
     score += _clamp(_body_ratio(le) * 10, 0, 10)
     pros = [f"excursion à {z:.1f} écarts-types hors bande puis réintégration en clôture",
             f"largeur de bande au {bw_pct:.0f}e percentile (amplitude disponible)",
-            f"RSI {le['rsi14']:.0f}", f"ADX M15 {le['adx14']:.0f} (retour à la moyenne)",
-            "histogramme MACD en amélioration"]
+            f"RSI {rsi_x:.0f} sur l'excursion (RSI {rsi_sig:.0f} sur la barre de réintégration)",
+            f"ADX M15 {le['adx14']:.0f} (retour à la moyenne)", "histogramme MACD en amélioration"]
     cons = ["une réintégration peut échouer : les bandes suivent le mouvement si la tendance reprend"]
     if _opposed(lt, side):
         cons.append(f"tendance {spec.timeframes['trend']} opposée : viser la médiane, pas la bande opposée")
@@ -877,14 +927,17 @@ def strategy_e07(spec: AgentSpec, snap) -> Optional[TradeCandidate]:
     0,1 ATR au moins, RSI14 M15 <= 45 (>= 55 en vente).
     Filtres : niveau S/R H1 à moins de 0,5 ATR H1 = bonus de confluence ; ADX14 M15 <= 30 ; veto si la tendance
     H1 est opposée avec ADX H1 >= 30 ; spread <= 12 % de l'ATR H1 ; niveau suivant dans le sens du trade à moins
-    de 1,5 R → refus (pas d'espace).
+    de `E07_SPACE_MIN_R` (1 R) → refus (pas d'espace). Le seuil ne peut pas valoir 1,5 R : `support_resistance`
+    regroupe les niveaux tous les 0,5 ATR et le SL vaut au moins 0,3 ATR H1, si bien que le PREMIER niveau
+    au-dessus (au-dessous) de l'entrée ne dépasse jamais 1,5 R — la condition n'était jamais vraie. À 1 R, le
+    premier TP partiel tient avant ce niveau et la cible finale reste à `rr` R (rr >= 1,5 garanti).
     SL : au-delà du plus extrême entre le niveau et la mèche de rejet − 0,35 ATR, borné à
     [0,4 ATR ; min(3 ; 3 × `sl_atr`) ATR].
     TP : premier TP à 1,5 R, cible = niveau S/R suivant dans le sens du trade (moins 0,1 ATR de marge), cible
     finale = max(`rr` R, niveau suivant).
     Invalidation : clôture M15 au-delà du niveau de plus de 0,3 ATR (le niveau a cédé).
     Score : niveau historisé 20 + touches 0-15 + confluence H1 0-10 + mèche 0-15 + RSI 0-10 + espace 0-10
-    + H1 non opposée 10.
+    (8 points par R au-delà de `E07_SPACE_MIN_R`) + H1 non opposée 10 (borné 0-100).
     """
     c = _ctx(spec, snap)
     if not c:
@@ -938,7 +991,7 @@ def strategy_e07(spec: AgentSpec, snap) -> Optional[TradeCandidate]:
     dist = abs(entry - sl)
     ahead = [lv for lv in levels if s * (lv - entry) >= 0.3 * atr]
     target = (min(ahead) if side is Side.BUY else max(ahead)) - s * 0.1 * atr if ahead else float("nan")
-    if not np.isfinite(target) or s * (target - entry) < 1.5 * dist:
+    if not np.isfinite(target) or s * (target - entry) < E07_SPACE_MIN_R * dist:
         return None                                  # pas d'espace jusqu'au niveau suivant : le trade ne paie pas
     atr_h1 = _atr_h1(snap)
     h1_levels = support_resistance(_closed(t)) if t is not None else []
@@ -947,7 +1000,7 @@ def strategy_e07(spec: AgentSpec, snap) -> Optional[TradeCandidate]:
     score += _clamp((touches - 3) * 4.0, 0, 15)
     score += _clamp((wick - 0.40) * 40, 0, 15)
     score += _clamp(abs(50.0 - rsi) - 5.0, 0, 10)
-    score += _clamp((s * (target - entry) / dist - 1.5) * 8, 0, 10)
+    score += _clamp((s * (target - entry) / dist - E07_SPACE_MIN_R) * 8, 0, 10)
     pros = [f"niveau {'support' if side is Side.BUY else 'résistance'} {lvl:.5g} touché {touches} fois sur 100 barres",
             f"mèche de rejet {wick:.0%} de l'amplitude", f"RSI {rsi:.0f}",
             f"niveau suivant à {s * (target - entry) / dist:.1f} R ({target:.5g})"]

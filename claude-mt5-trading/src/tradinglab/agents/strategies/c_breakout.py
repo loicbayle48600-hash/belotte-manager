@@ -36,8 +36,9 @@ from ..screeners import register, _build, _ctx, _structure_sl, _mtf_bonus, _tren
 
 SL_MIN_ATR = 0.3            # distance de SL minimale acceptée (en ATR du tf d'entrée ET en ATR H1)
 SL_MAX_ATR = 3.0            # distance de SL maximale acceptée (en ATR du tf d'entrée)
-SL_MAX_ATR_H1 = 4.0         # distance de SL maximale en ATR H1 (borne du gate d'exécution)
+SL_MAX_ATR_H1 = 3.0         # distance de SL maximale en ATR H1 (même invariant que SL_MAX_ATR)
 STOPS_LEVEL_MARGIN = 1.5    # marge sur le stops_level broker (normalisation de prix, spread)
+LONDON_CLOSE_H = 16.0       # fin de la session de Londres (UTC), cf. core.clock.current_session
 MAX_STRUCT_RR = 6.0         # une cible structurelle au-delà de 6 R n'est pas un objectif de trade réaliste
 
 REJECTIONS: Counter = Counter()   # (agent_id, motif) -> nombre de refus (diagnostic uniquement)
@@ -94,7 +95,7 @@ def _spread_ratio(snap, atr: float) -> float:
 
 
 def _dist_ok(dist: float, atr: float, snap) -> bool:
-    """Distance de SL acceptable : finie, dans [0,3 ; 3] ATR du tf d'entrée, dans [0,3 ; 4] ATR H1 (référence
+    """Distance de SL acceptable : finie, dans [0,3 ; 3] ATR du tf d'entrée, dans [0,3 ; 3] ATR H1 (référence
     du `TradeCandidate.atr` validé par le gate) et au-dessus du stops_level broker (avec marge)."""
     if not np.isfinite(dist) or not (SL_MIN_ATR * atr <= dist <= SL_MAX_ATR * atr):
         return False
@@ -162,26 +163,55 @@ def _nearest_beyond(values: list[float], side: Side, entry: float, min_dist: flo
     return [min(lv, key=lambda v: abs(v - entry))] if lv else []
 
 
+def _first_break(closed: pd.DataFrame, hi: float, lo: float, start_h: float, margin: float = 0.0):
+    """Première cassure du jour d'un range [lo, hi], cherchée sur les barres CLÔTURÉES du jour courant dont
+    l'heure d'ouverture est ≥ `start_h` (heure UTC de fin du range).
+
+    Renvoie `(côté, borne cassée, âge en barres, barres du jour)` ou None si aucune clôture ne dépasse une
+    borne de plus de `margin`. L'âge est le nombre de barres clôturées écoulées depuis la barre de cassure
+    (0 = la cassure EST la dernière barre clôturée). Il permet d'exiger une cassure FRAÎCHE sans imposer
+    qu'elle tombe exactement sur la barre évaluée : le scan ne tourne pas à chaque barre M15, et exiger la
+    barre de cassure exacte revient en pratique à ne jamais signaler. Aucune barre en formation n'est lue.
+    """
+    day = _bars_between(closed, start_h, 24.0)
+    if day.empty:
+        return None
+    c = day["close"].to_numpy(dtype=float)
+    up, dn = c > hi + margin, c < lo - margin
+    idx = np.flatnonzero(up | dn)
+    if idx.size == 0:
+        return None
+    k = int(idx[0])
+    side = Side.BUY if bool(up[k]) else Side.SELL
+    return side, (hi if side is Side.BUY else lo), len(day) - 1 - k, day
+
+
 # ================================================================ C01 — cassure du range asiatique
 @register("C01")
 def strategy_c01(spec: AgentSpec, snap) -> Optional[TradeCandidate]:
     """C01 — asian_range_breakout (M15 / H1, sessions LONDON & OVERLAP).
 
     Thèse : le range construit pendant la session asiatique (00:00-07:00 UTC) concentre la liquidité ; la
-    première clôture M15 franche hors de ce range pendant la matinée londonienne tend à se prolonger.
+    PREMIÈRE cassure du jour hors de ce range, pendant la matinée londonienne, tend à se prolonger tant que
+    le prix reste accroché à la borne cassée.
 
-    Entrée : dernière barre M15 clôturée qui OUVRE dans le range et CLÔTURE au-delà (première cassure du jour :
-    aucune barre précédente après la fin de la session n'a déjà clôturé hors du range).
-    Confirmation : bougie d'impulsion — corps ≥ 0,4 ATR et clôture dans les 30 % extrêmes de la bougie.
+    Entrée : première barre M15 clôturée hors du range après la fin de la session asiatique (cassure du jour) ;
+    la décision est prise sur cette barre ou sur l'une des 16 barres clôturées suivantes (fenêtre
+    d'exploitation), tant que la dernière barre clôturée reste hors du range (cassure TENUE). Le scan ne
+    tourne pas à chaque barre M15 : exiger que la cassure tombe exactement sur la barre évaluée reviendrait
+    à ne jamais signaler.
+    Confirmation : bougie de cassure d'impulsion — corps ≥ 0,35 ATR OU clôture dans les 35 % extrêmes de la
+    bougie (les deux ⇒ bonus de score).
     Filtres : range asiatique entre 0,8 et 4 ATR H1 (ni bruit, ni journée déjà consommée) ; heure de la barre
-    dans [fin de session, fin + 5 h) ; extension au-delà de la borne ≤ 0,8 ATR (pas de poursuite).
+    dans [fin de session, fin + 5 h) ; extension au-delà de la borne ≤ 1,2 ATR (on ne court pas après le prix).
     SL : milieu du range asiatique (− 0,1 ATR de marge), plafonné à sl_atr × ATR derrière la borne cassée
     quand le range est large — une cassure valide ne doit pas revenir au centre du range.
     TP : 1,5 R (partiel), borne + 1 × hauteur du range (mouvement mesuré), puis max(rr × R, borne + 1,5 × range).
     Invalidation : clôture M15 de retour à l'intérieur du range asiatique.
-    Score = 35 (cassure nette d'un range valide) + 10 corps ≥ 0,6 ATR + 10 range compact (≤ 2 ATR H1)
-            + 15 tendance H1 alignée (_mtf_bonus) + 5 volatilité médiane (vol_pct 20-80)
-            + 10 extension ≤ 0,3 ATR − 10 tendance H1 opposée.
+    Score (0-100, somme de composantes documentées, PAS une probabilité de gain) = 35 (cassure nette d'un
+    range valide) + 10 impulsion complète (corps ET clôture extrême) + 10 range compact (≤ 2 ATR H1)
+    + 15 tendance H1 alignée (_mtf_bonus) + 5 volatilité médiane (vol_pct 20-80) + 10 extension ≤ 0,3 ATR
+    + 5 cassure sur la barre courante − 10 tendance H1 opposée ; `_build` retranche la pénalité de spread.
     """
     aid = spec.agent_id
     c = _ctx(spec, snap)
@@ -203,43 +233,42 @@ def strategy_c01(spec: AgentSpec, snap) -> Optional[TradeCandidate]:
     h = _bar_hour(le)
     if h is None or not (end_h <= h < end_h + 5.0):
         return _rej(aid, "hors fenêtre horaire")
+    brk = _first_break(closed, hi, lo, end_h)
+    if brk is None:
+        return _rej(aid, "aucune cassure du range aujourd'hui")
+    side, boundary, age, day = brk
     entry = float(le["close"])
-    bar_rng = float(le["high"] - le["low"])
-    body = abs(float(le["close"] - le["open"]))
+    ext = side.sign * (entry - boundary)
+    if ext <= 0:
+        return _rej(aid, "cassure non tenue (retour dans le range)")
+    if age > 16:
+        return _rej(aid, "cassure trop ancienne")
+    bk = day.iloc[len(day) - 1 - age]          # bougie de cassure (barre clôturée)
+    bar_rng = float(bk["high"] - bk["low"])
     if bar_rng <= 0:
         return _rej(aid, "bougie sans range")
-    earlier = _bars_between(closed.iloc[:-1], end_h, 24.0)
-    sl_atr = float(p.get("sl_atr", 1.0))
-    if entry > hi and le["open"] <= hi:
-        side, boundary = Side.BUY, hi
-        strong = (le["close"] - le["low"]) / bar_rng >= 0.7
-        already = bool((earlier["close"] > hi).any()) if len(earlier) else False
-        sl = max((hi + lo) / 2.0 - 0.1 * atr, hi - sl_atr * atr)
-        ext = entry - hi
-    elif entry < lo and le["open"] >= lo:
-        side, boundary = Side.SELL, lo
-        strong = (le["high"] - le["close"]) / bar_rng >= 0.7
-        already = bool((earlier["close"] < lo).any()) if len(earlier) else False
-        sl = min((hi + lo) / 2.0 + 0.1 * atr, lo + sl_atr * atr)
-        ext = lo - entry
-    else:
-        return _rej(aid, "pas de clôture hors du range")
-    if already:
-        return _rej(aid, "cassure déjà survenue aujourd'hui")
-    if not strong or body < 0.4 * atr:
+    body = abs(float(bk["close"] - bk["open"]))
+    close_pos = (float(bk["close"] - bk["low"]) if side is Side.BUY else float(bk["high"] - bk["close"])) / bar_rng
+    strong_close, strong_body = close_pos >= 0.65, body >= 0.35 * atr
+    if not (strong_close or strong_body):
         return _rej(aid, "bougie sans impulsion")
-    if ext > 0.8 * atr:
+    if ext > 1.2 * atr:
         return _rej(aid, "extension trop grande")
+    sl_atr = float(p.get("sl_atr", 1.0))
+    if side is Side.BUY:
+        sl = max((hi + lo) / 2.0 - 0.1 * atr, hi - sl_atr * atr)
+    else:
+        sl = min((hi + lo) / 2.0 + 0.1 * atr, lo + sl_atr * atr)
     dist = abs(entry - sl)
     if not _dist_ok(dist, atr, snap):
         return _rej(aid, "distance SL hors bornes")
     score = 35.0
-    pros = [f"première clôture hors du range asiatique {lo:.5g}-{hi:.5g} ({rng / atr_h1:.1f} ATR H1)",
-            "bougie d'impulsion (clôture dans les 30 % extrêmes)"]
+    pros = [f"première cassure du jour hors du range asiatique {lo:.5g}-{hi:.5g} ({rng / atr_h1:.1f} ATR H1)",
+            f"bougie de cassure d'impulsion (corps {body / atr:.2f} ATR, clôture à {close_pos * 100:.0f} % de la bougie)"]
     cons: list[str] = []
-    if body >= 0.6 * atr:
+    if strong_close and strong_body:
         score += 10
-        pros.append(f"corps {body / atr:.1f} ATR")
+        pros.append("impulsion complète (corps et clôture extrême)")
     if rng <= 2.0 * atr_h1:
         score += 10
         pros.append("range asiatique compact")
@@ -257,6 +286,10 @@ def strategy_c01(spec: AgentSpec, snap) -> Optional[TradeCandidate]:
         pros.append("entrée proche de la borne")
     else:
         cons.append(f"extension {ext / atr:.2f} ATR au-delà de la borne")
+    if age == 0:
+        score += 5
+    else:
+        cons.append(f"cassure vieille de {age} barre(s) M15 : une partie du mouvement est faite")
     cons.append("faux breakout possible : SL à l'intérieur du range")
     inv = f"clôture M15 de retour à l'intérieur du range asiatique ({lo:.5g}-{hi:.5g})"
     cand = _build(spec, snap, side, entry, sl, p.get("rr", 2.0), _clamp(score), pros, cons, inv, bt)
@@ -270,19 +303,22 @@ def strategy_c02(spec: AgentSpec, snap) -> Optional[TradeCandidate]:
     """C02 — london_breakout (M15 / H1, sessions LONDON & OVERLAP).
 
     Thèse : les deux premières heures de Londres (07:00-09:00 UTC) fixent le range d'ouverture ; sa cassure
-    accompagnée d'un momentum MACD croissant donne la direction de la matinée.
+    accompagnée d'un momentum MACD orienté donne la direction de la matinée.
 
-    Entrée : barre M15 clôturée au-delà de la borne d'au moins 0,15 ATR, alors que la barre précédente
-    clôturait encore dans le range (cassure fraîche).
-    Confirmation : histogramme MACD (tf d'entrée) du signe de la cassure ET en progression sur la barre.
-    Filtres : range 0,5-3 ATR H1 ; heure de la barre dans [fin du range, fin + 3 h) ; extension ≤ 0,6 ATR.
-    SL : plus bas (plus haut) de la bougie de cassure − 0,2 ATR, et au moins 0,5 ATR sous l'entrée
-    (extrême de bougie) ; refus si la distance dépasse 3 ATR.
+    Entrée : première barre M15 clôturée au-delà d'une borne d'au moins 0,15 ATR après la fin du range ;
+    la décision est prise sur cette barre ou sur l'une des 8 barres clôturées suivantes, à condition que la
+    dernière barre clôturée soit toujours au moins 0,15 ATR au-delà de la borne (cassure tenue).
+    Confirmation : histogramme MACD (tf d'entrée) du signe de la cassure ET en progression sur l'une des deux
+    dernières barres clôturées (le momentum peut respirer une barre sans invalider la cassure).
+    Filtres : range 0,5-3 ATR H1 ; heure de la barre dans [fin du range, fin + 3 h) ; extension ≤ 1 ATR.
+    SL : extrême de la JAMBE de cassure (de la bougie de cassure à la dernière barre clôturée) − 0,2 ATR,
+    et au moins 0,5 ATR sous/au-dessus de l'entrée.
     TP : 1,5 R partiel, puis swing H1 confirmé le plus proche au-delà de l'entrée (structure du tf de tendance),
     cible finale max(rr × R, swing H1).
     Invalidation : clôture M15 de retour dans le range OU histogramme MACD qui change de signe.
-    Score = 30 (cassure du range d'ouverture) + 15 momentum MACD croissant + 10 range ≤ 1 ATR H1 (compression
-            pré-Londres) + 15 tendance H1 alignée + 10 ADX H1 ≥ 25 + 10 extension ≤ 0,3 ATR.
+    Score (0-100, somme documentée, PAS une probabilité) = 30 (cassure du range d'ouverture) + 15 momentum
+    MACD orienté + 10 range ≤ 1 ATR H1 (compression pré-Londres) + 15 tendance H1 alignée + 10 ADX H1 ≥ 25
+    + 10 extension ≤ 0,3 ATR + 5 cassure sur la barre courante ; `_build` retranche la pénalité de spread.
     """
     aid = spec.agent_id
     c = _ctx(spec, snap)
@@ -293,8 +329,8 @@ def strategy_c02(spec: AgentSpec, snap) -> Optional[TradeCandidate]:
     closed = e.iloc[:-1]
     if len(closed) < 40 or not _valid(le, "macd_hist"):
         return _rej(aid, "historique court")
-    prev = closed.iloc[-2]
-    if not _valid(prev, "macd_hist", "close"):
+    prev, pre = closed.iloc[-2], closed.iloc[-3]
+    if not _valid(prev, "macd_hist", "close") or not _valid(pre, "macd_hist"):
         return _rej(aid, "MACD indisponible")
     hi, lo = session_range(closed, p.get("start", "07:00"), p.get("end", "09:00"))
     if not (np.isfinite(hi) and np.isfinite(lo)) or hi <= lo:
@@ -307,28 +343,33 @@ def strategy_c02(spec: AgentSpec, snap) -> Optional[TradeCandidate]:
     h = _bar_hour(le)
     if h is None or not (end_h <= h < end_h + 3.0):
         return _rej(aid, "hors fenêtre horaire")
+    brk = _first_break(closed, hi, lo, end_h, margin=0.15 * atr)
+    if brk is None:
+        return _rej(aid, "pas de cassure du range d'ouverture")
+    side, boundary, age, day = brk
+    if age > 8:
+        return _rej(aid, "cassure trop ancienne")
     entry = float(le["close"])
-    hist, hist_prev = float(le["macd_hist"]), float(prev["macd_hist"])
-    if entry > hi + 0.15 * atr and prev["close"] <= hi:
-        if not (hist > 0 and hist > hist_prev):
-            return _rej(aid, "MACD non confirmé")
-        side, ext = Side.BUY, entry - hi
-        sl = min(float(le["low"]) - 0.2 * atr, entry - 0.5 * atr)
-    elif entry < lo - 0.15 * atr and prev["close"] >= lo:
-        if not (hist < 0 and hist < hist_prev):
-            return _rej(aid, "MACD non confirmé")
-        side, ext = Side.SELL, lo - entry
-        sl = max(float(le["high"]) + 0.2 * atr, entry + 0.5 * atr)
-    else:
-        return _rej(aid, "pas de cassure fraîche")
-    if ext > 0.6 * atr:
+    sgn = side.sign
+    ext = sgn * (entry - boundary)
+    if ext < 0.15 * atr:
+        return _rej(aid, "cassure non tenue")
+    hist, hist_prev, hist_pre = float(le["macd_hist"]), float(prev["macd_hist"]), float(pre["macd_hist"])
+    if not (sgn * hist > 0 and (sgn * (hist - hist_prev) > 0 or sgn * (hist_prev - hist_pre) > 0)):
+        return _rej(aid, "MACD non confirmé")
+    if ext > 1.0 * atr:
         return _rej(aid, "extension trop grande")
+    leg = day.iloc[len(day) - 1 - age:]            # jambe de cassure (barres clôturées uniquement)
+    if side is Side.BUY:
+        sl = min(float(leg["low"].min()) - 0.2 * atr, entry - 0.5 * atr)
+    else:
+        sl = max(float(leg["high"].max()) + 0.2 * atr, entry + 0.5 * atr)
     dist = abs(entry - sl)
     if not _dist_ok(dist, atr, snap):
         return _rej(aid, "distance SL hors bornes")
     score = 30.0 + 15.0
-    pros = [f"cassure fraîche du range d'ouverture Londres {lo:.5g}-{hi:.5g} ({rng / atr_h1:.1f} ATR H1)",
-            "histogramme MACD croissant dans le sens de la cassure"]
+    pros = [f"cassure du range d'ouverture Londres {lo:.5g}-{hi:.5g} ({rng / atr_h1:.1f} ATR H1), tenue sur {age + 1} barre(s)",
+            "histogramme MACD orienté dans le sens de la cassure"]
     cons: list[str] = []
     if rng <= 1.0 * atr_h1:
         score += 10
@@ -345,12 +386,14 @@ def strategy_c02(spec: AgentSpec, snap) -> Optional[TradeCandidate]:
         score += 10
     else:
         cons.append(f"extension {ext / atr:.2f} ATR : entrée moins favorable")
+    if age == 0:
+        score += 5
     sh, sl_pts = swing_points(t.iloc[:-1])
     swings = [v for _, v in (sh if side is Side.BUY else sl_pts)]
     targets = _nearest_beyond(swings, side, entry, 0.5 * dist)
     if not targets:
         cons.append("aucun swing H1 comme cible : multiples de R")
-    cons.append("bougie de cassure comme référence de SL : un retest profond invalide le trade")
+    cons.append("jambe de cassure comme référence de SL : un retest profond invalide le trade")
     inv = f"clôture M15 de retour dans le range ({lo:.5g}-{hi:.5g}) ou histogramme MACD de signe inverse"
     cand = _build(spec, snap, side, entry, sl, p.get("rr", 2.0), _clamp(score), pros, cons, inv, bt)
     return _with_tp_plan(cand, side, entry, dist, targets, p.get("rr", 2.0))
@@ -362,18 +405,25 @@ def strategy_c03(spec: AgentSpec, snap) -> Optional[TradeCandidate]:
     """C03 — newyork_breakout (M15 / H1, sessions NEWYORK & OVERLAP).
 
     Thèse : le range 12:00-14:00 UTC (pré-ouverture US) est souvent un piège ; on n'entre qu'après DEUX
-    clôtures M15 consécutives hors du range, dans le sens de la tendance H1, pendant le cœur de la session US.
+    clôtures M15 consécutives hors du range, sans réintégration depuis la cassure, dans le sens de la
+    tendance (ou de la structure) H1, pendant le cœur de la session US.
 
-    Entrée : la barre précédente ET la dernière barre clôturée sont hors du range, la barre encore avant
-    était dedans (cassure fraîche) ; la seconde barre n'a pas replongé dans le range de plus de 0,2 ATR.
-    Confirmation : tendance H1 (EMA) alignée OU structure H1 HH_HL / LH_LL alignée ; refus si tendance H1 opposée.
-    Filtres : range 0,5-3 ATR H1 ; heure de la barre dans [fin du range, fin + 3 h) ; spread ≤ 0,10 ATR ;
-    extension ≤ 0,8 ATR.
-    SL : borne cassée − 0,3 ATR (niveau) → distance = extension + 0,3 ATR.
+    Entrée : première cassure du jour après la fin du range (`_first_break`), au plus 14 barres clôturées plus
+    tôt (fenêtre d'exploitation) ; la dernière barre clôturée ET la précédente sont hors du range (double
+    clôture) et aucune clôture n'est revenue dans le range depuis la cassure ; la dernière barre n'a pas
+    replongé dans le range de plus de 0,3 ATR (mèche).
+    Confirmation : au moins UNE des trois lectures H1 alignées (tendance EMA complète, structure HH_HL / LH_LL,
+    ou simple EMA20 vs EMA50) ; refus si la tendance H1 est franchement opposée.
+    Filtres : range 0,5-3 ATR H1 ; heure de la barre dans [fin du range, fin + 4,5 h) — cœur de la séance US ;
+    spread ≤ 0,12 ATR ; extension ≤ min(3 ATR ; max(1,2 ATR ; 1 × hauteur du range)).
+    SL : borne cassée − 0,3 ATR, borné entre 0,7 et 2,2 ATR de l'entrée — une double clôture éloigne l'entrée
+    de la borne : sans plancher le SL passerait sous le stops_level (et sous 0,3 ATR H1), sans plafond il
+    sortirait des bornes de SL du module ; au-delà, le SL devient un stop ATR assumé.
     TP : 1,5 R partiel, plus haut/bas de la veille (D1) comme cible structurelle, final max(rr × R, PDH/PDL).
     Invalidation : clôture M15 de retour sous/au-dessus de la borne du range NY.
-    Score = 30 (cassure NY) + 15 double clôture tenue + 10 structure H1 alignée + 15 tendance H1 alignée
-            + 5 volatilité médiane + 10 spread ≤ 0,05 ATR.
+    Score (0-100, somme documentée, PAS une probabilité) = 30 (cassure NY) + 15 double clôture tenue
+    + 10 structure H1 alignée + 15 tendance H1 alignée + 5 volatilité médiane + 10 spread ≤ 0,05 ATR ;
+    `_build` retranche la pénalité de spread.
     """
     aid = spec.agent_id
     c = _ctx(spec, snap)
@@ -384,7 +434,6 @@ def strategy_c03(spec: AgentSpec, snap) -> Optional[TradeCandidate]:
     closed = e.iloc[:-1]
     if len(closed) < 40:
         return _rej(aid, "historique court")
-    prev, pre = closed.iloc[-2], closed.iloc[-3]
     hi, lo = session_range(closed, p.get("start", "12:00"), p.get("end", "14:00"))
     if not (np.isfinite(hi) and np.isfinite(lo)) or hi <= lo:
         return _rej(aid, "range NY indisponible")
@@ -394,38 +443,49 @@ def strategy_c03(spec: AgentSpec, snap) -> Optional[TradeCandidate]:
         return _rej(aid, "largeur du range hors bornes")
     end_h = _hhmm(p.get("end", "14:00"), 14.0)
     h = _bar_hour(le)
-    if h is None or not (end_h <= h < end_h + 3.0):
+    if h is None or not (end_h <= h < end_h + 4.5):
         return _rej(aid, "hors fenêtre horaire")
     spread = _spread_ratio(snap, atr)
-    if spread > 0.10:
+    if spread > 0.12:
         return _rej(aid, "spread trop élevé")
+    brk = _first_break(closed, hi, lo, end_h)
+    if brk is None:
+        return _rej(aid, "pas de cassure du range NY")
+    side, boundary, age, day = brk
+    if age > 14:
+        return _rej(aid, "cassure trop ancienne")
     entry = float(le["close"])
+    sgn = side.sign
+    prev = closed.iloc[-2]
+    if sgn * (entry - boundary) <= 0 or sgn * (float(prev["close"]) - boundary) <= 0:
+        return _rej(aid, "pas de double clôture hors du range")
+    held = day.iloc[len(day) - 1 - age:]
+    if bool((sgn * (held["close"] - boundary) <= 0).any()):
+        return _rej(aid, "réintégration du range depuis la cassure")
+    dip = (boundary - float(le["low"])) if side is Side.BUY else (float(le["high"]) - boundary)
+    if dip > 0.3 * atr:
+        return _rej(aid, "dernière barre replongée dans le range")
     tr = _trend_of(lt)
     st = structure_label(t.iloc[:-1])
-    if entry > hi and prev["close"] > hi and pre["close"] <= hi and le["low"] >= hi - 0.2 * atr:
-        if tr == "DOWN":
-            return _rej(aid, "tendance H1 opposée")
-        side, boundary, ext = Side.BUY, hi, entry - hi
-        sl = hi - 0.3 * atr
-        aligned = st == "HH_HL"
-    elif entry < lo and prev["close"] < lo and pre["close"] >= lo and le["high"] <= lo + 0.2 * atr:
-        if tr == "UP":
-            return _rej(aid, "tendance H1 opposée")
-        side, boundary, ext = Side.SELL, lo, lo - entry
-        sl = lo + 0.3 * atr
-        aligned = st == "LH_LL"
-    else:
-        return _rej(aid, "pas de double clôture hors du range")
-    if ext > 0.8 * atr:
+    aligned = st == ("HH_HL" if side is Side.BUY else "LH_LL")
+    ema_ok = sgn * (float(lt["ema20"]) - float(lt["ema50"])) > 0
+    if (side is Side.BUY and tr == "DOWN") or (side is Side.SELL and tr == "UP"):
+        return _rej(aid, "tendance H1 opposée")
+    if not (tr != "FLAT" or aligned or ema_ok):
+        return _rej(aid, "ni tendance, ni structure, ni EMA H1 alignées")
+    ext = sgn * (entry - boundary)
+    if ext > min(3.0 * atr, max(1.2 * atr, 1.0 * rng)):
         return _rej(aid, "extension trop grande")
-    if tr == "FLAT" and not aligned:
-        return _rej(aid, "ni tendance ni structure H1 alignée")
+    # SL derrière la borne cassée, plancher 0,7 ATR (stops_level / borne ATR H1) et plafond 2,2 ATR
+    sl = boundary - sgn * 0.3 * atr
+    sl = min(sl, entry - 0.7 * atr) if side is Side.BUY else max(sl, entry + 0.7 * atr)
+    sl = max(sl, entry - 2.2 * atr) if side is Side.BUY else min(sl, entry + 2.2 * atr)
     dist = abs(entry - sl)
     if not _dist_ok(dist, atr, snap):
         return _rej(aid, "distance SL hors bornes")
     score = 30.0 + 15.0
     pros = [f"deux clôtures M15 consécutives hors du range NY {lo:.5g}-{hi:.5g} ({rng / atr_h1:.1f} ATR H1)",
-            "cassure tenue (pas de retour dans le range)"]
+            f"cassure tenue depuis {age + 1} barre(s) (aucune réintégration du range)"]
     cons: list[str] = []
     if aligned:
         score += 10
@@ -803,23 +863,29 @@ def strategy_c07(spec: AgentSpec, snap) -> Optional[TradeCandidate]:
 # ================================================================ C08 — cassure du range asiatique sur l'or
 @register("C08")
 def strategy_c08(spec: AgentSpec, snap) -> Optional[TradeCandidate]:
-    """C08 — asian_range_breakout_gold (M15 / H1, métaux, session LONDON uniquement).
+    """C08 — asian_range_breakout_gold (M15 / H1, métaux, session LONDON).
 
-    Thèse : sur l'or, la sortie du range asiatique pendant la matinée de Londres n'est exploitable que si
-    elle est portée par une impulsion (trois clôtures consécutives dans le sens) ET par une tendance H1 déjà
-    active (ADX) ; les cassures sans élan sur l'or sont typiquement des chasses de stops.
+    Thèse : sur l'or, la sortie du range asiatique pendant la séance de Londres n'est exploitable que si elle
+    est portée par une impulsion ET par une tendance H1 déjà active (ADX) ; les cassures sans élan sur l'or
+    sont typiquement des chasses de stops.
 
-    Entrée : clôture M15 au-delà de la borne du range asiatique d'au moins 0,1 ATR, la bougie de cassure
-    marquant le plus haut (plus bas) du jour.
-    Confirmation : trois clôtures monotones (c[-3] < c[-2] < c[-1] pour un BUY) ; RSI14 > 55 (< 45) ;
-    ADX H1 ≥ 20 ou tendance H1 EMA alignée ; refus si tendance H1 opposée.
-    Filtres : classe d'actif « metals » ; range 0,8-4 ATR H1 ; heure de la barre dans [fin de session, fin + 4 h) ;
-    spread ≤ 0,08 ATR (le spread de l'or pèse) ; extension ≤ 1 ATR.
-    SL : structure — derrière le dernier swing M15 confirmé via `_structure_sl` (sl_atr = 1,2).
+    Entrée : première clôture M15 du jour au-delà de la borne du range asiatique d'au moins 0,1 ATR, au plus
+    32 barres clôturées plus tôt (fenêtre d'exploitation), la dernière barre clôturée restant au-delà de la
+    borne (cassure tenue).
+    Confirmation : au moins DEUX des trois confluences suivantes (exiger les trois simultanément ne se
+    produit quasiment jamais) — impulsion (clôture progressée de ≥ 0,3 ATR sur 3 barres dans le sens),
+    RSI14 > 50 (BUY) / < 50 (SELL), extrême du jour touché à 0,5 ATR près.
+    Filtres : classe d'actif « metals » ; range 0,6-4,5 ATR H1 ; heure de la barre entre la fin de la session
+    asiatique et la clôture de Londres (16:00 UTC) ; spread ≤ 0,08 ATR (le spread de l'or pèse) ; tendance H1
+    non opposée et (ADX H1 ≥ 18 ou tendance H1 alignée) ; extension ≤ min(3 ATR ; max(1,5 ATR ; 1 × hauteur
+    du range)).
+    SL : structure — derrière le dernier swing M15 confirmé via `_structure_sl` (sl_atr = 1,2), plafonné à
+    2,8 ATR de l'entrée (un swing trop lointain sortirait des bornes de SL du module).
     TP : 1,5 R partiel, swing H4 confirmé le plus proche au-delà de l'entrée, final max(rr × R, swing H4).
     Invalidation : clôture H1 de retour sous/au-dessus de la borne du range asiatique.
-    Score = 30 (cassure asiatique sur l'or) + 10 impulsion 3 clôtures + 10 RSI + 10 ADX H1 ≥ 25 + 15 tendance
-            H1 alignée + 10 exécution (spread ≤ 0,04 ATR et extension ≤ 0,4 ATR) − 10 aucun swing H4 cible.
+    Score (0-100, somme documentée, PAS une probabilité) = 30 (cassure asiatique sur l'or) + 8 par confluence
+    validée (16 ou 24) + 10 ADX H1 ≥ 25 + 15 tendance H1 alignée + 10 exécution (spread ≤ 0,04 ATR et
+    extension ≤ 0,4 ATR) − 10 aucun swing H4 cible ; `_build` retranche la pénalité de spread.
     """
     aid = spec.agent_id
     if snap.spec is None or getattr(snap.spec, "asset_class", "") != "metals":
@@ -837,43 +903,52 @@ def strategy_c08(spec: AgentSpec, snap) -> Optional[TradeCandidate]:
         return _rej(aid, "range asiatique indisponible")
     rng = hi - lo
     atr_h1 = float(snap.atr_h1 or 0.0)
-    if not _range_ok(rng, atr_h1, 0.8, 4.0):
+    if not _range_ok(rng, atr_h1, 0.6, 4.5):
         return _rej(aid, "largeur du range hors bornes")
     end_h = _hhmm(p.get("end", "07:00"), 7.0)
     h = _bar_hour(le)
-    if h is None or not (end_h <= h < end_h + 4.0):
+    if h is None or not (end_h <= h < LONDON_CLOSE_H):
         return _rej(aid, "hors fenêtre horaire")
     spread = _spread_ratio(snap, atr)
     if spread > 0.08:
         return _rej(aid, "spread trop élevé")
-    today = _today(closed)
-    c3 = closed["close"].iloc[-3:].to_numpy(dtype=float)
+    brk = _first_break(closed, hi, lo, end_h, margin=0.1 * atr)
+    if brk is None:
+        return _rej(aid, "pas de cassure du range")
+    side, boundary, age, day = brk
     entry = float(le["close"])
+    sgn = side.sign
+    ext = sgn * (entry - boundary)
+    if ext <= 0:
+        return _rej(aid, "cassure non tenue")
+    if age > 32:
+        return _rej(aid, "cassure trop ancienne")
+    today = _today(closed)
+    c4 = closed["close"].iloc[-4:].to_numpy(dtype=float)
+    impulse = bool(sgn * (c4[-1] - c4[0]) >= 0.3 * atr)
+    rsi_ok = bool(le["rsi14"] > 50) if side is Side.BUY else bool(le["rsi14"] < 50)
+    extreme = bool(float(le["high"]) >= float(today["high"].max()) - 0.5 * atr) if side is Side.BUY \
+        else bool(float(le["low"]) <= float(today["low"].min()) + 0.5 * atr)
+    conf = int(impulse) + int(rsi_ok) + int(extreme)
+    if conf < 2:
+        return _rej(aid, "moins de deux confluences sur trois")
     tr = _trend_of(lt)
-    adx_ok = _valid(lt, "adx14") and lt["adx14"] >= 20
-    if entry > hi + 0.1 * atr:
-        if not (c3[0] < c3[1] < c3[2] and le["rsi14"] > 55 and le["high"] >= today["high"].max()):
-            return _rej(aid, "impulsion non confirmée")
-        if tr == "DOWN" or not (adx_ok or tr == "UP"):
-            return _rej(aid, "tendance H1 non porteuse")
-        side, boundary, ext = Side.BUY, hi, entry - hi
-    elif entry < lo - 0.1 * atr:
-        if not (c3[0] > c3[1] > c3[2] and le["rsi14"] < 45 and le["low"] <= today["low"].min()):
-            return _rej(aid, "impulsion non confirmée")
-        if tr == "UP" or not (adx_ok or tr == "DOWN"):
-            return _rej(aid, "tendance H1 non porteuse")
-        side, boundary, ext = Side.SELL, lo, lo - entry
-    else:
-        return _rej(aid, "pas de clôture hors du range")
-    if ext > 1.0 * atr:
+    adx_ok = bool(_valid(lt, "adx14") and lt["adx14"] >= 18)
+    if (side is Side.BUY and tr == "DOWN") or (side is Side.SELL and tr == "UP"):
+        return _rej(aid, "tendance H1 opposée")
+    if not (adx_ok or tr == ("UP" if side is Side.BUY else "DOWN")):
+        return _rej(aid, "tendance H1 non porteuse")
+    if ext > min(3.0 * atr, max(1.5 * atr, 1.0 * rng)):
         return _rej(aid, "extension trop grande")
     sl = _structure_sl(e, side, entry, atr, float(p.get("sl_atr", 1.2)))
+    # le swing M15 peut être très loin : plafond ATR explicite, sinon le SL sort des bornes du module
+    sl = max(sl, entry - 2.8 * atr) if side is Side.BUY else min(sl, entry + 2.8 * atr)
     dist = abs(entry - sl)
     if not _dist_ok(dist, atr, snap):
         return _rej(aid, "distance SL hors bornes")
-    score = 30.0 + 10.0 + 10.0
-    pros = [f"cassure du range asiatique {lo:.5g}-{hi:.5g} ({rng / atr_h1:.1f} ATR H1) sur l'or avec impulsion de 3 clôtures",
-            f"RSI14 {le['rsi14']:.0f}, nouveau {'plus haut' if side is Side.BUY else 'plus bas'} du jour"]
+    score = 30.0 + 8.0 * conf
+    pros = [f"cassure du range asiatique {lo:.5g}-{hi:.5g} ({rng / atr_h1:.1f} ATR H1) sur l'or, tenue depuis {age + 1} barre(s)",
+            f"{conf}/3 confluences (impulsion {impulse}, RSI {le['rsi14']:.0f}, extrême du jour {extreme})"]
     cons: list[str] = []
     if _valid(lt, "adx14") and lt["adx14"] >= 25:
         score += 10
@@ -910,17 +985,23 @@ def strategy_c09(spec: AgentSpec, snap) -> Optional[TradeCandidate]:
     référentiel de la journée ; sa cassure sur volume, dans le sens du gap d'ouverture, tend à se prolonger
     (« gap and go »).
 
-    Entrée : clôture M15 au-delà de l'opening range d'au moins 0,1 ATR, bougie dans le sens de la cassure,
-    barre précédente encore dans le range (cassure fraîche).
-    Confirmation : tick_volume de la bougie ≥ 1,1 × volume moyen des barres de l'opening range.
-    Filtres : classe d'actif « indices » ; largeur de l'OR entre 0,3 et 2 ATR H1 ; heure de la barre dans
-    [fin de l'OR, fin + 2,5 h) ; extension ≤ 0,6 ATR.
-    SL : borne opposée de l'opening range − 0,1 ATR ; si cela dépasse 2 ATR, milieu de l'OR − 0,1 ATR.
+    Entrée : première clôture M15 du jour au-delà de l'opening range d'au moins 0,1 ATR, au plus 14 barres
+    clôturées plus tôt ; la dernière barre clôturée est toujours au moins 0,1 ATR au-delà de la borne
+    (cassure tenue) — une seconde clôture consécutive au-delà de la borne vaut un bonus de score.
+    Confirmation : tick_volume ≥ 0,9 × volume moyen des barres de l'opening range, sur la bougie de cassure OU
+    sur la bougie d'entrée (la participation peut arriver sur l'une ou l'autre).
+    Filtres : classe d'actif « indices » ; largeur de l'OR entre 0,25 et 2,5 ATR H1 ; heure de la barre dans
+    [fin de l'OR, fin + 3,5 h) ; extension ≤ min(3 ATR ; max(1,5 ATR ; 1 × hauteur de l'OR)) — jamais au-delà du mouvement
+    mesuré (et jamais plus de 3 ATR).
+    SL : cascade — borne opposée de l'opening range − 0,1 ATR ; si cela dépasse 2,2 ATR, milieu de l'OR − 0,1 ATR ;
+    si c'est encore trop loin, juste derrière la borne cassée (− 0,4 ATR), le tout plafonné à 2,5 ATR de l'entrée.
     TP : 1,5 R partiel, projections de la hauteur de l'OR (× 1 et × 2 depuis la borne cassée), final
     max(rr × R, borne + 2 × OR).
     Invalidation : clôture M15 de retour dans l'opening range.
-    Score = 30 (ORB) + 10 volume ≥ 1,5 × + 10 gap d'ouverture (D1) aligné − 5 cassure contre le gap
-            + 15 tendance H1 alignée + 5 OR compact (≤ 1 ATR H1) + 5 extension ≤ 0,3 ATR.
+    Score (0-100, somme documentée, PAS une probabilité) = 30 (ORB) + 10 seconde clôture consécutive au-delà
+    de la borne + 10 volume ≥ 1,5 × + 10 gap d'ouverture (D1) aligné − 5 cassure contre le gap + 15 tendance
+    H1 alignée + 5 OR compact (≤ 1 ATR H1) + 5 extension ≤ 0,3 ATR + 5 bougie d'entrée dans le sens de la
+    cassure ; `_build` retranche la pénalité de spread.
     """
     aid = spec.agent_id
     if snap.spec is None or getattr(snap.spec, "asset_class", "") != "indices":
@@ -939,43 +1020,57 @@ def strategy_c09(spec: AgentSpec, snap) -> Optional[TradeCandidate]:
         return _rej(aid, "opening range indisponible")
     rng = hi - lo
     atr_h1 = float(snap.atr_h1 or 0.0)
-    if not _range_ok(rng, atr_h1, 0.3, 2.0):
+    if not _range_ok(rng, atr_h1, 0.25, 2.5):
         return _rej(aid, "largeur de l'OR hors bornes")
     h = _bar_hour(le)
-    if h is None or not (end_h <= h < end_h + 2.5):
+    if h is None or not (end_h <= h < end_h + 3.5):
         return _rej(aid, "hors fenêtre horaire")
     or_bars = _bars_between(closed, start_h, end_h)
     if or_bars.empty:
         return _rej(aid, "barres de l'OR absentes")
     or_vol = float(or_bars["tick_volume"].mean())
-    vol = float(le["tick_volume"]) if pd.notna(le.get("tick_volume")) else math.nan
-    if not np.isfinite(vol) or or_vol <= 0:
-        return _rej(aid, "volume indisponible")
-    prev = closed.iloc[-2]
+    brk = _first_break(closed, hi, lo, end_h, margin=0.1 * atr)
+    if brk is None:
+        return _rej(aid, "pas de cassure de l'OR")
+    side, boundary, age, day = brk
+    if age > 14:
+        return _rej(aid, "cassure trop ancienne")
     entry = float(le["close"])
-    mid = (hi + lo) / 2.0
-    if entry > hi + 0.1 * atr and le["close"] > le["open"] and prev["close"] <= hi:
-        side, boundary, ext = Side.BUY, hi, entry - hi
-        sl = lo - 0.1 * atr
-        if entry - sl > 2.0 * atr:
-            sl = mid - 0.1 * atr
-    elif entry < lo - 0.1 * atr and le["close"] < le["open"] and prev["close"] >= lo:
-        side, boundary, ext = Side.SELL, lo, lo - entry
-        sl = hi + 0.1 * atr
-        if sl - entry > 2.0 * atr:
-            sl = mid + 0.1 * atr
-    else:
-        return _rej(aid, "pas de cassure fraîche de l'OR")
-    if vol < 1.1 * or_vol:
+    sgn = side.sign
+    prev = closed.iloc[-2]
+    ext = sgn * (entry - boundary)
+    if ext < 0.1 * atr:
+        return _rej(aid, "cassure non tenue")
+    second = bool(sgn * (float(prev["close"]) - boundary) > 0)   # seconde clôture au-delà de la borne
+    bk = day.iloc[len(day) - 1 - age]
+    vols = [float(x) for x in (bk.get("tick_volume"), le.get("tick_volume")) if pd.notna(x)]
+    if not vols or or_vol <= 0:
+        return _rej(aid, "volume indisponible")
+    vol = max(vols)
+    if vol < 0.9 * or_vol:
         return _rej(aid, "volume insuffisant")
-    if ext > 0.6 * atr:
+    if ext > min(3.0 * atr, max(1.5 * atr, 1.0 * rng)):
         return _rej(aid, "extension trop grande")
+    mid = (hi + lo) / 2.0
+    # SL en cascade : borne opposée de l'OR, sinon milieu de l'OR, sinon juste derrière la borne cassée
+    sl = (lo - 0.1 * atr) if side is Side.BUY else (hi + 0.1 * atr)
+    if abs(entry - sl) > 2.2 * atr:
+        sl = (mid - 0.1 * atr) if side is Side.BUY else (mid + 0.1 * atr)
+    if abs(entry - sl) > 2.2 * atr:
+        sl = (boundary - 0.4 * atr) if side is Side.BUY else (boundary + 0.4 * atr)
+    sl = max(sl, entry - 2.5 * atr) if side is Side.BUY else min(sl, entry + 2.5 * atr)
     dist = abs(entry - sl)
     if not _dist_ok(dist, atr, snap):
         return _rej(aid, "distance SL hors bornes")
     score = 30.0
-    pros = [f"cassure de l'opening range {lo:.5g}-{hi:.5g} ({rng / atr_h1:.1f} ATR H1) sur volume ×{vol / or_vol:.1f}"]
+    pros = [f"cassure de l'opening range {lo:.5g}-{hi:.5g} ({rng / atr_h1:.1f} ATR H1) sur volume ×{vol / or_vol:.1f}",
+            f"clôture M15 au-delà de la borne, cassure tenue depuis {age + 1} barre(s)"]
     cons: list[str] = []
+    if second:
+        score += 10
+        pros.append("deux clôtures consécutives au-delà de la borne")
+    else:
+        cons.append("une seule clôture au-delà de la borne pour l'instant")
     if vol >= 1.5 * or_vol:
         score += 10
     d1 = snap.frames.get("D1")
@@ -1001,6 +1096,10 @@ def strategy_c09(spec: AgentSpec, snap) -> Optional[TradeCandidate]:
         score += 5
     else:
         cons.append(f"extension {ext / atr:.2f} ATR hors de l'OR")
+    if sgn * (entry - float(le["open"])) > 0:
+        score += 5
+    else:
+        cons.append("bougie d'entrée contre le sens de la cassure")
     cons.append("ORB : les faux départs de la première heure sont fréquents")
     inv = f"clôture M15 de retour dans l'opening range ({lo:.5g}-{hi:.5g})"
     cand = _build(spec, snap, side, entry, sl, p.get("rr", 2.0), _clamp(score), pros, cons, inv, bt)

@@ -38,6 +38,15 @@ SL_MAX_ATR = 3.0
 # tient aussi compte de l'ATR H1 (fraction `SL_MIN_H1_ATR`) afin de ne jamais proposer un stop que le gate refuserait
 SL_MIN_H1_ATR = 0.3
 
+# D01 : tolérance (en ATR du tf d'entrée) accordée aux clôtures du repli sous l'EMA50 ; une clôture qui pique
+# sous l'EMA50 sans s'y installer reste une respiration, une égalité stricte rendait la condition intenable
+HOLD_ATR = 0.6
+# D03 : nombre de barres de course exigées avant le premier contact, et nombre de barres tolérées hors norme
+RUN_BARS = 6
+RUN_TOLERANCE = 1
+# D03 : tolérance (en ATR du tf d'entrée) sur le contact de l'EMA par la mèche de la barre de signal
+CONTACT_ATR = 0.3
+
 EMA_KEYS = ("ema20", "ema50", "ema200")
 NEXT_EMA = {"ema20": "ema50", "ema50": "ema200", "ema200": "ema200"}
 
@@ -208,17 +217,19 @@ def _ema_key(p: dict, default: str) -> str:
 # --------------------------------------------------------------------------------------------------------------
 @register("D01")
 def strategy_d01(spec: AgentSpec, snap) -> Optional[TradeCandidate]:
-    """D01 — Séquence de repli M15 (2 à 5 barres contraires) vers l'EMA20, reprise par cassure du haut de la barre précédente.
+    """D01 — Séquence de repli M15 (2 à 6 barres contraires) vers l'EMA20, reprise par cassure du haut de la barre précédente.
 
     Thèse : en tendance H1, un repli ordonné de quelques bougies contraires consécutives qui vient chercher l'EMA20
-    M15 sans jamais clôturer sous l'EMA50 est une simple respiration ; la reprise est actée quand une bougie
+    M15 sans s'installer au-delà de l'EMA50 est une simple respiration ; la reprise est actée quand une bougie
     clôture dans le sens de la tendance AU-DELÀ du plus haut (bas) de la bougie précédente, avec un RSI qui repart.
 
-    Entrée : `_trend_of` H1 UP/DOWN et ADX14 H1 >= `adx_min` (défaut 18) ; sur M15, 2 à 5 barres clôturées de
-    repli consécutives juste avant la barre de signal (barre de repli pour un BUY : clôture < ouverture OU clôture
-    < clôture précédente) ; au moins une d'elles entre dans la zone de valeur EMA20 (low <= EMA20 + 0,5 ATR pour un
-    BUY) et aucune ne clôture au-delà de l'EMA50 − 0,2 ATR (tolérance de mèche/clôture marginale) ; barre de signal
-    dans le sens du trade dont la clôture dépasse le plus haut (bas) de la barre précédente.
+    Entrée : `_trend_of` H1 UP/DOWN et ADX14 H1 >= `adx_min` (défaut 18) ; sur M15, 2 à 6 barres clôturées de
+    repli consécutives juste avant la barre de signal (barre de repli pour un BUY : clôture < ouverture, OU clôture
+    < clôture précédente, OU plus haut < plus haut précédent — une bougie qui clôture en hausse mais fait un plus
+    haut plus bas fait partie du repli) ; au moins une d'elles entre dans la zone de valeur EMA20
+    (low <= EMA20 + 0,5 ATR pour un BUY) et aucune ne clôture au-delà de l'EMA50 − 0,6 ATR (tolérance en ATR : un
+    repli qui pique sous l'EMA50 sans s'y installer reste une respiration) ; barre de signal dans le sens du trade
+    dont la clôture dépasse le plus haut (bas) de la barre précédente.
     Confirmation : RSI14 M15 dans [`rsi_lo`, `rsi_hi`] (miroir pour un SELL) ET RSI en hausse (baisse) par rapport
     à la barre précédente.
     Filtres : heure de la barre hors 21h-23h UTC (rollover, liquidité faible) ; spread <= 12 % de l'ATR H1 ;
@@ -244,29 +255,34 @@ def strategy_d01(spec: AgentSpec, snap) -> Optional[TradeCandidate]:
     if side is None or lt["adx14"] < float(p.get("adx_min", 18)):
         return None
     sgn = side.sign
-    # séquence de barres de repli consécutives se terminant juste avant la barre de signal (indice n-1) :
-    # barre de repli = clôture contraire à la tendance OU clôture plus basse (haute) que la précédente
+    # séquence de barres de repli consécutives se terminant juste avant la barre de signal (indice n-1).
+    # Barre de repli = corps contraire à la tendance, OU clôture qui recule, OU extrême qui recule (plus haut plus
+    # bas pour un BUY). Le troisième critère est indispensable : sur des barres agrégées, l'ouverture d'une barre
+    # vaut la clôture de la précédente, si bien que les deux premiers critères sont redondants — sans lui, seules
+    # les séquences de clôtures strictement décroissantes étaient vues et le repli ordonné n'était jamais détecté.
     k = 0
     j = n - 2
-    while j >= 1 and k < 6:
+    while j >= 1 and k < 7:
         r, r0 = closed.iloc[j], closed.iloc[j - 1]
-        if sgn * (r["close"] - r["open"]) < 0 or sgn * (r["close"] - r0["close"]) < 0:
+        ext = (r["high"] - r0["high"]) if side is Side.BUY else (r["low"] - r0["low"])
+        if (sgn * (r["close"] - r["open"]) < 0 or sgn * (r["close"] - r0["close"]) < 0
+                or sgn * ext < 0):
             k += 1
             j -= 1
         else:
             break
-    if k < 2 or k > 5:
+    if k < 2 or k > 6:
         return None
     pull = closed.iloc[n - 1 - k:n - 1]
     if pull[["ema20", "ema50", "rsi14"]].isna().any().any():
         return None
     if side is Side.BUY:
         touched = bool((pull["low"] <= pull["ema20"] + 0.5 * atr).any())
-        held = bool((pull["close"] >= pull["ema50"] - 0.2 * atr).all())
+        held = bool((pull["close"] >= pull["ema50"] - HOLD_ATR * atr).all())
         extreme = float(pull["low"].min())
     else:
         touched = bool((pull["high"] >= pull["ema20"] - 0.5 * atr).any())
-        held = bool((pull["close"] <= pull["ema50"] + 0.2 * atr).all())
+        held = bool((pull["close"] <= pull["ema50"] + HOLD_ATR * atr).all())
         extreme = float(pull["high"].max())
     if not touched or not held:
         return None
@@ -418,15 +434,17 @@ def strategy_d02(spec: AgentSpec, snap) -> Optional[TradeCandidate]:
 def strategy_d03(spec: AgentSpec, snap) -> Optional[TradeCandidate]:
     """D03 — Premier contact de l'EMA (`ema`, défaut EMA20) M15 après une course sans contact, avec volume.
 
-    Thèse : quand le prix a couru au-dessus de l'EMA20 pendant au moins 6 bougies sans la toucher, le PREMIER
-    retour sur l'EMA est le repli le plus souvent acheté (les retardataires attendent ce niveau) ; on exige que la
-    bougie de contact clôture dans la partie favorable de son amplitude et avec un volume supérieur à la médiane
-    récente (participation).
+    Thèse : quand le prix a couru au-dessus de l'EMA20 pendant 6 bougies sans la toucher, le PREMIER retour sur
+    l'EMA est le repli le plus souvent acheté (les retardataires attendent ce niveau) ; on exige que la bougie de
+    contact clôture dans la moitié favorable de son amplitude et avec un volume supérieur à la médiane récente
+    (participation).
 
-    Entrée : `_trend_of` H1 UP/DOWN ; les 6 barres M15 clôturées précédant la barre de signal ont toutes clôturé
-    au-dessus (sous) de l'EMA ET leur low (high) est resté au-delà de l'EMA − 0,1 ATR (aucun contact) ; la barre de
-    signal touche l'EMA (low <= EMA + 0,1 ATR et clôture >= EMA pour un BUY).
-    Confirmation : clôture dans les 55 % favorables de l'amplitude (`_close_pos` >= 0,55) ; volume de la barre
+    Entrée : `_trend_of` H1 UP/DOWN ; sur les 6 barres M15 clôturées précédant la barre de signal, au moins 5 ont
+    clôturé au-dessus (sous) de l'EMA ET au moins 5 ont gardé leur low (high) au-delà de l'EMA (aucun contact) —
+    une seule barre hors norme est tolérée, une course parfaite sur 6 barres étant une exigence de laboratoire ;
+    la barre de signal touche l'EMA (low <= EMA + 0,3 ATR et clôture >= EMA pour un BUY : le contact se mesure avec
+    une tolérance en ATR, pas au tick près).
+    Confirmation : clôture dans la moitié favorable de l'amplitude (`_close_pos` >= 0,5) ; volume de la barre
     >= médiane des 20 barres précédentes (sinon pénalité).
     Filtres : pente de l'EMA favorable (EMA > EMA 3 barres avant pour un BUY) ; RSI14 M15 < 70 (BUY) / > 30 (SELL) ;
     spread <= 15 % de l'ATR H1 ; amplitude de la barre <= 2 ATR (pas de bougie de choc).
@@ -435,8 +453,9 @@ def strategy_d03(spec: AgentSpec, snap) -> Optional[TradeCandidate]:
     TP : bande de Bollinger opposée du tf d'entrée (bb_up pour un BUY) comme cible structurelle ; cible finale =
     max(`rr` R, bande) ; premier TP à 1,5 R.
     Invalidation : clôture M15 au-delà de l'EMA suivante (EMA50).
-    Score : structure 20 (course + premier contact) + tendance H1 15 + pente EMA 10 + MTF 10 (EMA20/50 M15 alignées)
-    + volume 10 + volatilité 10 (amplitude <= 1,5 ATR) + exécution 0-10 (position de la clôture).
+    Score : structure 20 (course + premier contact, −5 si une barre de course est hors norme) + tendance H1 15
+    + pente EMA 10 + MTF 10 (EMA20/50 M15 alignées) + volume 10 + volatilité 10 (amplitude <= 1,5 ATR)
+    + exécution 0-10 (position de la clôture). Somme bornée 0-100 par `_build` : ce n'est PAS une probabilité.
     """
     c = _ctx(spec, snap)
     if not c:
@@ -456,18 +475,26 @@ def strategy_d03(spec: AgentSpec, snap) -> Optional[TradeCandidate]:
     nxt = NEXT_EMA[key]
     if not _valid(le, key, nxt, "bb_up", "bb_low"):
         return None
-    prior = closed.iloc[n - 7:n - 1]
-    if prior[[key, "close", "low", "high", "tick_volume"]].isna().any().any():
+    prior = closed.iloc[n - 1 - RUN_BARS:n - 1]
+    if len(prior) < RUN_BARS or prior[[key, "close", "low", "high", "tick_volume"]].isna().any().any():
         return None
+    need = RUN_BARS - RUN_TOLERANCE
+    # « aucun contact » se mesure du bon côté de l'EMA : le low (high) doit rester AU-DELÀ de l'EMA. La version
+    # précédente tolérait EMA − 0,1 ATR pour un BUY, c'est-à-dire des barres déjà passées sous l'EMA : ce qui était
+    # compté comme une course sans contact en contenait souvent, et le « premier contact » n'en était pas un.
     if side is Side.BUY:
-        ran = bool((prior["close"] > prior[key]).all() and (prior["low"] > prior[key] - 0.1 * atr).all())
-        contact = bool(le["low"] <= le[key] + 0.1 * atr and le["close"] >= le[key])
+        above = int((prior["close"] > prior[key]).sum())
+        clear = int((prior["low"] > prior[key]).sum())
+        contact = bool(le["low"] <= le[key] + CONTACT_ATR * atr and le["close"] >= le[key])
     else:
-        ran = bool((prior["close"] < prior[key]).all() and (prior["high"] < prior[key] + 0.1 * atr).all())
-        contact = bool(le["high"] >= le[key] - 0.1 * atr and le["close"] <= le[key])
+        above = int((prior["close"] < prior[key]).sum())
+        clear = int((prior["high"] < prior[key]).sum())
+        contact = bool(le["high"] >= le[key] - CONTACT_ATR * atr and le["close"] <= le[key])
+    ran = above >= need and clear >= need
     if not ran or not contact:
         return None
-    if _close_pos(le, side) < 0.55:
+    perfect = above == RUN_BARS and clear == RUN_BARS
+    if _close_pos(le, side) < 0.5:
         return None
     ema_prev = closed[key].iloc[-4]
     if pd.isna(ema_prev) or sgn * (le[key] - ema_prev) <= 0:
@@ -487,9 +514,13 @@ def strategy_d03(spec: AgentSpec, snap) -> Optional[TradeCandidate]:
         return None
     vol_med = float(closed["tick_volume"].iloc[n - 21:n - 1].median())
     score = 20.0 + 15.0 + 10.0
-    pros = [f"tendance {tr} sur {spec.timeframes['trend']}", f"course de 6 barres sans contact puis premier contact de l'{key.upper()}",
-            f"clôture dans le tiers favorable ({_close_pos(le, side) * 100:.0f} %)", f"pente {key.upper()} favorable"]
+    pros = [f"tendance {tr} sur {spec.timeframes['trend']}",
+            f"course de {RUN_BARS} barres sans contact puis premier contact de l'{key.upper()}",
+            f"clôture dans la moitié favorable ({_close_pos(le, side) * 100:.0f} %)", f"pente {key.upper()} favorable"]
     cons: list[str] = []
+    if not perfect:
+        score -= 5
+        cons.append("une barre de la course a déjà effleuré l'EMA : contact moins « premier »")
     if sgn * (le["ema20"] - le["ema50"]) > 0:
         score += 10
         pros.append("EMA20/50 M15 alignées")
