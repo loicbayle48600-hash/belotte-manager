@@ -19,7 +19,9 @@ Conventions communes (voir `agents/screeners.py`) :
   donne `None`, jamais une valeur corrigée à la volée ;
 - `setup_score` = somme documentée de composantes (structure, fraîcheur du signal, alignement MTF, anatomie de la
   bougie, place jusqu'à la cible), bornée 0-100 : ce n'est PAS une probabilité de gain ;
-- données insuffisantes ou indicateur NaN → `None`, jamais une valeur inventée.
+- données insuffisantes, prix OHLC ou indicateur NaN → `None`, jamais une valeur inventée : `_ctx` ne contrôle
+  que les indicateurs, `_bar_ok` contrôle les prix de la barre décisive (une comparaison avec NaN est fausse,
+  donc un filtre de bougie ne rejetterait rien sur une barre incomplète).
 
 Chaque agent a sa propre confirmation, ses propres filtres, sa propre logique de SL, son propre plan de TP et sa
 propre règle d'invalidation (une simple différence de paramètres ne suffit pas).
@@ -43,6 +45,9 @@ SL_MAX_ATR = 3.0
 # Pour un tf d'entrée court (M15), l'ATR du tf d'entrée est bien plus petit que l'ATR H1 : la distance minimale
 # tient aussi compte de l'ATR H1 afin de ne jamais proposer un stop que le gate d'exécution refuserait
 SL_MIN_H1_ATR = 0.3
+# Au-delà de ce multiple de R, la cible finale d'un plan est une projection structurelle lointaine :
+# le `rr` reste exact mais il est signalé dans `arguments_against` (il n'est pas une promesse de gain)
+FAR_TARGET_R = 4.0
 
 
 # --------------------------------------------------------------------------------------------------------------
@@ -117,6 +122,21 @@ def _ohlc_ok(df: pd.DataFrame) -> bool:
     return not bool(df[["open", "high", "low", "close"]].isna().any().any())
 
 
+def _bar_ok(row: pd.Series) -> bool:
+    """Vrai si la barre porte des prix OHLC exploitables (présents, finis, high >= low).
+
+    À vérifier AVANT tout filtre d'anatomie de bougie : en pandas/numpy toute comparaison avec NaN est
+    fausse, donc un test du type `close <= open` sur une barre incomplète ne rejette rien et laisse passer
+    un signal dont la confirmation n'a jamais été vérifiée (règle du projet : NaN → None, jamais de valeur
+    supposée). `_ctx` ne contrôle que les colonnes d'indicateurs, pas les prix.
+    """
+    try:
+        o, h, lo, c = (float(row[col]) for col in ("open", "high", "low", "close"))
+    except (KeyError, IndexError, TypeError, ValueError):
+        return False
+    return all(np.isfinite(v) for v in (o, h, lo, c)) and h >= lo
+
+
 def _bound_sl(snap, side: Side, entry: float, sl: float, atr: float, lo: float, hi: float) -> Optional[float]:
     """Ramène la distance entrée→SL dans [max(lo·ATR, 0,3·ATR, 0,3·ATR H1) ; min(hi, 3)·ATR] sans changer de côté.
 
@@ -166,6 +186,11 @@ def _set_tp_plan(c: Optional[TradeCandidate], side: Side, entry: float, targets:
         plan = [plan[0], plan[len(plan) // 2], plan[-1]]
     c.tp_plan = [float(x) for x in plan]
     c.rr = round(abs(c.tp_plan[-1] - entry) / dist, 2)
+    # honnêteté : au-delà de FAR_TARGET_R, le `rr` annoncé (lu par le gate, la revue et le classement) ne repose
+    # plus sur une cible proche mais sur une projection structurelle entière ; il faut le dire, pas l'afficher seul
+    if c.rr > FAR_TARGET_R:
+        c.arguments_against.append(f"rr {c.rr:.1f} porté par une cible structurelle lointaine : il suppose que la "
+                                   "projection se réalise entièrement, les prises partielles décident du résultat")
     return c
 
 
@@ -246,6 +271,10 @@ def strategy_f01(spec: AgentSpec, snap) -> Optional[TradeCandidate]:
     if not c:
         return None
     e, t, le, lt, atr, bt = c
+    # prix OHLC manquants/NaN sur une barre décisive → refus : `_ctx` ne valide que les indicateurs et
+    # toute comparaison avec NaN étant fausse, les filtres d'anatomie de bougie ne rejetteraient rien
+    if not _bar_ok(le) or not _bar_ok(lt):
+        return None
     p = spec.params
     closed = _closed(e)
     n = len(closed)
@@ -333,10 +362,11 @@ def strategy_f02(spec: AgentSpec, snap) -> Optional[TradeCandidate]:
     du sommet du retour — le risque est défini par le retour lui-même, pas par un pivot lointain.
 
     Entrée : `structure_label` du tf d'entrée = LH_LL (SELL, `direction` = DOWN) ou HH_HL (BUY, `direction` = UP) ;
-    le dernier creux confirmé a été CASSÉ EN CLÔTURE (au-delà de 0,1 ATR) dans les `break_lookback` (défaut 15)
-    dernières barres clôturées ; depuis cette cassure, le prix est revenu dans la zone de polarité
-    [niveau − 0,15 ATR ; niveau + 0,8 ATR] sans jamais reprendre le dernier plus haut plus bas ; la barre clôturée
-    repart au-delà du niveau (clôture < niveau − 0,05 ATR pour une vente).
+    le creux confirmé le plus récent AYANT ÉTÉ CASSÉ EN CLÔTURE (au-delà de 0,1 ATR) dans les `break_lookback`
+    (défaut 15) dernières barres clôturées sert de niveau — ce n'est pas forcément le dernier pivot de la liste,
+    celui-ci devenant le nouvel extrême creusé par la cassure ; depuis cette cassure, le prix est revenu dans la
+    zone de polarité [niveau − 0,15 ATR ; niveau + 0,8 ATR] sans jamais reprendre le dernier plus haut plus bas ;
+    la barre clôturée repart au-delà du niveau (clôture < niveau − 0,05 ATR pour une vente).
     Confirmation : bougie dans le sens du trade, clôture dans les 55 % favorables de son amplitude et mèche
     opposée >= 25 % de l'amplitude (trace du rejet du niveau).
     Filtres : tendance du tf supérieur non opposée ; spread <= 15 % de l'ATR H1 ; retour d'au moins une barre.
@@ -352,6 +382,10 @@ def strategy_f02(spec: AgentSpec, snap) -> Optional[TradeCandidate]:
     if not c:
         return None
     e, t, le, lt, atr, bt = c
+    # prix OHLC manquants/NaN sur une barre décisive → refus : `_ctx` ne valide que les indicateurs et
+    # toute comparaison avec NaN étant fausse, les filtres d'anatomie de bougie ne rejetteraient rien
+    if not _bar_ok(le) or not _bar_ok(lt):
+        return None
     p = spec.params
     closed = _closed(e)
     n = len(closed)
@@ -368,16 +402,33 @@ def strategy_f02(spec: AgentSpec, snap) -> Optional[TradeCandidate]:
     sh, sl_ = swing_points(closed)
     if not sh or not sl_:
         return None
-    level = float(sl_[-1][1] if side is Side.SELL else sh[-1][1])     # support (résistance) qui vient d'être cassé
     cap = float(sh[-1][1] if side is Side.SELL else sl_[-1][1])       # dernier LH (HL) : borne du retour
     lb = int(p.get("break_lookback", 15))
-    win = closed.iloc[max(0, n - 1 - lb):n - 1]
+    start = max(0, n - 1 - lb)
+    win = closed.iloc[start:n - 1]
     if win.empty or not _ohlc_ok(win):
         return None
-    broke = win.index[(sgn * (win["close"] - level) > 0.1 * atr)] if sgn > 0 else win.index[(level - win["close"]) > 0.1 * atr]
-    if len(broke) == 0:
+    wc = win["close"].to_numpy(dtype=float)
+    # Niveau de polarité = creux (sommet) confirmé le PLUS RÉCENT réellement cassé en clôture dans la fenêtre.
+    # Imposer `sl_[-1]` rendait `break_lookback` inopérant : dès que le nouvel extrême creusé par la cassure est
+    # confirmé (3 barres après lui), le niveau cassé n'est plus le dernier pivot de la liste et l'agent cessait
+    # de voir la cassure au moment même où le retour sur le niveau devient observable.
+    # Positions calculées sur la fenêtre (numpy) et non sur les étiquettes d'index : le screener ne suppose rien
+    # de l'index du frame reçu (un frame issu d'une tranche non réindexée donnait un `bi` faux).
+    pivots = sl_ if side is Side.SELL else sh
+    level: Optional[float] = None
+    bi = 0
+    for pi, px in reversed(pivots):
+        hits = np.flatnonzero(sgn * (wc - float(px)) > 0.1 * atr)
+        if hits.size == 0:
+            continue
+        first = start + int(hits[0])
+        if pi >= first:                                               # le pivot doit précéder sa propre cassure
+            continue
+        level, bi = float(px), first                                  # première barre de cassure de la fenêtre
+        break
+    if level is None:
         return None
-    bi = int(closed.index.get_loc(broke[0]))                          # première barre de cassure de la fenêtre
     post = closed.iloc[bi + 1:n - 1]
     if len(post) < 1 or not _ohlc_ok(post):
         return None
@@ -463,6 +514,10 @@ def strategy_f03(spec: AgentSpec, snap) -> Optional[TradeCandidate]:
     if not c:
         return None
     e, t, le, lt, atr, bt = c
+    # prix OHLC manquants/NaN sur une barre décisive → refus : `_ctx` ne valide que les indicateurs et
+    # toute comparaison avec NaN étant fausse, les filtres d'anatomie de bougie ne rejetteraient rien
+    if not _bar_ok(le) or not _bar_ok(lt):
+        return None
     p = spec.params
     closed = _closed(e)
     n = len(closed)
@@ -549,7 +604,8 @@ def strategy_f04(spec: AgentSpec, snap) -> Optional[TradeCandidate]:
     Confirmation : bougie dans le sens du trade avec corps >= 40 % de son amplitude.
     Filtres : refus si la tendance du tf supérieur est OPPOSÉE au retournement ET que son ADX14 >= `adx_block`
     (défaut 30) : on ne se met pas en travers d'une tendance supérieure forte ; spread <= 15 % de l'ATR H1.
-    SL : sous (au-dessus) le dernier creux (sommet) mineur — extrême des 5 dernières barres clôturées — ∓ 0,25 ATR ;
+    SL : sous (au-dessus) le dernier creux (sommet) mineur — extrême des 6 dernières barres clôturées, barre de
+    signal comprise — ∓ 0,25 ATR ;
     distance bornée à [0,5 ATR ; min(3 ; `sl_atr` + 1) ATR].
     TP : retracement de la dernière jambe entière : 61,8 % puis pivot contraire précédent (LH précédent) ;
     premier TP à 1,5 R.
@@ -562,6 +618,10 @@ def strategy_f04(spec: AgentSpec, snap) -> Optional[TradeCandidate]:
     if not c:
         return None
     e, t, le, lt, atr, bt = c
+    # prix OHLC manquants/NaN sur une barre décisive → refus : `_ctx` ne valide que les indicateurs et
+    # toute comparaison avec NaN étant fausse, les filtres d'anatomie de bougie ne rejetteraient rien
+    if not _bar_ok(le) or not _bar_ok(lt):
+        return None
     p = spec.params
     closed = _closed(e)
     n = len(closed)
@@ -663,8 +723,8 @@ def strategy_f05(spec: AgentSpec, snap) -> Optional[TradeCandidate]:
     pour la dernière fois il y a moins de `zone_age` (défaut 80) barres ; spread <= 15 % de l'ATR H1.
     SL : sous (au-dessus) l'extrême des deux barres du rejet − 0,25 ATR — la mèche est la borne du risque ;
     distance bornée à [0,4 ATR ; min(3 ; `sl_atr` + 0,8) ATR].
-    TP : premier pivot confirmé opposé situé au-delà de l'entrée, puis pivot opposé le plus lointain de la fenêtre ;
-    premier TP à 1,5 R.
+    TP : les deux pivots confirmés opposés les plus proches au-delà de l'entrée (jamais l'extrême de toute la
+    fenêtre, qui n'est pas une cible de ce trade) ; premier TP à 1,5 R.
     Invalidation : clôture du tf d'entrée au-delà du bord lointain de la zone (la zone a cédé).
     Score : zone 15 + nombre de touches 0-15 + rejet (mèche) 0-20 + confirmation 0-15 + MTF 0-15 + fraîcheur 0-10.
     """
@@ -672,6 +732,10 @@ def strategy_f05(spec: AgentSpec, snap) -> Optional[TradeCandidate]:
     if not c:
         return None
     e, t, le, lt, atr, bt = c
+    # prix OHLC manquants/NaN sur une barre décisive → refus : `_ctx` ne valide que les indicateurs et
+    # toute comparaison avec NaN étant fausse, les filtres d'anatomie de bougie ne rejetteraient rien
+    if not _bar_ok(le) or not _bar_ok(lt):
+        return None
     p = spec.params
     closed = _closed(e)
     n = len(closed)
@@ -721,9 +785,15 @@ def strategy_f05(spec: AgentSpec, snap) -> Optional[TradeCandidate]:
     sl = _bound_sl(snap, side, entry, wick_ext - sgn * 0.25 * atr, atr, 0.4, min(3.0, sl_atr + 0.8))
     if sl is None:
         return None
-    opp = [px for _, px in (sh if side is Side.BUY else sl_)]
-    near = _nearest_beyond(opp, entry, side, 0.5 * atr)
-    far = max(opp, key=lambda x: sgn * (x - entry)) if opp else None
+    # Cibles = les DEUX pivots opposés confirmés les PLUS PROCHES au-delà de l'entrée. La seconde cible était
+    # auparavant `max(pivots)`, c'est-à-dire l'extrême de toute la fenêtre (plusieurs centaines de barres) : ce
+    # n'est pas une cible de ce trade et elle fixait à elle seule le `rr` annoncé au gate, à la revue et au
+    # classement des candidats (rr de 10 R et plus sur une simple mèche de rejet).
+    opp_all = [float(px) for _, px in (sh if side is Side.BUY else sl_)]
+    beyond = sorted([x for x in opp_all if np.isfinite(x) and sgn * (x - entry) >= 0.5 * atr],
+                    key=lambda x: sgn * (x - entry))
+    near = beyond[0] if beyond else None
+    second = beyond[1] if len(beyond) > 1 else None
     # score : composantes documentées
     score = 15.0
     score += _clamp((touches - 1) * 7.5, 0, 15)
@@ -744,7 +814,7 @@ def strategy_f05(spec: AgentSpec, snap) -> Optional[TradeCandidate]:
         cons.append("aucun pivot opposé au-delà de l'entrée : objectif purement en multiples de R")
     if (z_hi - z_lo) > 0.8 * atr:
         cons.append(f"zone large ({(z_hi - z_lo) / atr:.2f} ATR) : point d'entrée moins précis")
-    targets = [x for x in (near, far) if x is not None]
+    targets = [x for x in (near, second) if x is not None]
     rr = float(p.get("rr", 2.0))
     edge = z_lo if side is Side.BUY else z_hi
     cand = _build(spec, snap, side, entry, sl, rr, score, pros, cons,
@@ -784,6 +854,10 @@ def strategy_f06(spec: AgentSpec, snap) -> Optional[TradeCandidate]:
     if not c:
         return None
     e, t, le, lt, atr, bt = c
+    # prix OHLC manquants/NaN sur une barre décisive → refus : `_ctx` ne valide que les indicateurs et
+    # toute comparaison avec NaN étant fausse, les filtres d'anatomie de bougie ne rejetteraient rien
+    if not _bar_ok(le) or not _bar_ok(lt):
+        return None
     p = spec.params
     closed = _closed(e)
     tclosed = _closed(t)

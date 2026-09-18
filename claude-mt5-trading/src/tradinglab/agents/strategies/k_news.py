@@ -52,6 +52,13 @@ SL_MAX_ATR = 3.0
 SL_MIN_H1_ATR = 0.3
 # Une cible au-delà de 6 R n'est pas un objectif réaliste : elle est ignorée (même convention que les familles C et G).
 MAX_TARGET_RR = 6.0
+# Seuils par défaut de K01/K02. Le MÊME seuil sert au filtre d'entrée ET à la mesure de la composante de score
+# correspondante : une valeur différente entre les deux rendrait le score incohérent avec la condition d'entrée
+# (et fausserait les challengers, dont les paramètres numériques sont bruités de +/-20 % par `DegradationManager`).
+K01_SHOCK_MULT = 1.8          # amplitude du choc / amplitude médiane des `ref` barres précédentes
+K01_CONTRACT_MAX = 0.65       # amplitude moyenne de la base de digestion / amplitude du choc
+K01_SHOCK_BODY = 0.45         # corps minimal de la barre de choc (fraction de son amplitude)
+K02_BODY_SHARE = 0.55         # somme des corps / amplitude de la fenêtre de revalorisation
 
 
 # --------------------------------------------------------------------------------------------------------------
@@ -109,10 +116,13 @@ def _rsi_band(side: Side, lo: float, hi: float) -> tuple[float, float]:
 def _bound_sl(snap, side: Side, entry: float, sl: float, atr: float, lo: float, hi: float) -> Optional[float]:
     """Ramène la distance entrée→SL dans [max(lo·ATR, 0,3·ATR, 0,3·ATR H1) ; min(hi, 3)·ATR] sans changer de côté.
 
-    Renvoie None si la borne basse dépasse la borne haute (configuration incohérente : on refuse plutôt que
-    d'inventer un stop).
+    Renvoie None si le SL brut est du mauvais côté de l'entrée ou si la borne basse dépasse la borne haute
+    (configuration incohérente : on refuse plutôt que d'inventer un stop). Sans ce refus, `abs(entry - sl)`
+    retournerait silencieusement un stop du bon côté à partir d'un niveau faux : ce serait une valeur inventée.
     """
     if not np.isfinite(sl) or not np.isfinite(entry) or atr <= 0:
+        return None
+    if side.sign * (entry - sl) <= 0:
         return None
     atr_h1 = float(snap.atr_h1 or 0.0)
     lo_dist = max(lo * atr, SL_MIN_ATR * atr, SL_MIN_H1_ATR * atr_h1)
@@ -173,32 +183,50 @@ def _opposed(lt: pd.Series, side: Side) -> bool:
     return (side is Side.BUY and tr == "DOWN") or (side is Side.SELL and tr == "UP")
 
 
-def _shock_bar(closed: pd.DataFrame, oldest: int, newest: int, ref: int, mult: float) -> Optional[tuple[int, float, float]]:
-    """Barre de choc la plus marquée dans la fenêtre [n−oldest, n−newest] : (indice positionnel, amplitude, ratio).
+def _shock_bar(closed: pd.DataFrame, oldest: int, newest: int, ref: int, mult: float,
+               body_min: float) -> Optional[tuple[int, float, float]]:
+    """Barre de CHOC DIRECTIONNELLE la plus marquée de la fenêtre [n−oldest, n−newest[ : (indice, amplitude, ratio).
 
-    L'amplitude de la barre retenue est comparée à l'amplitude MÉDIANE des `ref` barres qui la PRÉCÈDENT (la
-    référence n'est donc jamais contaminée par le choc lui-même ni par la digestion qui suit). Renvoie None si
-    l'historique est trop court, si les données sont inexploitables ou si le ratio reste sous `mult`.
+    L'amplitude de chaque candidate est comparée à l'amplitude MÉDIANE des `ref` barres qui la PRÉCÈDENT (la
+    référence n'est donc jamais contaminée par le choc lui-même ni par la digestion qui suit). Sont retenues les
+    seules barres dont le ratio atteint `mult` ET dont le corps atteint `body_min` de leur amplitude : on garde
+    celle de plus fort ratio (à ratio égal, la plus récente — ordre total, donc déterministe).
+
+    Toutes les candidates sont examinées, pas seulement la plus ample : si la barre la plus ample de la fenêtre
+    est un doji, le motif n'est pas abandonné alors qu'une vraie barre d'événement se trouve juste à côté.
+    Renvoie None si l'historique est trop court, si les données sont inexploitables ou si aucune candidate ne
+    satisfait les deux critères.
     """
     n = len(closed)
-    if n < ref + oldest + 2 or oldest <= newest:
+    if n < ref + oldest + 2 or oldest <= newest or newest < 0 or ref <= 0:
         return None
     window = closed.iloc[n - oldest:n - newest]
-    if not _ohlc_ok(window):
+    if len(window) == 0 or not _ohlc_ok(window):
         return None
-    rng = (window["high"] - window["low"]).astype(float)
-    if not bool(np.isfinite(rng.to_numpy()).all()) or rng.max() <= 0:
+    rng = (window["high"] - window["low"]).astype(float).to_numpy()
+    if not bool(np.isfinite(rng).all()) or rng.max() <= 0:
         return None
-    j = int(np.argmax(rng.to_numpy())) + (n - oldest)          # indice positionnel dans `closed`
-    base = (closed["high"] - closed["low"]).astype(float).iloc[max(0, j - ref):j]
-    med = float(base.median()) if len(base) >= max(20, ref // 3) else float("nan")
-    if not np.isfinite(med) or med <= 0:
+    hl = (closed["high"] - closed["low"]).astype(float)
+    best: Optional[tuple[float, int, float]] = None
+    for k in range(len(rng)):
+        shock_range = float(rng[k])
+        if shock_range <= 0:
+            continue
+        j = k + (n - oldest)                                   # indice positionnel dans `closed`
+        base = hl.iloc[max(0, j - ref):j]
+        if len(base) < max(20, ref // 3):
+            continue                                           # référence trop courte : aucun ratio inventé
+        med = float(base.median())
+        if not np.isfinite(med) or med <= 0:
+            continue
+        ratio = shock_range / med
+        if ratio < mult or _body_ratio(closed.iloc[j]) < body_min:
+            continue
+        if best is None or (ratio, j) > (best[0], best[1]):
+            best = (ratio, j, shock_range)
+    if best is None:
         return None
-    shock_range = float(closed["high"].iloc[j] - closed["low"].iloc[j])
-    ratio = shock_range / med
-    if ratio < mult:
-        return None
-    return j, shock_range, ratio
+    return best[1], best[2], best[0]
 
 
 def _displacement_z(closes: pd.Series, win: int, sample: int) -> tuple[float, float]:
@@ -237,8 +265,10 @@ def strategy_k01(spec: AgentSpec, snap) -> Optional[TradeCandidate]:
     base ne se forme et l'agent ne propose rien.
 
     Règles d'entrée : une barre de choc située entre `newest` et `oldest` barres clôturées avant la barre de
-    signal, d'amplitude >= `shock_mult` × l'amplitude médiane des `ref` barres qui la PRÉCÈDENT, avec un corps
-    >= `shock_body` de son amplitude (événement directionnel, pas un aller-retour) ; sens = sens de ce corps ;
+    signal (fenêtre bornée à `max_digest` + 2 : au-delà, la base serait trop longue et le motif rejeté de toute
+    façon), d'amplitude >= `shock_mult` × l'amplitude médiane des `ref` barres qui la PRÉCÈDENT, avec un corps
+    >= `shock_body` de son amplitude (événement directionnel, pas un aller-retour) ; à critères satisfaits, c'est
+    la barre de plus fort ratio qui est retenue, pas simplement la plus ample ; sens = sens de ce corps ;
     puis une base de digestion de 2 à `max_digest` barres clôturées dont l'amplitude TOTALE ne dépasse pas
     `base_span_max` × l'amplitude du choc et qui ne rend pas l'événement (son extrême défavorable reste en deçà
     de l'extrême défavorable de la barre de choc) ; enfin la barre de signal clôture au-delà de l'extrême
@@ -270,16 +300,25 @@ def strategy_k01(spec: AgentSpec, snap) -> Optional[TradeCandidate]:
     p = spec.params
     closed = _closed(e)
     ref = int(p.get("ref", 60))
-    oldest, newest = int(p.get("oldest", 9)), int(p.get("newest", 3))
     max_digest = int(p.get("max_digest", 6))
+    shock_mult = float(p.get("shock_mult", K01_SHOCK_MULT))
+    contract_max = float(p.get("contract_max", K01_CONTRACT_MAX))
+    # Cohérence fenêtre de recherche / longueur de base : une barre de choc située `oldest` barres avant la fin
+    # laisse une base de `oldest − 2` barres. Chercher au-delà de `max_digest + 2` reviendrait à retenir des
+    # positions dont la base sera systématiquement rejetée plus bas (zone morte silencieuse) ; `newest` est tenu
+    # à 3 au minimum pour que la base compte au moins les 2 barres clôturées exigées.
+    oldest = min(int(p.get("oldest", 9)), max_digest + 2)
+    newest = max(int(p.get("newest", 3)), 3)
+    if max_digest < 2 or oldest <= newest:
+        return None
     if len(closed) < ref + oldest + 5 or not _ohlc_ok(closed.iloc[-(oldest + 2):]):
         return None
-    shock = _shock_bar(closed, oldest, newest, ref, float(p.get("shock_mult", 1.8)))
+    shock = _shock_bar(closed, oldest, newest, ref, shock_mult, float(p.get("shock_body", K01_SHOCK_BODY)))
     if shock is None:
         return None
     j, shock_range, ratio = shock
     sb = closed.iloc[j]
-    if shock_range <= 0 or _body_ratio(sb) < float(p.get("shock_body", 0.45)):
+    if shock_range <= 0 or _body(sb) == 0.0:
         return None
     side = Side.BUY if _body(sb) > 0 else Side.SELL
     n = len(closed)
@@ -295,7 +334,7 @@ def strategy_k01(spec: AgentSpec, snap) -> Optional[TradeCandidate]:
         return None                                          # la base rend l'événement : il n'y a rien à digérer
     mean_rng = float((digest["high"] - digest["low"]).astype(float).mean())
     contract = mean_rng / shock_range
-    if not np.isfinite(contract) or contract > float(p.get("contract_max", 0.65)):
+    if not np.isfinite(contract) or contract > contract_max:
         return None                                          # la volatilité n'est pas retombée
     mid = 0.5 * (hi_s + lo_s)
     if not bool((side.sign * (digest["close"].astype(float) - mid) > 0).all()):
@@ -326,8 +365,10 @@ def strategy_k01(spec: AgentSpec, snap) -> Optional[TradeCandidate]:
     sl = _bound_sl(snap, side, entry, raw_sl, atr, 0.5, float(p.get("sl_atr", 1.5)))
     if sl is None:
         return None
-    score = 25.0 + _clamp((ratio - float(p.get("shock_mult", 1.9))) * 15.0, 0, 12)
-    score += _clamp((float(p.get("contract_max", 0.60)) - contract) * 45.0, 0, 13)
+    # Les composantes mesurent l'écart au seuil RÉELLEMENT utilisé par le filtre (mêmes variables), jamais à une
+    # autre valeur par défaut : sinon un setup accepté pourrait marquer 0 sur le critère qui l'a fait accepter.
+    score = 25.0 + _clamp((ratio - shock_mult) * 15.0, 0, 12)
+    score += _clamp((contract_max - contract) * 45.0, 0, 13)
     hold = abs(float(digest["close"].astype(float).iloc[-1]) - mid) / shock_range
     score += _clamp(hold * 25.0, 0, 10)
     pros = [f"barre de choc d'amplitude ×{ratio:.2f} par rapport à la médiane {ref} barres, corps "
@@ -422,16 +463,19 @@ def strategy_k02(spec: AgentSpec, snap) -> Optional[TradeCandidate]:
     if span <= 0:
         return None
     body_share = float(bodies.abs().sum()) / span
-    if body_share < float(p.get("body_share", 0.55)):
+    body_share_min = float(p.get("body_share", K02_BODY_SHARE))
+    if body_share < body_share_min:
         return None                                           # déplacement en mèches : balayage, pas revalorisation
     ext = float(window["high"].max()) if side is Side.BUY else float(window["low"].min())
     entry = float(le["close"])
     giveback = side.sign * (ext - entry) / abs(disp)
-    if not np.isfinite(giveback) or giveback > float(p.get("giveback_max", 0.45)):
+    giveback_max = float(p.get("giveback_max", 0.45))
+    if not np.isfinite(giveback) or giveback > giveback_max:
         return None                                           # le marché a déjà rendu la surprise
     med_rng = float((closed["high"] - closed["low"]).astype(float).iloc[-(sample + win):-win].median())
     mean_rng = float((window["high"] - window["low"]).astype(float).mean())
-    if not np.isfinite(med_rng) or med_rng <= 0 or mean_rng < float(p.get("atr_ratio", 1.5)) * med_rng:
+    atr_ratio = float(p.get("atr_ratio", 1.5))
+    if not np.isfinite(med_rng) or med_rng <= 0 or mean_rng < atr_ratio * med_rng:
         return None                                           # pas d'élargissement : rien d'exceptionnel
     if not _valid(lt, "atr14", "open", "close"):
         return None
@@ -453,18 +497,22 @@ def strategy_k02(spec: AgentSpec, snap) -> Optional[TradeCandidate]:
     sl = _bound_sl(snap, side, entry, raw_sl, atr, 0.6, float(p.get("sl_atr", 1.5)))
     if sl is None:
         return None
-    score = 25.0 + _clamp((abs(z) - z_min) * 12.0, 0, 15) + _clamp((body_share - 0.55) * 40.0, 0, 12)
-    score += _clamp((float(p.get("giveback_max", 0.45)) - giveback) * 25.0, 0, 10)
+    # Chaque composante mesure l'écart au seuil RÉELLEMENT utilisé par le filtre (mêmes variables) : un seuil
+    # codé en dur ici donnerait un score faux dès qu'un challenger bruite `body_share` ou `giveback_max`.
+    score = 25.0 + _clamp((abs(z) - z_min) * 12.0, 0, 15) + _clamp((body_share - body_share_min) * 40.0, 0, 12)
+    score += _clamp((giveback_max - giveback) * 25.0, 0, 10)
     score += _clamp((abs(_body(lt)) / atr_t - 0.4) * 25.0, 0, 15)
     score += _clamp(_close_pos(le, side) * 10.0, 0, 10)
-    score += _clamp((mean_rng / med_rng - float(p.get("atr_ratio", 1.5))) * 10.0, 0, 8)
+    score += _clamp((mean_rng / med_rng - atr_ratio) * 10.0, 0, 8)
     pros = [f"déplacement de {win} barres à {z:+.1f} écart-type de sa distribution ({sample} observations)",
             f"revalorisation en corps ({body_share:.0%} de l'amplitude de la fenêtre)",
             f"rendu limité à {giveback:.0%} du déplacement depuis l'extrême",
             f"barre {spec.timeframes.get('trend', 'H1')} clôturée de même sens (corps {abs(_body(lt)) / atr_t:.1f} ATR)",
             f"amplitude moyenne ×{mean_rng / med_rng:.2f} par rapport à la médiane {sample} barres"]
     cons = ["momentum de surprise : un démenti ou une révision peut annuler la revalorisation en une barre",
-            "entrée après le premier déplacement : une partie du mouvement est déjà faite"]
+            "entrée après le premier déplacement : une partie du mouvement est déjà faite",
+            f"z-score descriptif : fenêtres de {win} barres chevauchantes et queues de distribution épaisses — "
+            f"|z| >= {z_min:.1f} est bien plus fréquent que sous une loi normale, ce n'est pas une probabilité"]
     if _opposed(lt, side):
         cons.append(f"tendance EMA {spec.timeframes.get('trend', 'H1')} opposée : revalorisation à contre-tendance")
     if (side is Side.BUY and le["rsi14"] >= 80) or (side is Side.SELL and le["rsi14"] <= 20):

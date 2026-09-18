@@ -221,6 +221,44 @@ def _finalize(c: Optional[TradeCandidate], snap) -> Optional[TradeCandidate]:
     return c if chk.ok else None
 
 
+def _squeeze_box(closed: pd.DataFrame, dur: int, n_sq: int) -> tuple[float, float, int]:
+    """Couloir de compression BORNÉ : les `min(dur, n_sq)` dernières barres comprimées + la barre de libération.
+
+    Renvoie (bas, haut, nombre de barres comprimées retenues). Mesurer l'amplitude sur TOUT le squeeze serait
+    incohérent : un squeeze peut durer des dizaines de barres et son amplitude cumulée croît mécaniquement avec
+    sa durée. Un filtre d'amplitude posé dessus refuserait justement les compressions les plus mûres — celles
+    que le score récompense — et le SL posé à l'autre bout sortirait systématiquement des bornes de distance.
+    (nan, nan, 0) si la fenêtre est vide ou inexploitable (colonnes NaN).
+    """
+    k = max(0, min(int(dur), int(n_sq)))
+    box = closed.iloc[-(k + 1):]
+    if len(box) == 0:
+        return float("nan"), float("nan"), 0
+    lo, hi = float(box["low"].min()), float(box["high"].max())
+    if not np.isfinite(lo) or not np.isfinite(hi) or hi < lo:
+        return float("nan"), float("nan"), 0
+    return lo, hi, k
+
+
+def _sl_note(side: Side, entry: float, raw_sl: float, sl: float, atr: float) -> Optional[str]:
+    """Argument CONTRE honnête quand `_bound_sl` a dû déplacer le SL brut voulu par la thèse.
+
+    Le niveau décrit par la thèse (stop chandelier, borne opposée du couloir de compression ou de l'opening
+    range, structure de session) n'est alors plus celui du SL réellement proposé : on le dit explicitement au
+    lieu de laisser croire qu'il est protégé. `None` si le SL proposé est bien le niveau voulu.
+    """
+    if not np.isfinite(raw_sl) or not np.isfinite(sl) or not np.isfinite(entry) or atr <= 0:
+        return None
+    raw_d, d = abs(entry - raw_sl), abs(entry - sl)
+    if d < raw_d - 1e-12:
+        return (f"SL ramené à {d / atr:.2f} ATR (plafond {SL_MAX_ATR} ATR) : le niveau visé par la thèse "
+                f"({raw_sl:.5g}) est plus loin et n'est donc plus protégé")
+    if d > raw_d + 1e-12:
+        return (f"SL élargi à {d / atr:.2f} ATR (distance minimale) : plus loin que le niveau visé par la thèse "
+                f"({raw_sl:.5g}), le risque par trade porte sur cette distance élargie")
+    return None
+
+
 def _opposed(lt: pd.Series, side: Side) -> bool:
     """Vrai si la tendance EMA du tf supérieur est franchement opposée au sens du trade."""
     tr = _trend_of(lt)
@@ -253,8 +291,9 @@ def strategy_g01(spec: AgentSpec, snap) -> Optional[TradeCandidate]:
     distance ramenée dans [0,5 ATR ; 3 ATR] — le stop suit la volatilité du mouvement, pas un swing.
     Plan de TP : mouvement mesuré — 1,5 R (partiel), puis le déplacement net projeté depuis l'entrée (×1 puis
     ×1,6), cible finale = la plus lointaine entre `rr` × R et ces projections.
-    Invalidation : clôture du tf d'entrée sous (au-dessus de) le stop chandelier, ou ATR14 repassant sous la
-    médiane de référence (le régime de volatilité s'est refermé).
+    Invalidation : clôture du tf d'entrée sous (au-dessus de) le SL proposé, ou ATR14 repassant sous la
+    médiane de référence (le régime de volatilité s'est refermé). Si le chandelier sort des bornes de distance,
+    le SL est ramené dans les bornes et l'écart est signalé dans `arguments_against` (`_sl_note`).
     Score : 30 (régime de volatilité élargi + efficience) + 0-12 ampleur de l'expansion + 0-13 efficience
     au-delà du seuil + 0-15 alignement MTF + 10 clôture à l'extrême de la bougie + 10 spread <= 6 % ATR.
     """
@@ -321,8 +360,11 @@ def strategy_g01(spec: AgentSpec, snap) -> Optional[TradeCandidate]:
         cons.append(f"spread {spread:.2f} ATR sur une volatilité déjà élargie")
     if _valid(le, "vol_pct") and float(le["vol_pct"]) >= 90:
         cons.append(f"percentile de volatilité {le['vol_pct']:.0f} : expansion déjà mûre")
-    inv = (f"clôture {spec.timeframes.get('entry', 'M15')} au-delà du stop chandelier "
-           f"(extrême {win} barres ∓ {sl_atr} ATR) ou ATR14 sous sa médiane de référence ({med:.5g})")
+    note = _sl_note(side, entry, raw_sl, sl, atr)
+    if note:
+        cons.append(note)
+    inv = (f"clôture {spec.timeframes.get('entry', 'M15')} au-delà du SL ({sl:.5g}, stop chandelier = extrême "
+           f"{win} barres ∓ {sl_atr} ATR) ou ATR14 sous sa médiane de référence ({med:.5g})")
     cand = _build(spec, snap, side, entry, sl, float(p.get("rr", 2.0)), _clamp(score), pros, cons, inv, bt)
     targets = [entry + disp, entry + 1.6 * disp]
     return _finalize(_set_tp_plan(cand, side, entry, targets, float(p.get("rr", 2.0))), snap)
@@ -347,10 +389,14 @@ def strategy_g02(spec: AgentSpec, snap) -> Optional[TradeCandidate]:
     clôture du bon côté de la médiane de Bollinger (`bb_mid`).
     Filtres : contraction réellement basse — `vol_pct` de la barre précédente <= `vol_pct_max` et ADX14 du tf
     d'entrée < `adx_max` (on ne veut pas d'une tendance déjà lancée) ; tendance H1 non opposée ; spread <= 12 %
-    de l'ATR ; couloir de compression d'amplitude <= 2,5 ATR (au-delà ce n'est plus une compression).
-    Logique de SL : extrême OPPOSÉ du couloir de compression (plus bas / plus haut des barres du squeeze et de
-    la barre de libération) avec une marge de 0,3 × `sl_atr` × ATR — un retour à l'autre bout du couloir signe
-    l'échec de la libération. Distance ramenée dans [0,4 ATR ; 3 ATR].
+    de l'ATR ; couloir de compression (fenêtre bornée ci-dessous) d'amplitude <= 2,5 ATR. L'amplitude est
+    mesurée sur une fenêtre BORNÉE et non sur tout le squeeze : l'amplitude cumulée d'un squeeze long croît
+    mécaniquement avec sa durée, un filtre posé dessus contredirait le bonus de durée du score et refuserait
+    les compressions les mieux notées.
+    Logique de SL : extrême OPPOSÉ du couloir de compression — les `squeeze_min` DERNIÈRES barres du squeeze
+    plus la barre de libération, jamais tout le squeeze — avec une marge de 0,3 × `sl_atr` × ATR : un retour à
+    l'autre bout de ce couloir signe l'échec de la libération. Distance ramenée dans [0,4 ATR ; 3 ATR], écart
+    éventuel signalé dans `arguments_against` (`_sl_note`).
     Plan de TP : hauteur du canal de Keltner au moment du squeeze (2 × `kc_mult` × ATR) projetée ×1 puis ×2
     depuis l'entrée ; premier TP à 1,5 R ; cible finale = la plus lointaine entre `rr` × R et ces projections.
     Invalidation : retour des bandes de Bollinger à l'intérieur du canal de Keltner (compression non résolue)
@@ -404,8 +450,9 @@ def strategy_g02(spec: AgentSpec, snap) -> Optional[TradeCandidate]:
     spread = _spread_ratio(snap, atr)
     if spread > 0.12:
         return None
-    corridor = closed.iloc[-(dur + 1):]
-    box_hi, box_lo = float(corridor["high"].max()), float(corridor["low"].min())
+    # Couloir de référence (SL + filtre d'amplitude) : borné aux n_sq dernières barres comprimées + la barre de
+    # libération. `dur` (durée totale du squeeze) ne sert qu'au score et aux arguments.
+    box_lo, box_hi, box_len = _squeeze_box(closed, dur, n_sq)
     if not np.isfinite(box_hi) or not np.isfinite(box_lo) or box_hi - box_lo > 2.5 * atr:
         return None
     entry = float(le["close"])
@@ -418,7 +465,8 @@ def strategy_g02(spec: AgentSpec, snap) -> Optional[TradeCandidate]:
         return None
     score = 30.0 + _clamp((dur - n_sq) * 2.0, 0, 10) + _clamp(abs(hist - hist_prev) / atr * 100.0, 0, 10)
     pros = [f"compression : bandes de Bollinger enfermées dans le canal de Keltner sur {dur} barres",
-            f"libération de la compression sur la dernière barre clôturée (couloir {box_lo:.5g}-{box_hi:.5g})",
+            f"libération sur la dernière barre clôturée (couloir des {box_len} dernières barres comprimées : "
+            f"{box_lo:.5g}-{box_hi:.5g})",
             "histogramme MACD de signe constant avec le trade et en progression"]
     cons = ["direction donnée par le momentum, pas par une cassure de niveau : faux départ possible"]
     b, mtf = _mtf_bonus(le, lt, side)
@@ -433,9 +481,13 @@ def strategy_g02(spec: AgentSpec, snap) -> Optional[TradeCandidate]:
         cons.append(f"spread {spread:.2f} ATR sur un marché encore étroit")
     if float(le["adx14"]) < 15:
         cons.append(f"ADX {le['adx14']:.0f} très bas : le marché peut retourner en compression")
+    note = _sl_note(side, entry, raw_sl, sl, atr)
+    if note:
+        cons.append(note)
     kh = 2.0 * kc * atr
     inv = (f"retour des bandes de Bollinger dans le canal de Keltner (EMA20 ± {kc} ATR) ou clôture "
-           f"{spec.timeframes.get('entry', 'M15')} au-delà de {box_lo if side is Side.BUY else box_hi:.5g}")
+           f"{spec.timeframes.get('entry', 'M15')} au-delà du SL ({sl:.5g} ; borne opposée du couloir "
+           f"{box_lo if side is Side.BUY else box_hi:.5g})")
     cand = _build(spec, snap, side, entry, sl, float(p.get("rr", 2.5)), _clamp(score), pros, cons, inv, bt)
     targets = [entry + side.sign * kh, entry + side.sign * 2.0 * kh]
     return _finalize(_set_tp_plan(cand, side, entry, targets, float(p.get("rr", 2.5))), snap)
@@ -465,7 +517,7 @@ def strategy_g03(spec: AgentSpec, snap) -> Optional[TradeCandidate]:
     tendance H1 non opposée ; spread <= 12 % de l'ATR du tf d'entrée.
     Logique de SL : borne OPPOSÉE de l'opening range (moins 0,1 ATR de marge) — un range comprimé autorise un
     stop de range complet, et le retour du prix à l'autre bout invalide totalement l'idée. Distance ramenée
-    dans [0,4 ATR ; 3 ATR] (un range plus large que le plafond fait ramener le stop, signalé en argument contre).
+    dans [0,4 ATR ; 3 ATR] ; tout écart avec la borne opposée est signalé dans `arguments_against` (`_sl_note`).
     Plan de TP : projections classiques d'opening range — borne cassée + 1 × amplitude puis + 2 × amplitude ;
     premier TP à 1,5 R ; cible finale = la plus lointaine entre `rr` × R et ces projections.
     Invalidation : clôture du tf d'entrée de retour à l'intérieur de l'opening range.
@@ -548,8 +600,9 @@ def strategy_g03(spec: AgentSpec, snap) -> Optional[TradeCandidate]:
         score += 5
     else:
         cons.append(f"spread {spread:.2f} ATR au moment de la cassure")
-    if abs(entry - raw_sl) > SL_MAX_ATR * atr:
-        cons.append("range plus large que le plafond de 3 ATR : SL ramené au plafond, la borne opposée n'est plus protégée")
+    note = _sl_note(side, entry, raw_sl, sl, atr)
+    if note:
+        cons.append(note)
     inv = f"clôture {spec.timeframes.get('entry', 'M15')} de retour à l'intérieur de l'opening range ({lo:.5g}-{hi:.5g})"
     cand = _build(spec, snap, side, entry, sl, float(p.get("rr", 2.0)), _clamp(score), pros, cons, inv, bt)
     targets = [boundary + side.sign * rng, boundary + side.sign * 2.0 * rng]
@@ -579,7 +632,8 @@ def strategy_g04(spec: AgentSpec, snap) -> Optional[TradeCandidate]:
     × amplitude médiane de la session ; budget restant (médiane − réalisé) >= `atr_ratio` × distance de SL ;
     amplitude de la barre <= 2 ATR (on n'entre pas sur une barre de choc) ; spread <= 12 % de l'ATR.
     Logique de SL : `sl_atr` × amplitude MOYENNE des barres de la session en cours, élargi si nécessaire pour
-    passer derrière l'extrême des 3 dernières barres de la session ; distance ramenée dans [0,4 ATR ; 3 ATR].
+    passer derrière l'extrême des 3 dernières barres de la session ; distance ramenée dans [0,4 ATR ; 3 ATR],
+    écart éventuel signalé dans `arguments_against` (`_sl_note`).
     Plan de TP : 1,5 R (partiel), puis ouverture de la session + 0,75 × amplitude médiane, puis + 1 × amplitude
     médiane (le budget d'amplitude de la session est la cible naturelle) ; cible finale = la plus lointaine
     entre `rr` × R et ces projections.
@@ -669,6 +723,9 @@ def strategy_g04(spec: AgentSpec, snap) -> Optional[TradeCandidate]:
         cons.append(f"spread {spread:.2f} ATR en cours de session")
     if _trend_of(lt) == "FLAT":
         cons.append("tendance H1 neutre : le mouvement de session n'est pas soutenu par le tf supérieur")
+    note = _sl_note(side, entry, raw_sl, sl, atr)
+    if note:
+        cons.append(note)
     ses_mean = float(ses["close"].mean())
     inv = (f"clôture {spec.timeframes.get('entry', 'M15')} au-delà de la moyenne des clôtures de la session "
            f"({ses_mean:.5g}) en sens inverse, ou amplitude de session supérieure à {med:.5g}")
