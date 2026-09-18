@@ -66,7 +66,7 @@ Détails dans `scripts/README_SCRIPTS.md`.
 python -m venv .venv && . .venv/bin/activate
 pip install -r requirements.txt            # MetaTrader5 est ignoré hors Windows (marqueur sys_platform)
 export TRADINGLAB_BROKER=mock PYTHONPATH=src
-python -m pytest                           # 101 tests
+python -m pytest                           # 127 tests
 python -m tradinglab.orchestration.orchestrator --broker mock --cycles 4 --mode AUTO
 python -m tradinglab.monitoring.watchdog --broker mock
 python -m tradinglab.api.cli STATUS
