@@ -1,0 +1,39 @@
+# Secrets / credentials — JAMAIS versionnés
+.env
+.env.*
+*.key
+*.pem
+credentials*
+secrets/
+tokens*
+*token*.json
+api_keys*
+mt5_login*
+broker_*.ini
+
+# Environnement Python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+build/
+dist/
+
+# Données d'exécution
+logs/*
+!logs/.gitkeep
+state/*
+!state/.gitkeep
+state/private/
+data/*.db
+data/*.db-journal
+data/cache/
+reports/*
+!reports/.gitkeep
+backups/*
+!backups/.gitkeep
+models/*
+!models/.gitkeep

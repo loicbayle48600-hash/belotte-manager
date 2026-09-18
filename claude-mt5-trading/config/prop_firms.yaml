@@ -1,0 +1,22 @@
+# Profil prop firm. Les valeurs ci-dessous sont des HYPOTHÈSES à confirmer
+# officiellement avant toute exécution prop (section 10 du master prompt).
+prop:
+  prop_firm: FOXX_FUNDED
+  program: 1_STEP
+  account_size: 500000
+  profit_target_percent: 7.0
+  max_daily_loss_hard_percent: 4.0
+  max_overall_loss_hard_percent: 8.0
+  prop_rules_verified: false                       # PROP_RULES_VERIFIED
+  user_explicitly_authorized_prop_automation: false
+  rules_source_url: null
+  rules_version: null
+  rules_verified_at: null
+  # Règles NON confirmées → considérées UNKNOWN et bloquantes en mode prop
+  ea_allowed: UNKNOWN
+  news_trading_window_minutes: UNKNOWN
+  trading_day_definition: UNKNOWN
+  consistency_rule: UNKNOWN
+  payout_rules: UNKNOWN
+  daily_loss_basis: UNKNOWN        # balance | equity | UNKNOWN
+  weekend_holding_allowed: UNKNOWN

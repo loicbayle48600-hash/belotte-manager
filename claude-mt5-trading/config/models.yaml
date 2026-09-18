@@ -1,0 +1,33 @@
+# Routeur de modèles. Les identifiants sont des PRÉFÉRENCES : ils sont vérifiés
+# au démarrage via l'API Anthropic (models.list). Si un modèle est absent, le
+# routeur bascule sur le suivant de la liste, puis sur le mode déterministe.
+models:
+  auto_route: true
+  verify_official_availability: true
+  strongest_for_orchestrator: true
+  senior_for_review: true
+  economical_worker_for_bulk: true
+  python_for_deterministic: true
+  refresh_interval_sec: 3600
+  daily_budget_usd: 10.0                # MODEL_DAILY_BUDGET_USD
+  max_fable_calls_per_hour: 6           # MAX_FABLE_CALLS_PER_HOUR
+  max_opus_calls_per_hour: 30           # MAX_OPUS_CALLS_PER_HOUR
+  max_worker_calls_per_hour: 200        # MAX_WORKER_CALLS_PER_HOUR
+  cache_ttl_sec: 240                    # cache des analyses non périmées
+  tiers:
+    TIER_A:
+      candidates: ["claude-fable-5-1"]
+      roles: [chief_orchestrator, deep_market_review, macro_synthesis, strategy_research, champion_adjudication, post_trade_root_cause, refactor]
+      est_cost_per_call_usd: 0.25
+    TIER_B:
+      candidates: ["claude-opus-5"]
+      roles: [senior_strategy, bull_thesis, bear_thesis, devil_advocate, setup_validation, complex_news, second_opinion, adversarial_review, trade_arbiter]
+      est_cost_per_call_usd: 0.08
+    TIER_C:
+      candidates: ["claude-sonnet-5", "claude-haiku-4-5-20251001"]
+      roles: [worker, screening, technical_analysis, news_summary, classification, bulk]
+      est_cost_per_call_usd: 0.01
+    TIER_D:
+      candidates: ["python"]
+      roles: [scan, indicators, correlations, sizing, statistics, rules, risk, backtest, ranking, monitoring, scheduling]
+      est_cost_per_call_usd: 0.0

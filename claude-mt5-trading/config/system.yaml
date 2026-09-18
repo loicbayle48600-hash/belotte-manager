@@ -1,0 +1,41 @@
+# Configuration système — valeurs initiales recommandées (section 40 du master prompt)
+system:
+  autonomous_demo: true          # AUTONOMOUS_TRADING_DEMO
+  autonomous_prop: false         # AUTONOMOUS_TRADING_PROP (jamais true sans PROP_RULES_VERIFIED + autorisation explicite)
+  safe_mode_on_startup: true
+  magic_number: 51000            # identifie les positions du bot dans MT5
+  order_comment_prefix: "TLAB"
+  heartbeat_max_age_sec: 45      # au-delà, le watchdog considère l'orchestrateur mort
+  data_max_age_sec: 30           # fraîcheur maximale d'un tick pour autoriser une entrée
+  min_bars_required: 250
+  timezone_local: "Europe/Paris"
+
+scheduler:
+  watchdog_interval_sec: 3
+  position_manager_interval_sec: 15
+  fast_scanner_interval_sec: 60
+  news_interval_sec: 120
+  calendar_interval_sec: 900
+  research_interval_sec: 3600
+  timeframes: ["M5", "M15", "H1", "H4", "D1"]
+
+execution:
+  max_spread_atr_ratio: 0.15     # spread / ATR(14) maximal
+  max_spread_points: {default: 40, XAU: 60, indices: 100}
+  slippage_deviation_points: 20
+  min_sl_atr_ratio: 0.25         # SL minimum = 0.25 x ATR
+  max_sl_atr_ratio: 4.0
+  min_rr_required: 1.5
+  required_setup_score: 65       # score minimal pour candidat sérieux (0-100)
+
+commands:
+  panic_close_all_bot_positions: true
+
+# Compte attendu (informations NON secrètes ; le mot de passe n'est jamais ici).
+# Le smoke test refuse tout compte qui ne correspond pas ou qui n'est pas DEMO.
+account_expected:
+  login: 5056132326
+  server: "MetaQuotes-Demo"
+  trade_mode: DEMO
+  currency: EUR
+  hedging: true
