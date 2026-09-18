@@ -45,6 +45,7 @@ from ..mt5.symbols import resolve_symbols, root_of
 from ..news.hub import NewsHub
 from ..news.providers import build_providers
 from ..research.pipeline import DegradationManager, ResearchPipeline
+from ..research.strategy_author import StrategyAuthor
 from ..risk.correlation_guard import CorrelationGuard, CorrelationLimits
 from ..risk.daily_guard import DailyGuard
 from ..risk.prop_guard import PropGuard, PropProfile
@@ -539,6 +540,22 @@ class Orchestrator:
         for a in self.registry.by_status(AgentStatus.DEGRADED):
             if not any(x.parent_id == a.agent_id for x in self.registry.agents.values()):
                 self.research.generate_challengers(a, 1)
+        # auteur de stratégies (LLM si disponible, sinon déterministe) : au plus 1 parent DEGRADED (ou LIVE en dérive)
+        # par cycle, seulement s'il n'a aucun challenger RESEARCH ; les variantes naissent RESEARCH et passent par le pipeline
+        try:
+            parents = self.registry.by_status(AgentStatus.DEGRADED)
+            parents += [a for a in self.registry.by_status(AgentStatus.LIVE) if a.generates_trades
+                        and self.learning.agent_stats(a.agent_id).degradation_score >= 0.5]
+            for a in parents:
+                if not a.generates_trades or any(x.parent_id == a.agent_id and x.status == AgentStatus.RESEARCH.value
+                                                 for x in list(self.registry.agents.values())):
+                    continue
+                created = StrategyAuthor(self.registry, self.learning, self.llm, self.s.learning, self.journal).propose(
+                    a, {"status": a.status, "trigger": "research_cycle"})
+                self.journal.event("strategy_author_cycle", parent_id=a.agent_id, created=[c.agent_id for c in created])
+                break
+        except Exception as e:  # noqa: BLE001
+            self.journal.warn("strategy_author : proposition échouée", error=f"{type(e).__name__}: {e}")
 
     def _export_learning(self) -> None:
         try:

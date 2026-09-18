@@ -150,12 +150,26 @@ def test_orchestrator_startup_safe_mode_then_auto_and_candidates(settings, broke
 
 
 def test_orchestrator_executes_through_gate_and_records_journal(settings, broker):
+    """Le chemin candidat → revue → gate → exécution est parcouru.
+
+    Chaque agent ayant sa propre stratégie, un instant donné peut légitimement ne produire
+    aucun candidat approuvé (NO TRADE) : on laisse le marché simulé avancer jusqu'à ce qu'un
+    candidat atteigne le gate, sans jamais relâcher les vérifications qui suivent.
+    """
     o = make_orch(settings, broker)
     o.cycle(); o.cycle()
-    broker.set_now(broker.now() + timedelta(minutes=5))
-    s = o.cycle()
+    s = {}
+    gates = []
+    for _ in range(8):
+        broker.advance_bars(12)
+        broker.set_now(broker.now() + timedelta(hours=1))
+        o.feed.invalidate()
+        s = o.cycle()
+        events = o.journal.read_day(kinds={"gate", "execution", "position_opened"})
+        gates = [e for e in events if e["kind"] == "gate"]
+        if gates:
+            break
     events = o.journal.read_day(kinds={"gate", "execution", "position_opened"})
-    gates = [e for e in events if e["kind"] == "gate"]
     assert gates, "au moins un passage par le gate attendu"
     if s.get("entries", 0):
         assert any(e["kind"] == "position_opened" for e in events)
