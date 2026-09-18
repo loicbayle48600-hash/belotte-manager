@@ -210,8 +210,11 @@ if ($srcFull.ToLowerInvariant() -eq $dstFull.ToLowerInvariant()) {
     Add-Summary 'Copie du projet' 'OK' 'déjà en place'
 } else {
     if (-not (Test-Path -LiteralPath $dstFull)) { New-Item -ItemType Directory -Path $dstFull -Force | Out-Null }
-    Write-Host "  robocopy $srcFull -> $dstFull (exclusions : .git .venv logs state __pycache__)"
-    $rc = Invoke-NativeStream 'robocopy' @($srcFull, $dstFull, '/E', '/XD', '.git', '.venv', 'logs', 'state', '__pycache__', '.pytest_cache', '/XF', '*.pyc', '/R:2', '/W:2', '/NFL', '/NDL', '/NJH', '/NP')
+    # Idempotence : ne jamais écraser sur la cible le .env (credentials), les données/rapports/sauvegardes
+    # réels ni les bases *.db par ceux d'une copie source (clone, session mock). Ces dossiers sont recréés
+    # vides plus bas s'ils manquent.
+    Write-Host "  robocopy $srcFull -> $dstFull (exclusions : .git .venv logs state data reports backups __pycache__ ; .env *.db *.pyc)"
+    $rc = Invoke-NativeStream 'robocopy' @($srcFull, $dstFull, '/E', '/XD', '.git', '.venv', 'logs', 'state', 'data', 'reports', 'backups', '__pycache__', '.pytest_cache', '/XF', '*.pyc', '.env', '*.db', '/R:2', '/W:2', '/NFL', '/NDL', '/NJH', '/NP')
     # robocopy : codes < 8 = succès (0 rien à copier, 1 fichiers copiés, 2/4 extras/mismatch)
     if ($rc -ge 0 -and $rc -lt 8) {
         Write-Ok "Projet copié vers $dstFull (code robocopy $rc)"

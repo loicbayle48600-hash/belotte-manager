@@ -35,11 +35,16 @@ import yaml
 from ..core.config import CONFIG_FILES, Settings, project_home
 from ..core.state import StateStore
 from ..core.types import utcnow
+from ..monitoring.watchdog import read_watchdog_report
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
 JOURNAL_TAIL = 50
 HEARTBEAT_WARN_SEC = 45
+# Fenêtre initiale (octets) lue en fin de journal pour /api/state ; doublée tant que < JOURNAL_TAIL événements.
+JOURNAL_TAIL_WINDOW_BYTES = 512_000
+# Champs du rapport watchdog exposés au dashboard (lecture directe de state/watchdog.json).
+WATCHDOG_FIELDS = ("safe_mode_request", "reasons", "actions", "positions_without_sl", "data_fresh", "orchestrator_alive")
 
 # Clés de configuration jamais exposées (même logique que core.journal).
 _SECRET_KEY = re.compile(r"(password|passwd|secret|api[_-]?key|token|credential)", re.IGNORECASE)
@@ -125,6 +130,57 @@ def read_journal_day(logs_dir: Path, day: str | None = None, kinds: set[str] | N
     return out
 
 
+def _parse_journal_lines(lines: list[bytes], kinds: set[str] | None) -> list[dict]:
+    out: list[dict] = []
+    for raw in lines:
+        line = raw.strip()
+        if not line:
+            continue
+        try:
+            rec = json.loads(line.decode("utf-8", errors="replace"))
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(rec, dict):
+            continue
+        if kinds is None or rec.get("kind") in kinds:
+            out.append(rec)
+    return out
+
+
+def read_journal_tail(logs_dir: Path, limit: int = JOURNAL_TAIL, kinds: set[str] | None = None,
+                      day: str | None = None, window: int = JOURNAL_TAIL_WINDOW_BYTES) -> list[dict]:
+    """Derniers ``limit`` événements du journal du jour SANS relire tout le fichier.
+
+    Le journal atteint plusieurs dizaines de Mo en journée : on lit seulement une fenêtre en fin
+    de fichier (première ligne partielle ignorée), élargie (x2) tant que moins de ``limit``
+    événements filtrés sont trouvés et que le début du fichier n'est pas atteint.
+    """
+    day = day or utcnow().strftime("%Y-%m-%d")
+    if not _DAY_RE.match(day) or limit <= 0:
+        return []
+    f = Path(logs_dir) / f"journal-{day}.jsonl"
+    try:
+        size = f.stat().st_size
+    except OSError:
+        return []
+    window = max(1, int(window))
+    while True:
+        start = max(0, size - window)
+        try:
+            with open(f, "rb") as fh:
+                fh.seek(start)
+                data = fh.read()
+        except OSError:
+            return []
+        lines = data.split(b"\n")
+        if start > 0:
+            lines = lines[1:]  # ligne partielle (coupée par le seek)
+        events = _parse_journal_lines(lines, kinds)
+        if len(events) >= limit or start == 0:
+            return events[-limit:]
+        window *= 2
+
+
 def _read_json_file(path: Path, default: Any) -> Any:
     if not path.exists():
         return default
@@ -132,6 +188,19 @@ def _read_json_file(path: Path, default: Any) -> Any:
         return json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError, ValueError):
         return default
+
+
+def _heartbeat_age(ts: Any) -> float | None:
+    """Âge (s) d'un heartbeat ISO 8601 ; None si absent/invalide (UNKNOWN, jamais inventé)."""
+    if not ts or not isinstance(ts, str):
+        return None
+    try:
+        hb = datetime.fromisoformat(ts)
+    except ValueError:
+        return None
+    if hb.tzinfo is None:
+        return None
+    return (utcnow() - hb).total_seconds()
 
 
 class DashboardData:
@@ -153,12 +222,15 @@ class DashboardData:
         d["system"] = scrub_secrets(
             {k: v for k, v in self.settings.system.items() if k in ("autonomous_demo", "autonomous_prop", "heartbeat_max_age_sec", "magic_number")}
         )
-        tail = read_journal_day(self.settings.logs_dir, kinds=kinds)
-        d["journal_tail"] = tail[-JOURNAL_TAIL:]
+        d["journal_tail"] = read_journal_tail(self.settings.logs_dir, JOURNAL_TAIL, kinds=kinds)
         d["journal_day"] = utcnow().strftime("%Y-%m-%d")
         d["server_time_utc"] = utcnow().isoformat()
         d["orchestrator_heartbeat_age_sec"] = self.store.heartbeat_age("orchestrator")
-        d["watchdog_heartbeat_age_sec"] = self.store.heartbeat_age("watchdog")
+        # Heartbeat watchdog lu DIRECTEMENT dans state/watchdog.json (et non via la copie faite par
+        # l'orchestrateur) : orchestrateur mort ≠ watchdog mort, l'opérateur doit pouvoir distinguer.
+        wd = read_watchdog_report(self.settings.state_dir) or {}
+        d["watchdog_heartbeat_age_sec"] = _heartbeat_age(wd.get("heartbeat"))
+        d["watchdog"] = {k: wd.get(k) for k in WATCHDOG_FIELDS}
         d["heartbeat_warn_sec"] = int(self.settings.system.get("heartbeat_max_age_sec", HEARTBEAT_WARN_SEC))
         d["model_usage"] = d.get("model_budget", {})
         d["learning"] = _read_json_file(self.home / "data" / "agent_stats.json", {})
@@ -362,6 +434,11 @@ th{color:var(--muted);font-weight:600}
       <dt>Calendrier</dt><dd id="calendar"></dd>
       <dt>Heartbeat orchestrateur</dt><dd id="hb_orch"></dd>
       <dt>Heartbeat watchdog</dt><dd id="hb_wd"></dd>
+      <dt>Watchdog : SAFE_MODE demandé</dt><dd id="wd_safe"></dd>
+      <dt>Watchdog : données fraîches</dt><dd id="wd_fresh"></dd>
+      <dt>Watchdog : positions sans SL</dt><dd id="wd_nosl"></dd>
+      <dt>Watchdog : raisons</dt><dd id="wd_reasons"></dd>
+      <dt>Watchdog : actions</dt><dd id="wd_actions"></dd>
       <dt>Redémarrages</dt><dd id="restarts"></dd>
       <dt>Démarré à</dt><dd id="started_at"></dd>
     </dl>
@@ -445,6 +522,12 @@ th{color:var(--muted);font-weight:600}
     var warn = typeof s.heartbeat_warn_sec === 'number' ? s.heartbeat_warn_sec : 45;
     set('hb_orch', hb(s.orchestrator_heartbeat_age_sec, warn));
     set('hb_wd', hb(s.watchdog_heartbeat_age_sec, warn));
+    var wd = s.watchdog || {};
+    set('wd_safe', missing(wd.safe_mode_request) ? txt(null) : '<span class="badge '+(wd.safe_mode_request ? 'bad' : 'ok')+'">'+(wd.safe_mode_request ? 'OUI' : 'NON')+'</span>');
+    set('wd_fresh', missing(wd.data_fresh) ? txt(null) : '<span class="badge '+(wd.data_fresh ? 'ok' : 'bad')+'">'+(wd.data_fresh ? 'OUI' : 'PÉRIMÉES')+'</span>');
+    set('wd_nosl', txt(wd.positions_without_sl));
+    set('wd_reasons', (wd.reasons && wd.reasons.length) ? wd.reasons.map(esc).join('<br>') : txt(null));
+    set('wd_actions', (wd.actions && wd.actions.length) ? wd.actions.map(esc).join('<br>') : txt(null));
     set('restarts', txt(s.restarts));
     set('started_at', txt(s.started_at));
 

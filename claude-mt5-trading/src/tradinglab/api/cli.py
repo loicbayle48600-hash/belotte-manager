@@ -3,12 +3,33 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import sys
+from datetime import date, datetime
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from ..core.config import load_settings
 from .commands import ACTION_COMMANDS, CommandHandler, READ_COMMANDS
+
+
+def json_safe(obj: Any) -> Any:
+    """Rend le résultat sérialisable en JSON strict : inf/nan -> None (convention UNKNOWN/UNAVAILABLE).
+
+    `heartbeat_age()` vaut `inf` tant qu'aucun heartbeat n'existe : sans cette normalisation,
+    `STATUS --json` imprimerait `Infinity`, rejeté par jq / ConvertFrom-Json (PowerShell 5.1).
+    """
+    if isinstance(obj, dict):
+        return {str(k): json_safe(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple, set)):
+        return [json_safe(v) for v in obj]
+    if isinstance(obj, float) and (math.isinf(obj) or math.isnan(obj)):
+        return None
+    if isinstance(obj, (str, int, float, bool)) or obj is None:
+        return obj
+    if isinstance(obj, (datetime, date)):
+        return obj.isoformat()
+    return str(obj)
 
 
 def main(argv: Optional[list[str]] = None) -> int:
@@ -20,7 +41,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     a = ap.parse_args(argv)
     s = load_settings(Path(a.home) if a.home else None)
     res = CommandHandler(s, source="cli").run(a.command, a.arg)
-    print(json.dumps(res, ensure_ascii=False, indent=2 if not a.json else None, default=str))
+    print(json.dumps(json_safe(res), ensure_ascii=False, indent=2 if not a.json else None, allow_nan=False))
     return 0 if res.get("ok", True) else 1
 
 

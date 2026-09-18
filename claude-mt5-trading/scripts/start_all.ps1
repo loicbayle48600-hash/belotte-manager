@@ -134,6 +134,12 @@ function Get-TradinglabProcess {
         $p = Get-CimInstance -ClassName Win32_Process -Filter "ProcessId=$ProcId" -ErrorAction Stop
         if (-not $p) { return $null }
         if ($p.Name -notlike 'python*') { return $null }
+        if ($Pattern -and -not $p.CommandLine) {
+            # CommandLine illisible (autre élévation/session) : processus python vivant de nature inconnue.
+            # On le considère PRÉSENT pour ne jamais lancer un second orchestrateur sur le même état.
+            Write-TlLog ("PID {0} : ligne de commande illisible (élévation/session différente) ; considéré comme {1} déjà en cours, non relancé." -f $ProcId, $Pattern) 'WARN'
+            return $p
+        }
         if ($Pattern -and ($p.CommandLine -notlike "*$Pattern*")) { return $null }
         return $p
     } catch { return $null }
@@ -335,4 +341,12 @@ Write-Host '  (déclaré dans .mcp.json : lancez "claude" depuis le dossier du p
 Write-Host ''
 Write-Host "Journaux : $LogsDir\*.out.log / *.err.log | Arrêt : scripts\stop_all.ps1" -ForegroundColor Gray
 if ($Mode -eq 'SAFE') { Write-Host 'Mode SAFE : aucune position ne sera ouverte. Passez en AUTO uniquement via -Mode AUTO (compte DEMO).' -ForegroundColor Yellow }
+# Code de sortie non nul si un composant lancé ici s'est arrêté immédiatement : c'est ce qui permet à la
+# tâche planifiée (register_autostart.ps1, -RestartCount 3) de relancer automatiquement. Les entrées
+# « déjà en cours » ont vivant = $true et ne comptent pas.
+$dead = @($entries | Where-Object { -not $_.vivant })
+if ($dead.Count -gt 0) {
+    Write-TlLog ("Composant(s) arrêté(s) au démarrage : {0}" -f (($dead | ForEach-Object { $_.nom }) -join ', ')) 'ERREUR'
+    exit 1
+}
 exit 0

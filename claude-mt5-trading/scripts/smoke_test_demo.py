@@ -25,7 +25,44 @@ from tradinglab.core.types import OrderRequest, Side, TradeMode  # noqa: E402
 from tradinglab.mt5.mock_adapter import make_broker  # noqa: E402
 from tradinglab.mt5.symbols import resolve_symbols  # noqa: E402
 from tradinglab.risk.risk_manager import RiskLimits, RiskManager  # noqa: E402
-from tradinglab.risk.stop_loss import normalize_price, validate_stop_loss  # noqa: E402
+from tradinglab.risk.stop_loss import is_tighter_or_equal, normalize_price, validate_stop_loss  # noqa: E402
+
+SMOKE_COMMENT = "TLAB:SMOKE"
+
+
+def find_smoke_position(broker, ticket: int, symbol: str, magic: int):
+    """Retrouve la position de test après fill, sans jamais sélectionner une autre position.
+
+    Priorité au ticket ; à défaut, uniquement une position BUY du magic du bot sur le
+    symbole ET portant le commentaire de test (la plus récente). Toute autre position
+    (orchestrateur, run précédent, position manuelle) est ignorée : le smoke test ne doit
+    ni modifier ni fermer une position qu'il n'a pas ouverte.
+    """
+    pos = broker.position(ticket) if ticket else None
+    if pos is None:
+        cands = [p for p in broker.positions(magic=magic)
+                 if p.symbol == symbol and p.side is Side.BUY and (p.comment or "").startswith(SMOKE_COMMENT)]
+        pos = sorted(cands, key=lambda p: p.time_open)[-1] if cands else None
+    if pos is None or not (pos.comment or "").startswith(SMOKE_COMMENT):
+        return None
+    return pos
+
+
+def check_smoke_sizing(sizing, spec, equity: float, max_risk_percent: float):
+    """Contrôle déterministe du sizing du test : renvoie (volume, raison_de_refus).
+
+    Un sizing en échec pour une autre raison que « volume minimum » (equity nulle, specs
+    symbole incomplètes, perte par lot nulle…) est un REFUS : le risque n'est pas calculable,
+    aucune donnée n'est inventée, aucun ordre n'est envoyé.
+    """
+    if not sizing.ok and "volume minimum" not in (sizing.reason or ""):
+        return 0.0, f"sizing : {sizing.reason}"
+    vol = sizing.volume if sizing.ok else spec.volume_min
+    if vol <= 0 or sizing.loss_per_lot <= 0 or equity <= 0:
+        return 0.0, "risque non calculable (perte par lot / volume / equity)"
+    if 100.0 * vol * sizing.loss_per_lot / equity > max_risk_percent:
+        return 0.0, "le volume minimum dépasse le risque max autorisé"
+    return vol, ""
 
 
 def main() -> int:
@@ -82,11 +119,11 @@ def main() -> int:
         print("SL invalide:", chk.reason)
         return 7
     sizing = rm.size(acc.equity, entry, sl, spec, risk_percent=0.02)
-    vol = max(spec.volume_min, sizing.volume) if sizing.ok else spec.volume_min
-    if 100.0 * vol * sizing.loss_per_lot / acc.equity > float(s.risk.get("max_risk_per_trade_percent", 0.35)):
-        print("REFUS : le volume minimum dépasse le risque max autorisé.")
+    vol, refus = check_smoke_sizing(sizing, spec, acc.equity, float(s.risk.get("max_risk_per_trade_percent", 0.35)))
+    if refus:
+        print("REFUS :", refus)
         return 7
-    req = OrderRequest(symbol=sym, side=Side.BUY, volume=vol, sl=sl, tp=0.0, magic=s.magic, comment="TLAB:SMOKE")
+    req = OrderRequest(symbol=sym, side=Side.BUY, volume=vol, sl=sl, tp=0.0, magic=s.magic, comment=SMOKE_COMMENT)
     chk2 = b.order_check(req)
     print("order_check:", chk2.ok, chk2.retcode, chk2.comment)
     if not chk2.ok:
@@ -97,9 +134,9 @@ def main() -> int:
     if not res.ok:
         return 9
     time.sleep(1.0)
-    pos = b.position(res.ticket) or next((p for p in b.positions(magic=s.magic) if p.symbol == sym), None)
+    pos = find_smoke_position(b, res.ticket, sym, s.magic)
     if pos is None:
-        print("ECHEC : position introuvable après fill")
+        print("ECHEC : position de test introuvable après fill (aucune action sur les autres positions)")
         return 10
     print(f"position {pos.ticket} vol={pos.volume} entry={pos.price_open} sl={pos.sl}")
     if not pos.has_sl:
@@ -110,15 +147,19 @@ def main() -> int:
             b.close_position(pos.ticket if pos else res.ticket, comment="SMOKE no-SL")
             print("ECHEC : SL impossible → position fermée")
             return 11
+    # Resserrement : position BUY → le SL ne peut que monter (never widen stop), vérifié avant envoi.
     new_sl = normalize_price(pos.sl + 0.1 * abs(pos.price_open - pos.sl), spec)
-    mod = b.modify_position(pos.ticket, new_sl, 0.0)
-    print("modify SL (resserrement):", mod.ok, mod.comment)
+    if is_tighter_or_equal(Side.BUY, new_sl, pos.sl):
+        mod = b.modify_position(pos.ticket, new_sl, 0.0)
+        print("modify SL (resserrement):", mod.ok, mod.comment)
+    else:
+        print("modify SL ignoré : le nouveau SL élargirait le stop (never widen stop)")
     close = b.close_position(pos.ticket, comment="SMOKE close")
     print("close:", close.ok, close.retcode, close.comment)
     time.sleep(1.0)
-    remaining = [p for p in b.positions(magic=s.magic) if p.comment.startswith("TLAB:SMOKE")]
-    if remaining:
-        print("ECHEC : position test encore ouverte", [p.ticket for p in remaining])
+    # Vérification par ticket (le commentaire peut être tronqué/réécrit par le broker).
+    if not close.ok or b.position(pos.ticket) is not None:
+        print("ECHEC : position test encore ouverte", pos.ticket)
         return 12
     print("OK : aucune position test restante. SMOKE TEST DEMO REUSSI")
     journal.event("smoke_ok", ticket=pos.ticket)

@@ -25,6 +25,7 @@ from ..core.state import StateStore
 from ..core.types import TradeMode, utcnow
 from ..mt5.adapter import BrokerAdapter
 from ..mt5.mock_adapter import make_broker
+from ..mt5.symbols import resolve_symbols
 
 
 @dataclass
@@ -56,6 +57,7 @@ class Watchdog:
         self.interval = interval
         self.magic = settings.magic
         self.ref_symbol = reference_symbol
+        self._ref_resolved: Optional[str] = None  # symbole broker réel (suffixe résolu), calculé une fois connecté
         self.report_path = settings.state_dir / "watchdog.json"
         self.hard_daily = float(settings.prop.get("max_daily_loss_hard_percent", 4.0))
         self.hard_overall = float(settings.prop.get("max_overall_loss_hard_percent", 8.0))
@@ -66,6 +68,21 @@ class Watchdog:
 
     def stop(self) -> None:
         self._running = False
+
+    def _reference_symbol(self) -> Optional[str]:
+        """Symbole broker réel du symbole de référence (racine → suffixe broker), résolu une fois.
+
+        Sans résolution, `tick("EURUSD")` renverrait None chez un broker à suffixes (EURUSD.m)
+        et le watchdog demanderait SAFE_MODE en permanence pour « données périmées ».
+        """
+        if not self.ref_symbol:
+            return None
+        if self._ref_resolved is None:
+            try:
+                self._ref_resolved = resolve_symbols([self.ref_symbol], self.broker.symbols()).get(self.ref_symbol) or ""
+            except Exception:  # noqa: BLE001 - broker indisponible : on réessaiera au prochain cycle
+                return None
+        return self._ref_resolved or None
 
     def check_once(self) -> WatchdogReport:
         rep = WatchdogReport(ts=utcnow().isoformat(), heartbeat=utcnow().isoformat())
@@ -107,11 +124,15 @@ class Watchdog:
                         rep.actions.append(f"ticket {p.ticket}: fermé (SL impossible) → {'ok' if res.ok else res.comment}")
                     rep.reasons.append(f"position {p.ticket} sans SL")
             # 3. fraîcheur des données
-            sym = self.ref_symbol or (positions[0].symbol if positions else None)
+            sym = self._reference_symbol() or (positions[0].symbol if positions else None)
             if sym:
                 t = self.broker.tick(sym)
                 age = t.age_seconds(self.broker.server_time()) if t else float("inf")
                 rep.data_fresh = age <= self.max_tick_age
+                if rep.data_fresh is False:
+                    # Flux figé / tick indisponible : donnée périmée → SAFE_MODE demandé (jamais silencieux).
+                    rep.reasons.append(f"données périmées ({sym}: tick vieux de {age:.0f}s > {self.max_tick_age:.0f}s)"
+                                       if age != float("inf") else f"données périmées ({sym}: tick indisponible)")
         # 4. heartbeat orchestrateur
         age = self.store.heartbeat_age("orchestrator")
         rep.orchestrator_heartbeat_age = age if age != float("inf") else -1
@@ -127,7 +148,16 @@ class Watchdog:
     def _write(self, rep: WatchdogReport) -> None:
         tmp = self.report_path.with_suffix(".tmp")
         tmp.write_text(json.dumps(asdict(rep), ensure_ascii=False, indent=1), encoding="utf-8")
-        os.replace(tmp, self.report_path)
+        # Windows : os.replace échoue (PermissionError) si un lecteur tient watchdog.json ouvert
+        # (CLI, dashboard, orchestrateur) → quelques tentatives brèves avant d'abandonner l'itération.
+        for attempt in range(3):
+            try:
+                os.replace(tmp, self.report_path)
+                return
+            except PermissionError:
+                if attempt == 2:
+                    raise
+                time.sleep(0.05)
 
     def run(self) -> None:
         self.journal.info("watchdog démarré", interval=self.interval, magic=self.magic)
@@ -140,13 +170,16 @@ class Watchdog:
 
 
 def read_watchdog_report(state_dir: Path) -> Optional[dict]:
+    """Lit state/watchdog.json ; None si absent, illisible (E/S, sharing violation Windows) ou invalide.
+
+    Appelé dans le chemin critique de l'orchestrateur et par la CLI : ne lève jamais.
+    """
     p = Path(state_dir) / "watchdog.json"
-    if not p.exists():
-        return None
     try:
-        return json.loads(p.read_text(encoding="utf-8"))
-    except json.JSONDecodeError:
+        data = json.loads(p.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, ValueError):
         return None
+    return data if isinstance(data, dict) else None
 
 
 def main(argv: Optional[list[str]] = None) -> int:
@@ -160,7 +193,11 @@ def main(argv: Optional[list[str]] = None) -> int:
     broker = make_broker(kind, s)
     journal = Journal(s.logs_dir, s.system.get("timezone_local", "UTC"), component="watchdog")
     store = StateStore(s.state_dir)
-    wd = Watchdog(s, broker, store, journal, interval=args.interval or float(s.scheduler.get("watchdog_interval_sec", 3)))
+    # Symbole de référence pour la fraîcheur des données même sans position ouverte
+    # (premier symbole de l'univers de marchés), sinon data_fresh resterait toujours None.
+    ref_symbol = next((sym for group in s.markets.values() if isinstance(group, list) for sym in group), None)
+    wd = Watchdog(s, broker, store, journal, interval=args.interval or float(s.scheduler.get("watchdog_interval_sec", 3)),
+                  reference_symbol=ref_symbol)
     try:
         wd.run()
     except KeyboardInterrupt:

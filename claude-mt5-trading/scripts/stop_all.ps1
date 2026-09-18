@@ -15,7 +15,9 @@
     Racine du projet (défaut : dossier parent de ce script).
 
 .PARAMETER GraceSec
-    Délai d'attente après la commande PAUSE avant l'arrêt forcé (défaut : 5 s).
+    Délai minimal d'attente après la commande PAUSE avant l'arrêt forcé (défaut : 5 s). Le script attend en
+    réalité jusqu'à max(GraceSec, 20) s que l'orchestrateur passe effectivement en PAUSED (cycle + sommeil
+    jusqu'à 15 s) et sort dès que c'est le cas ; sinon la PAUSE non traitée est retirée de commands.jsonl.
 
 .PARAMETER SkipPause
     Ne pas envoyer la commande PAUSE (arrêt direct).
@@ -52,6 +54,34 @@ function Write-TlLog {
     $color = switch ($Level) { 'OK' { 'Green' } 'WARN' { 'Yellow' } 'ERREUR' { 'Red' } default { 'Gray' } }
     Write-Host $line -ForegroundColor $color
     try { Add-Content -LiteralPath $StopLog -Value $line -Encoding UTF8 } catch { }
+}
+
+function Get-SystemMode {
+    <# Mode courant lu dans state\system_state.json (écrit par l'orchestrateur seul) ; '' si illisible. #>
+    $f = Join-Path $StateDir 'system_state.json'
+    try {
+        if (-not (Test-Path -LiteralPath $f)) { return '' }
+        $obj = [System.IO.File]::ReadAllText($f, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
+        if ($obj -and $obj.mode) { return [string]$obj.mode }
+    } catch { }
+    return ''
+}
+
+function Remove-PendingPause {
+    <# Retire les commandes PAUSE non traitées de state\commands.jsonl (sinon rejouées au prochain démarrage). #>
+    $f = Join-Path $StateDir 'commands.jsonl'
+    if (-not (Test-Path -LiteralPath $f)) { return }
+    try {
+        $kept = @()
+        foreach ($line in [System.IO.File]::ReadAllLines($f, [System.Text.Encoding]::UTF8)) {
+            if (-not $line.Trim()) { continue }
+            $isPause = $false
+            try { $c = $line | ConvertFrom-Json; if ($c -and ([string]$c.command).ToUpperInvariant() -eq 'PAUSE') { $isPause = $true } } catch { }
+            if (-not $isPause) { $kept += $line }
+        }
+        [System.IO.File]::WriteAllLines($f, [string[]]$kept, (New-Object System.Text.UTF8Encoding($false)))
+        Write-TlLog 'Commande PAUSE en attente retirée de state\commands.jsonl.' 'OK'
+    } catch { Write-TlLog "Nettoyage de commands.jsonl impossible : $($_.Exception.Message)" 'WARN' }
 }
 
 function Import-DotEnv {
@@ -166,8 +196,22 @@ if ($targets.Count -eq 0) {
         } catch {
             Write-TlLog "Commande PAUSE impossible : $($_.Exception.Message)" 'WARN'
         } finally { Pop-Location }
-        Write-TlLog "Délai de grâce : $GraceSec s..."
-        Start-Sleep -Seconds $GraceSec
+        # L'orchestrateur ne lit commands.jsonl qu'en début de cycle et dort jusqu'à 15 s : on attend la prise
+        # en compte EFFECTIVE (mode PAUSED dans state\system_state.json) plutôt qu'un délai fixe trop court.
+        $waitMax = [Math]::Max($GraceSec, 20)
+        Write-TlLog "Attente de la prise en compte de PAUSE (max $waitMax s)..."
+        $paused = $false
+        $deadline = (Get-Date).AddSeconds($waitMax)
+        while ((Get-Date) -lt $deadline) {
+            if ((Get-SystemMode) -eq 'PAUSED') { $paused = $true; break }
+            Start-Sleep -Seconds 1
+        }
+        if ($paused) {
+            Write-TlLog 'PAUSE prise en compte par l''orchestrateur (mode PAUSED).' 'OK'
+        } else {
+            Write-TlLog "PAUSE non traitée après $waitMax s : retrait de la commande en attente pour éviter sa réexécution au prochain démarrage." 'WARN'
+            Remove-PendingPause
+        }
     }
 
     # --- 3. Stop-Process, dans l'ordre watchdog -> orchestrateur -> dashboard -> autres ------

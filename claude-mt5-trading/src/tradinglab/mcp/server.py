@@ -28,6 +28,26 @@ except Exception:  # noqa: BLE001
         _Server = None  # type: ignore
 
 
+# Commandes acceptées par l'outil MCP `command` : uniquement des commandes de SÉCURITÉ (réduction de risque).
+# RESUME en est exclu : le passage en AUTO doit rester une décision humaine (CLI), jamais celle d'un agent.
+MCP_ALLOWED_COMMANDS = frozenset({"PAUSE", "SAFE_MODE", "PANIC", "CLOSE", "CLOSE_ALL_BOT", "BREAK_EVEN"})
+
+
+def ensure_broker(cache: dict, settings) -> Any:
+    """Broker mis en cache, reconnecté à chaque appel tant qu'il est déconnecté.
+
+    Le serveur MCP est un processus long (session Claude Code) : MT5 peut ne pas être prêt au
+    premier appel ou redémarrer ensuite. Sans nouvelle tentative, `account`/`tick`/`rates`
+    renverraient UNAVAILABLE pour toute la durée de vie du serveur.
+    """
+    b = cache.get("b")
+    if b is None:
+        b = cache["b"] = make_broker(settings.broker_kind, settings)
+    if not b.is_connected():
+        b.connect()
+    return b
+
+
 def build_server(home: Optional[Path] = None):
     if _Server is None:
         raise RuntimeError("package mcp indisponible : pip install mcp")
@@ -38,11 +58,7 @@ def build_server(home: Optional[Path] = None):
     _broker_cache: dict[str, Any] = {}
 
     def broker():
-        if "b" not in _broker_cache:
-            b = make_broker(s.broker_kind, s)
-            b.connect()
-            _broker_cache["b"] = b
-        return _broker_cache["b"]
+        return ensure_broker(_broker_cache, s)
 
     @srv.tool(name="status", description="État système, mode, compte, verrous, régimes, budget modèles.")
     def status() -> dict:
@@ -103,12 +119,14 @@ def build_server(home: Optional[Path] = None):
     def research_status() -> dict:
         return handler.run("RESEARCH_STATUS")
 
-    @srv.tool(name="command", description="Commande de contrôle : PAUSE | RESUME | SAFE_MODE | PANIC | CLOSE <ticket|symbole> | CLOSE_ALL_BOT | BREAK_EVEN <ticket>. "
-                                          "Jamais d'ouverture de position par cet outil.")
+    @srv.tool(name="command", description="Commande de sécurité : PAUSE | SAFE_MODE | PANIC | CLOSE <ticket|symbole> | CLOSE_ALL_BOT | BREAK_EVEN <ticket>. "
+                                          "Jamais d'ouverture de position par cet outil. RESUME (passage en AUTO) est réservé "
+                                          "à la CLI humaine : un agent ne peut pas réactiver le trading autonome.")
     def command(name: str, arg: Optional[str] = None) -> dict:
         n = name.upper()
-        if n not in {"PAUSE", "RESUME", "SAFE_MODE", "PANIC", "CLOSE", "CLOSE_ALL_BOT", "BREAK_EVEN"}:
-            return {"ok": False, "error": "commande non autorisée via MCP"}
+        # RESUME volontairement exclu : passer en AUTO est une action humaine explicite (CLI), jamais un agent LLM.
+        if n not in MCP_ALLOWED_COMMANDS:
+            return {"ok": False, "error": "commande non autorisée via MCP (RESUME réservé à la CLI humaine)"}
         return handler.run(n, arg)
 
     @srv.tool(name="propose_trade", description="Dépose une idée de trade (symbole, sens, entrée, SL, TP, justification). Elle est journalisée et "
