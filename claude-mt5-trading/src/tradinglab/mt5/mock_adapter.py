@@ -422,5 +422,12 @@ def make_broker(kind: str, settings=None, **kw) -> BrokerAdapter:
         if off_h is not None:
             from ..core.clock import set_server_utc_offset
             set_server_utc_offset(float(off_h) * 3600)
+        # le broker simulé se présente comme le compte DEMO attendu par la configuration :
+        # une session « papier » n'est ainsi pas bloquée par la garde ACCOUNT_MISMATCH
+        exp = settings.get("account_expected", {}) or {}
+        if exp.get("login"):
+            kw.setdefault("login", int(exp["login"]))
+        if exp.get("server"):
+            kw.setdefault("server", str(exp["server"]))
     kw.setdefault("live", True)
     return MockBroker(**kw)

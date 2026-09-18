@@ -111,11 +111,18 @@ def _today(closed: pd.DataFrame) -> pd.DataFrame:
 
 
 def _prev_day(closed: pd.DataFrame) -> pd.DataFrame:
-    """Barres clôturées du jour UTC précédant celui de la dernière barre clôturée (vide si absent)."""
+    """Barres clôturées du DERNIER jour UTC antérieur PRÉSENT dans la frame (vide s'il n'y en a pas).
+
+    On ne prend pas « jour courant − 1 jour » : un lundi (ou un lendemain de férié), la veille calendaire ne
+    contient aucune barre et l'agent qui s'appuie dessus serait silencieusement mort une séance sur cinq. La
+    dernière journée réellement cotée est la référence correcte — et elle reste entièrement CLÔTURÉE.
+    """
     t = pd.to_datetime(closed["time"], utc=True)
-    day = t.iloc[-1].normalize()
-    prev = day - pd.Timedelta(days=1)
-    return closed[t.dt.normalize() == prev]
+    days = t.dt.normalize()
+    earlier = days[days < days.iloc[-1]]
+    if earlier.empty:
+        return closed.iloc[:0]
+    return closed[days == earlier.iloc[-1]]
 
 
 def _bars_between(closed: pd.DataFrame, start_h: float, end_h: float) -> pd.DataFrame:
@@ -164,6 +171,26 @@ def _ohlc_ok(df: pd.DataFrame) -> bool:
     return not bool(df[["open", "high", "low", "close"]].isna().to_numpy().any())
 
 
+def _bar_ok(row: pd.Series) -> bool:
+    """Vrai si la barre porte des prix OHLC exploitables (présents, finis, high >= low).
+
+    À vérifier AVANT tout filtre d'anatomie de bougie : en pandas/numpy toute comparaison avec NaN est fausse,
+    donc un test du type `close <= open`, `_close_pos(...) < 0.5` ou `_wick_against(...) < 0.35` sur une barre
+    incomplète ne rejette RIEN et laisse passer un signal dont la confirmation n'a jamais été vérifiée.
+    `_ctx` ne contrôle que les colonnes d'indicateurs, pas les prix.
+    """
+    for col in ("open", "high", "low", "close"):
+        if col not in row:
+            return False
+        try:
+            v = float(row[col])
+        except (TypeError, ValueError):
+            return False
+        if not np.isfinite(v):
+            return False
+    return float(row["high"]) >= float(row["low"])
+
+
 def _volumes(df: pd.DataFrame) -> Optional[np.ndarray]:
     """Volumes de tick de la fenêtre (None si la colonne est absente, NaN ou nulle : aucune valeur inventée)."""
     if "tick_volume" not in df.columns or df.empty:
@@ -174,9 +201,27 @@ def _volumes(df: pd.DataFrame) -> Optional[np.ndarray]:
     return v
 
 
+def _atr_h1(snap) -> float:
+    """ATR H1 du snapshot, ramené à 0.0 s'il est absent, nul, négatif ou non fini.
+
+    `float(snap.atr_h1 or 0.0)` vaut NaN quand `atr_h1` est NaN (NaN est « vrai ») : la valeur se propageait
+    alors dans les filtres, où toute comparaison avec NaN est fausse — le filtre concerné était donc
+    silencieusement désactivé. On normalise ici une bonne fois pour toutes.
+    """
+    try:
+        v = float(snap.atr_h1)
+    except (TypeError, ValueError):
+        return 0.0
+    return v if np.isfinite(v) and v > 0 else 0.0
+
+
 def _spread_ratio_h1(snap) -> float:
-    """Spread courant en fraction de l'ATR H1 (référence du gate : <= 0,15 ATR H1) ; inf si l'ATR H1 est inconnu."""
-    atr_h1 = float(snap.atr_h1 or 0.0)
+    """Spread courant en fraction de l'ATR H1 (référence du gate : <= 0,15 ATR H1) ; inf si l'ATR H1 est inconnu.
+
+    Un ATR H1 nul, absent, infini ou NaN renvoie `inf` : le filtre de spread REFUSE le signal au lieu de laisser
+    passer une comparaison avec NaN (toujours fausse) qui le désactiverait pour TOUS les agents du module.
+    """
+    atr_h1 = _atr_h1(snap)
     if atr_h1 <= 0 or snap.spec is None:
         return float("inf")
     return float(snap.spread_points) * float(snap.spec.point) / atr_h1
@@ -217,11 +262,15 @@ def _hard_opposed(lt: pd.Series, side: Side, adx_max: float = 30.0) -> bool:
 def _bound_sl(snap, side: Side, entry: float, sl: float, atr: float, lo: float, hi: float) -> Optional[float]:
     """Ramène la distance entrée→SL dans [max(lo·ATR, 0,3·ATR, 0,3·ATR H1) ; min(hi, 3)·ATR] sans changer de côté.
 
-    Renvoie None si la borne basse dépasse la borne haute (bornes incohérentes : on refuse plutôt que d'inventer).
+    Renvoie None si la borne basse dépasse la borne haute (bornes incohérentes) ET si le SL brut est du MAUVAIS
+    côté de l'entrée : dans ce dernier cas le niveau structurel proposé par l'agent est faux, et le « ramener »
+    du bon côté reviendrait à inventer un stop que l'analyse ne justifie pas. On refuse le signal.
     """
     if sl is None or not np.isfinite(sl) or not np.isfinite(entry) or atr <= 0:
         return None
-    atr_h1 = float(snap.atr_h1 or 0.0)
+    if side.sign * (entry - sl) <= 0:
+        return None
+    atr_h1 = _atr_h1(snap)
     min_broker = float(getattr(snap.spec, "min_stop_distance", 0.0) or 0.0) if snap.spec is not None else 0.0
     lo_dist = max(lo * atr, SL_MIN_ATR * atr, SL_MIN_H1_ATR * atr_h1, STOPS_LEVEL_MARGIN * min_broker)
     hi_dist = min(min(hi, SL_MAX_ATR) * atr, SL_MAX_H1_ATR * atr_h1 if atr_h1 > 0 else float("inf"))
@@ -269,10 +318,18 @@ def _set_tp_plan(c: Optional[TradeCandidate], side: Side, entry: float, targets:
 
 
 def _finalize(c: Optional[TradeCandidate], snap) -> Optional[TradeCandidate]:
-    """Revalidation déterministe du SL (côté, stops_level, 0,25-4 ATR H1) : refus → None, jamais de correction."""
+    """Revalidation déterministe du SL (côté, stops_level, 0,25-4 ATR H1) : refus → None, jamais de correction.
+
+    Un ATR H1 non exploitable (absent, nul, NaN) fait AUSSI refuser le candidat : `validate_stop_loss` ignore
+    silencieusement ses bornes en ATR quand l'ATR vaut NaN, et le `TradeCandidate.atr` publié servirait ensuite
+    au dimensionnement du risque. Mieux vaut aucun signal qu'un signal dont le risque n'est pas mesurable.
+    """
     if c is None:
         return None
-    chk = validate_stop_loss(c.side, c.entry, c.sl, snap.spec, atr=float(c.atr or 0.0))
+    atr_h1 = _atr_h1(snap)
+    if atr_h1 <= 0 or not np.isfinite(float(c.atr or 0.0)) or float(c.atr or 0.0) <= 0:
+        return None
+    chk = validate_stop_loss(c.side, c.entry, c.sl, snap.spec, atr=float(c.atr))
     return c if chk.ok else None
 
 
@@ -365,6 +422,56 @@ def _volume_profile(bars: pd.DataFrame, bins: int = 24, value_area: float = 0.70
             lo_i -= 1
             acc += float(hist[lo_i])
     return float(centers[poc_i]), float(edges[hi_i + 1]), float(edges[lo_i])
+
+
+def _stair_run(v: np.ndarray, tol: float) -> int:
+    """Longueur, en barres, de la série FINALE de valeurs non décroissantes à `tol` près (>= 1).
+
+    `_stair_run(lows, tol)` compte les « marches » d'un escalier haussier (chaque plus bas reste au-dessus du
+    précédent, à `tol` près) ; `_stair_run(-highs, tol)` fait la même chose pour un escalier baissier.
+    Une valeur NaN casse la série (aucune marche supposée).
+    """
+    k = 1
+    i = len(v) - 1
+    while i > 0 and np.isfinite(v[i]) and np.isfinite(v[i - 1]) and v[i] >= v[i - 1] - tol:
+        k += 1
+        i -= 1
+    return k
+
+
+def _efficiency(closes: np.ndarray) -> Optional[float]:
+    """Ratio d'efficience de Kaufman : |déplacement net| / longueur du chemin parcouru, dans [0, 1].
+
+    1 = ligne droite (chaque barre avance dans le même sens), 0 = aller-retour stérile. None si le chemin est
+    nul ou non fini (aucune valeur de repli inventée).
+    """
+    if len(closes) < 3 or not np.isfinite(closes).all():
+        return None
+    path = float(np.abs(np.diff(closes)).sum())
+    if path <= 0:
+        return None
+    return float(abs(closes[-1] - closes[0]) / path)
+
+
+def _wick_pressure(bars: pd.DataFrame) -> Optional[tuple[float, np.ndarray, np.ndarray]]:
+    """Pression de mèches cumulée d'une fenêtre : (déséquilibre normalisé, mèches basses, mèches hautes).
+
+    Mèche basse = min(open, close) − bas (absorption acheteuse), mèche haute = haut − max(open, close). Le
+    déséquilibre vaut (Σ basses − Σ hautes) / (Σ basses + Σ hautes) ∈ [−1, +1]. None si la fenêtre est vide,
+    incomplète ou entièrement sans mèche (division par zéro).
+    """
+    if bars is None or len(bars) < 10 or not _ohlc_ok(bars):
+        return None
+    o = bars["open"].to_numpy(dtype=float)
+    h = bars["high"].to_numpy(dtype=float)
+    lo = bars["low"].to_numpy(dtype=float)
+    c = bars["close"].to_numpy(dtype=float)
+    lower = np.maximum(np.minimum(o, c) - lo, 0.0)
+    upper = np.maximum(h - np.maximum(o, c), 0.0)
+    total = float(lower.sum() + upper.sum())
+    if not np.isfinite(total) or total <= 0:
+        return None
+    return float((lower.sum() - upper.sum()) / total), lower, upper
 
 
 # ==============================================================================================================
