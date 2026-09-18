@@ -53,6 +53,7 @@ class AgentSpec:
     filters: list[str] = field(default_factory=list)
     parent_id: Optional[str] = None  # pour les challengers générés
     created_by: str = "registry"
+    base_strategy: Optional[str] = None  # screener générique de repli si la stratégie propre n'existe pas
 
     @property
     def generates_trades(self) -> bool:
@@ -205,6 +206,12 @@ def default_agents() -> list[AgentSpec]:  # noqa: C901 - registre déclaratif
          ("usoil_ny_momentum", "atr_expansion", ["USOIL", "XTIUSD"], ["NEWYORK", "OVERLAP_LDN_NY"], {"atr_ratio": 1.3, "sl_atr": 1.5, "rr": 2.0}, BREAKOUT_REGIMES)]
     for i, (nm, st, mk, ss, p, rg) in enumerate(M, 1):
         A.append(_a(f"M{i:02d}", "M", nm, st, mk, ss, tf("M15", "H1"), rg, p, model_tier_role="technical_analysis"))
+    # Chaque agent générateur possède SA PROPRE stratégie (clé = agent_id, module agents/strategies/*) ;
+    # le screener générique historique reste en repli (base_strategy) tant que la stratégie propre n'existe pas.
+    for a in A:
+        if a.strategy is not None:
+            a.base_strategy = a.strategy
+            a.strategy = a.agent_id
     return A
 
 

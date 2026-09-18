@@ -570,8 +570,28 @@ def fib_pullback(spec: AgentSpec, snap) -> Optional[TradeCandidate]:
     return None
 
 
-def run_screener(spec: AgentSpec, snap) -> Optional[TradeCandidate]:
+def _load_own_strategies() -> None:
+    """Enregistre les stratégies propres (agents/strategies/*) dans SCREENERS, une seule fois."""
+    if SCREENERS.get("__own_loaded__"):
+        return
+    SCREENERS["__own_loaded__"] = lambda spec, snap: None  # sentinelle
+    try:
+        from . import strategies  # noqa: F401 - l'import enregistre les stratégies via @register
+    except ImportError:
+        pass
+
+
+def resolve_screener(spec: AgentSpec):
+    """Stratégie propre de l'agent (clé = agent_id) sinon screener générique de repli (base_strategy)."""
+    _load_own_strategies()
     fn = SCREENERS.get(spec.strategy or "")
+    if fn is None and getattr(spec, "base_strategy", None):
+        fn = SCREENERS.get(spec.base_strategy)
+    return fn
+
+
+def run_screener(spec: AgentSpec, snap) -> Optional[TradeCandidate]:
+    fn = resolve_screener(spec)
     if fn is None:
         return None
     try:
