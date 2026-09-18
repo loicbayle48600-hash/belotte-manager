@@ -78,7 +78,7 @@ def _close_pos(row: pd.Series, side: Side) -> float:
 
 
 def _hhmm(s: str, default: float) -> float:
-    """\"HH:MM\" → heure décimale UTC ; `default` si le format est invalide."""
+    """Heure « HH:MM » → heure décimale UTC ; `default` si le format est invalide."""
     try:
         hh, mm = str(s).strip().split(":")[:2]
         return int(hh) + int(mm) / 60.0
