@@ -54,7 +54,7 @@ import numpy as np
 import pandas as pd
 
 from ...core.types import Side, TradeCandidate
-from ...market_data.indicators import daily_high_low, rsi, session_range, structure_label, swing_points
+from ...market_data.indicators import daily_high_low, rsi, session_range, structure_label
 from ...risk.stop_loss import validate_stop_loss
 from ..registry import AgentSpec
 from ..screeners import _build, _clamp, _ctx, _frame, _mtf_bonus, _structure_sl, _trend_of, _valid, register  # noqa: F401
@@ -354,30 +354,6 @@ def _session_vwap(bars: pd.DataFrame) -> Optional[tuple[float, float]]:
     if not np.isfinite(vwap) or not np.isfinite(var) or var <= 0:
         return None
     return vwap, float(np.sqrt(var))
-
-
-def _linreg(y: np.ndarray) -> Optional[tuple[float, float, float, float]]:
-    """Régression linéaire (moindres carrés) : (pente par barre, valeur en fin de fenêtre, R², écart-type résiduel)."""
-    n = len(y)
-    if n < 8 or not np.isfinite(y).all():
-        return None
-    x = np.arange(n, dtype=float)
-    x_c, y_c = x - x.mean(), y - y.mean()
-    denom = float((x_c ** 2).sum())
-    if denom <= 0:
-        return None
-    slope = float((x_c * y_c).sum() / denom)
-    intercept = float(y.mean() - slope * x.mean())
-    fitted = intercept + slope * x
-    resid = y - fitted
-    ss_tot = float((y_c ** 2).sum())
-    if ss_tot <= 0:
-        return None
-    r2 = float(1.0 - (resid ** 2).sum() / ss_tot)
-    sd = float(np.sqrt((resid ** 2).mean()))
-    if sd <= 0 or not np.isfinite(r2):
-        return None
-    return slope, float(fitted[-1]), r2, sd
 
 
 def _obv(bars: pd.DataFrame) -> Optional[np.ndarray]:

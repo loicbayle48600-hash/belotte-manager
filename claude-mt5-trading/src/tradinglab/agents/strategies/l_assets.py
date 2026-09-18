@@ -15,7 +15,8 @@ Conventions communes (voir `agents/screeners.py`) :
   d'entrée, horodatage de la barre clôturée) et respecte `spec.timeframes` ;
 - `_build` construit le `TradeCandidate` (pénalité de spread) et refuse tout SL du mauvais côté ; les agents de ce
   module remplacent ensuite le plan de TP générique par leur propre plan (`_set_tp_plan`, `rr >= max(1.5, rr)`) ;
-- la distance entrée→SL est bornée par `_bound_sl` dans [0,3 ATR ; 3 ATR] du tf d'entrée (et au moins 0,3 ATR H1),
+- la distance entrée→SL est bornée par `_bound_sl` dans [0,3 ATR ; 3 ATR] du tf d'entrée, ET dans
+  [0,3 ATR H1 ; 3,9 ATR H1] pour rester dans les bornes du gate (0,25-4 ATR H1) quel que soit le tf d'entrée ;
   puis le SL final est revalidé par `risk.stop_loss.validate_stop_loss` (`_finalize`) : un SL refusé donne `None`,
   jamais une valeur corrigée à la volée ;
 - quand cette borne déplace le SL par rapport au niveau décrit par la thèse, l'écart est DIT dans
@@ -47,6 +48,12 @@ SL_MAX_ATR = 3.0
 # Sur un tf d'entrée court (M15) l'ATR du tf est bien plus petit que l'ATR H1 : la distance minimale tient aussi
 # compte de l'ATR H1 pour ne jamais proposer un stop que le gate refuserait.
 SL_MIN_H1_ATR = 0.3
+# Symétrique du plancher ci-dessus, et tout aussi nécessaire : sur un tf d'entrée LONG (H4 pour L07 et L12) l'ATR
+# du tf vaut environ 2 x l'ATR H1, si bien qu'un stop de 2 ATR H4 dépasse le plafond du gate
+# (`validate_stop_loss`, 4 x ATR H1) dès que la volatilité H4 est un peu plus de deux fois celle de H1 — c'est-à-
+# dire précisément en tendance, quand ces agents déclenchent. Sans ce plafond, le candidat est construit puis
+# refusé en silence par `_finalize` et l'agent paraît mort. Marge de 0,1 ATR H1 sous la limite du gate.
+SL_MAX_H1_ATR = 3.9
 # Une cible structurelle au-delà de 6 R n'est pas un objectif de trade réaliste : la cible finale y est plafonnée.
 MAX_STRUCT_RR = 6.0
 
@@ -158,15 +165,23 @@ def _spread_ratio_h1(snap) -> float:
 
 
 def _bound_sl(snap, side: Side, entry: float, sl: float, atr: float, lo: float, hi: float) -> Optional[float]:
-    """Ramène la distance entrée→SL dans [max(lo·ATR, 0,3·ATR, 0,3·ATR H1) ; min(hi, 3)·ATR] sans changer de côté.
+    """Ramène la distance entrée→SL dans [max(lo·ATR, 0,3·ATR, 0,3·ATR H1) ; min(min(hi, 3)·ATR, 3,9·ATR H1)]
+    sans changer de côté.
 
+    Les deux bornes en ATR H1 encadrent le plafond et le plancher du gate (`validate_stop_loss` : 0,25 et 4 ATR
+    H1) : sans elles, un stop parfaitement valide au regard du tf d'entrée serait refusé en silence par
+    `_finalize` (cas d'un tf d'entrée H4, dont l'ATR vaut ~2 x l'ATR H1).
     Renvoie None si la borne basse dépasse la borne haute (configuration incohérente : on refuse plutôt que d'inventer).
     """
     if not np.isfinite(sl) or not np.isfinite(entry) or atr <= 0:
         return None
     atr_h1 = float(snap.atr_h1 or 0.0)
+    if not np.isfinite(atr_h1) or atr_h1 < 0:
+        atr_h1 = 0.0
     lo_dist = max(lo * atr, SL_MIN_ATR * atr, SL_MIN_H1_ATR * atr_h1)
     hi_dist = min(hi, SL_MAX_ATR) * atr
+    if atr_h1 > 0:
+        hi_dist = min(hi_dist, SL_MAX_H1_ATR * atr_h1)
     if lo_dist > hi_dist:
         return None
     dist = min(max(abs(entry - sl), lo_dist), hi_dist)
@@ -1314,7 +1329,8 @@ def strategy_l10(spec: AgentSpec, snap) -> Optional[TradeCandidate]:
     UTC, mesurée sur les barres CLÔTURÉES — et l'amplitude de référence vient des journées précédentes (D1).
 
     Règles d'entrée : symbole parmi les racines déclarées par l'agent ; >= 10 barres M15 clôturées dans le jour
-    UTC courant ; amplitude médiane des 5 dernières journées D1 clôturées > 0 ; amplitude du jour >= 0,9 × cette
+    UTC courant ; amplitude médiane des 5 dernières journées D1 clôturées (3 au minimum, le nombre réellement
+    utilisé est dit dans les arguments) > 0 ; amplitude du jour >= 0,9 × cette
     médiane ; le jour est étiré d'un côté (extension depuis l'ouverture >= 60 % de l'amplitude du jour) → on
     trade le RETOUR (achat si la journée est étirée à la baisse) ; l'extrême du jour date des 6 dernières barres
     clôturées ; la barre de signal clôture au-delà du haut (bas) de la barre précédente et dans le sens du retour.
@@ -1398,7 +1414,8 @@ def strategy_l10(spec: AgentSpec, snap) -> Optional[TradeCandidate]:
     score += _clamp(abs(50.0 - float(rsi_win.min() if side is Side.BUY else rsi_win.max())) * 0.6, 0, 15) + 15.0
     score += _clamp(room * 8.0, 0, 20) + _clamp((30.0 - float(le["adx14"])) * 1.0, 0, 15)
     score += _clamp(_close_pos(le, side) * 10.0, 0, 10)
-    pros = [f"journée étirée à {ext_share:.0%} d'un seul côté (amplitude {day_range / med:.1f}x la médiane 5 jours)",
+    pros = [f"journée étirée à {ext_share:.0%} d'un seul côté "
+            f"(amplitude {day_range / med:.1f}x la médiane des {len(prev_days)} journées D1 clôturées)",
             f"RSI épuisé à {float(rsi_win.min() if side is Side.BUY else rsi_win.max()):.0f} puis redressé",
             "clôture au-delà de l'extrême de la barre précédente (reprise)",
             f"ouverture du jour ({day_open:.5f}) à {room:.1f} R"]
