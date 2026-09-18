@@ -18,6 +18,9 @@ Conventions communes (voir `agents/screeners.py`) :
 - la distance entrée→SL est bornée par `_bound_sl` dans [0,3 ATR ; 3 ATR] du tf d'entrée (et au moins 0,3 ATR H1),
   puis le SL final est revalidé par `risk.stop_loss.validate_stop_loss` (`_finalize`) : un SL refusé donne `None`,
   jamais une valeur corrigée à la volée ;
+- quand cette borne déplace le SL par rapport au niveau décrit par la thèse, l'écart est DIT dans
+  `arguments_against` (`_sl_note`) : le niveau d'invalidation annoncé n'est alors plus celui qui est protégé, et
+  la sortie au stop peut précéder l'invalidation décrite ;
 - `setup_score` = somme documentée de composantes, bornée 0-100 : ce n'est PAS une probabilité de gain ;
 - l'univers de l'agent (`spec.markets`) est revérifié localement (`_market_ok`) : le Market Router filtre déjà
   régime / session / marché, on affine seulement ;
@@ -170,6 +173,27 @@ def _bound_sl(snap, side: Side, entry: float, sl: float, atr: float, lo: float, 
     return entry - side.sign * dist
 
 
+def _sl_note(side: Side, entry: float, raw_sl: float, sl: float, atr: float) -> Optional[str]:
+    """Argument CONTRE honnête quand `_bound_sl` a dû déplacer le SL voulu par la thèse.
+
+    Le niveau décrit par la thèse et par l'invalidation (bande VWAP, borne de la zone de valeur, extrême du
+    balayage, canal de sortie, chiffre rond, départ de l'escalier…) n'est alors PLUS celui du SL réellement
+    proposé : on le dit explicitement au lieu de laisser croire qu'il est protégé. `None` si le SL proposé est
+    bien le niveau voulu. Ce n'est pas une correction : le SL reste celui que `_bound_sl` a calculé.
+    """
+    if not np.isfinite(raw_sl) or not np.isfinite(sl) or not np.isfinite(entry) or atr <= 0:
+        return None
+    raw_d, d = abs(entry - raw_sl), abs(entry - sl)
+    if d < raw_d - 1e-12:
+        return (f"SL ramené à {d / atr:.2f} ATR (plafond de distance de l'agent) : le niveau visé par la thèse "
+                f"({raw_sl:.5g}, soit {raw_d / atr:.2f} ATR) est plus loin et n'est donc plus protégé — "
+                f"l'invalidation décrite peut survenir après la sortie au stop")
+    if d > raw_d + 1e-12:
+        return (f"SL élargi à {d / atr:.2f} ATR (distance minimale) : plus loin que le niveau visé par la thèse "
+                f"({raw_sl:.5g}), le risque par trade porte sur cette distance élargie")
+    return None
+
+
 def _set_tp_plan(c: Optional[TradeCandidate], side: Side, entry: float, targets: list[float], rr_min: float,
                  first_r: float = 1.5) -> Optional[TradeCandidate]:
     """Remplace le plan de TP générique de `_build` par un plan propre à l'agent.
@@ -231,9 +255,18 @@ def _opposed(lt: pd.Series, side: Side) -> bool:
 
 
 def _day_bars(closed: pd.DataFrame) -> pd.DataFrame:
-    """Barres clôturées appartenant au jour UTC de la dernière barre clôturée."""
-    t = pd.to_datetime(closed["time"], utc=True)
-    return closed[t.dt.normalize() == t.iloc[-1].normalize()]
+    """Barres clôturées appartenant au jour UTC de la dernière barre clôturée.
+
+    Renvoie une fenêtre VIDE (jamais une exception) si la colonne `time` est absente, vide ou illisible : un
+    horodatage NaT/non convertible est une donnée manquante, l'agent doit alors refuser, pas planter.
+    """
+    if closed is None or len(closed) == 0 or "time" not in closed.columns:
+        return closed.iloc[0:0] if closed is not None else pd.DataFrame()
+    t = pd.to_datetime(closed["time"], utc=True, errors="coerce")
+    last = t.iloc[-1]
+    if pd.isna(last):
+        return closed.iloc[0:0]
+    return closed[t.dt.normalize() == last.normalize()]
 
 
 def _bars_between(closed: pd.DataFrame, start_h: float, end_h: float) -> pd.DataFrame:
@@ -241,7 +274,7 @@ def _bars_between(closed: pd.DataFrame, start_h: float, end_h: float) -> pd.Data
     day = _day_bars(closed)
     if day.empty:
         return day
-    t = pd.to_datetime(day["time"], utc=True)
+    t = pd.to_datetime(day["time"], utc=True, errors="coerce")
     h = t.dt.hour + t.dt.minute / 60.0
     return day[(h >= start_h) & (h < end_h)]
 
@@ -457,6 +490,9 @@ def strategy_l01(spec: AgentSpec, snap) -> Optional[TradeCandidate]:
     b, pros = _mtf_bonus(le, lt, side)
     score += b
     cons: list[str] = []
+    note = _sl_note(side, entry, raw_sl, sl, atr)      # honnêteté : SL déplacé par rapport à la thèse
+    if note:
+        cons.append(note)
     ratio = sigma / atr
     score += _clamp(10.0 * (1.0 - abs(ratio - 1.0)), 0, 10)
     score += _clamp(_body_ratio(le) * 15.0, 0, 15) + 5.0
@@ -490,9 +526,11 @@ def strategy_l02(spec: AgentSpec, snap) -> Optional[TradeCandidate]:
     l'horloge (00:00-08:00 UTC), pas par des pivots.
 
     Règles d'entrée : symbole de classe `metals` ; barre clôturée entre 00:00 et 08:00 UTC ; >= 8 barres M15
-    clôturées depuis 00:00 ; plage = (haut, bas) de ces barres, largeur comprise entre 0,8 ATR M15 et 2,2 ATR H1
-    (séance calme) ; la barre de signal dépasse une borne de moins de 0,45 ATR et clôture à l'intérieur (>= 0,05
-    ATR sous la borne pour une vente) ; aucune barre antérieure de la séance n'a CLÔTURÉ hors de la plage.
+    clôturées depuis 00:00 AVANT la barre de signal ; plage = (haut, bas) de ces barres seulement — la barre de
+    signal en est exclue, sans quoi elle serait elle-même la borne et aucun dépassement ne serait mesurable ;
+    largeur comprise entre 0,8 ATR M15 et 2,2 ATR H1 (séance calme) ; la barre de signal dépasse une borne de
+    moins de 0,45 ATR et clôture à l'intérieur (>= 0,05 ATR sous la borne pour une vente) ; les bornes de la
+    plage n'ont été atteintes que par des mèches (aucune clôture à moins de 0,15 ATR d'une borne).
     Confirmation : mèche de rejet >= 35 % de l'amplitude de la barre ; RSI14 dans [`rsi_lo`, `rsi_hi`] — la sortie
     n'est pas portée par le momentum.
     Filtres : spread <= 12 % de l'ATR M15 ; médiane de la plage à >= 0,5 ATR de l'entrée (sinon aucune marge).
@@ -517,9 +555,13 @@ def strategy_l02(spec: AgentSpec, snap) -> Optional[TradeCandidate]:
     if hour is None or not (0.0 <= hour < 8.0):
         return None
     asia = _bars_between(closed, 0.0, 8.0)
-    if len(asia) < 8 or not _ohlc_ok(asia):
+    if len(asia) < 9 or not _ohlc_ok(asia):
         return None
-    hi, lo = float(asia["high"].max()), float(asia["low"].min())
+    # La plage est mesurée sur les barres qui PRÉCÈDENT la barre de signal. Si la barre de signal était incluse,
+    # elle serait elle-même la borne de la plage (`high.max()` >= son propre haut) : `up_poke`/`dn_poke` seraient
+    # négatifs ou nuls par construction et l'agent ne pourrait JAMAIS produire de candidat.
+    prior = asia.iloc[:-1]
+    hi, lo = float(prior["high"].max()), float(prior["low"].min())
     width = hi - lo
     atr_h1 = float(snap.atr_h1 or 0.0)
     if width <= 0 or width < 0.8 * atr or (atr_h1 > 0 and width > 2.2 * atr_h1):
@@ -533,9 +575,11 @@ def strategy_l02(spec: AgentSpec, snap) -> Optional[TradeCandidate]:
         side, poke, level = Side.BUY, dn_poke, lo
     else:
         return None
-    before = asia.iloc[:-1]
-    if bool(((before["close"] > hi) | (before["close"] < lo)).any()):
-        return None  # la plage a déjà été acceptée hors bornes : ce n'est plus une fausse sortie
+    # « aucune borne acceptée en clôture » : comparer les clôtures de `prior` à `hi`/`lo`, qui sont les extrêmes
+    # de ces mêmes barres, serait un test toujours faux (donc vide de sens). La condition réellement utile est que
+    # les bornes n'aient été atteintes QUE par des mèches : aucune clôture de la plage ne colle à une borne.
+    if float(prior["close"].max()) > hi - 0.15 * atr or float(prior["close"].min()) < lo + 0.15 * atr:
+        return None  # une borne a déjà été acceptée en clôture : ce n'est plus une fausse sortie
     if _wick_against(le, side) < 0.35:
         return None
     lo_r, hi_r = float(p.get("rsi_lo", 30)), float(p.get("rsi_hi", 70))
@@ -560,6 +604,9 @@ def strategy_l02(spec: AgentSpec, snap) -> Optional[TradeCandidate]:
             f"dépassement de {poke / atr:.2f} ATR rejeté en clôture",
             f"mèche de rejet {_wick_against(le, side):.0%}", f"médiane de plage à {room:.1f} R"]
     cons: list[str] = []
+    note = _sl_note(side, entry, raw_sl, sl, atr)      # honnêteté : SL déplacé par rapport à la thèse
+    if note:
+        cons.append(note)
     if float(le["adx14"]) > 25:
         cons.append(f"ADX M15 {float(le['adx14']):.0f} : la séance n'est plus totalement sans direction")
         score -= 10
@@ -645,6 +692,9 @@ def strategy_l03(spec: AgentSpec, snap) -> Optional[TradeCandidate]:
              f"pente {slope / atr:.3f} ATR/barre dans le sens du trade",
              f"repli à {z:.1f} sigma dans le canal (pas de sortie)", f"ADX {float(le['adx14']):.0f}"]
     cons: list[str] = []
+    note = _sl_note(side, entry, raw_sl, sl, atr)      # honnêteté : SL déplacé par rapport à la thèse
+    if note:
+        cons.append(note)
     if z < -1.6:
         cons.append("repli profond : le canal est sur le point d'être cassé")
     if r2 < 0.65:
@@ -739,6 +789,9 @@ def strategy_l04(spec: AgentSpec, snap) -> Optional[TradeCandidate]:
              f"volume de défense {vol_now / vol_ma:.1f}x la moyenne 20 barres",
              f"repli à {gap / atr:.2f} ATR du POC"]
     cons: list[str] = []
+    note = _sl_note(side, entry, raw_sl, sl, atr)      # honnêteté : SL déplacé par rapport à la thèse
+    if note:
+        cons.append(note)
     near = va_high if side is Side.BUY else va_low
     if s * (near - entry) <= 0:
         cons.append("le prix est déjà au bord opposé de la zone de valeur : marge réduite")
@@ -845,6 +898,9 @@ def strategy_l05(spec: AgentSpec, snap) -> Optional[TradeCandidate]:
             f"ADX M15 {float(le['adx14']):.0f} : pas de tendance franche à contrer",
             f"médiane du range de la veille à {room:.1f} R"]
     cons: list[str] = []
+    note = _sl_note(side, entry, raw_sl, sl, atr)      # honnêteté : SL déplacé par rapport à la thèse
+    if note:
+        cons.append(note)
     if _opposed(lt, side):
         cons.append("tendance H1 opposée : le piège se trade contre le tf supérieur")
     if not rsi_back:
@@ -930,6 +986,9 @@ def strategy_l06(spec: AgentSpec, snap) -> Optional[TradeCandidate]:
              f"clôture à {abs(entry - float(le['ema20'])) / atr:.2f} ATR de l'EMA20 (pas de poursuite)",
              f"ADX {float(le['adx14']):.0f}", f"stop élargi à k={k:.2f} ATR sous l'EMA50 (proportionnel à la vitesse)"]
     cons: list[str] = []
+    note = _sl_note(side, entry, raw_sl, sl, atr)      # honnêteté : SL déplacé par rapport à la thèse
+    if note:
+        cons.append(note)
     if _valid(le, "vol_pct") and float(le["vol_pct"]) > 85:
         cons.append(f"volatilité au {float(le['vol_pct']):.0f}e percentile : slippage probable")
         score -= 10
@@ -1019,6 +1078,9 @@ def strategy_l07(spec: AgentSpec, snap) -> Optional[TradeCandidate]:
              f"ADX {float(le['adx14']):.0f}, momentum 10 barres dans le sens du trade",
              f"ATR = {atr / atr_ma:.2f}x sa moyenne 50 (pas d'explosion)"]
     cons: list[str] = []
+    note = _sl_note(side, entry, raw_sl, sl, atr)      # honnêteté : SL déplacé par rapport à la thèse
+    if note:
+        cons.append(note)
     if abs(entry - level) > 0.8 * atr:
         cons.append(f"clôture {abs(entry - level) / atr:.1f} ATR au-delà de la borne : entrée étendue")
     if _trend_of(lt) == "FLAT":
@@ -1125,6 +1187,9 @@ def strategy_l08(spec: AgentSpec, snap) -> Optional[TradeCandidate]:
             "barre suivante sans nouvel extrême et réintégration des bandes de Bollinger",
             f"médiane de Bollinger à {room:.1f} R"]
     cons: list[str] = []
+    note = _sl_note(side, entry, raw_sl, sl, atr)      # honnêteté : SL déplacé par rapport à la thèse
+    if note:
+        cons.append(note)
     if _opposed(lt, side):
         cons.append("tendance H1 franchement opposée : rebond technique contre le tf supérieur")
         score -= 10
@@ -1222,6 +1287,9 @@ def strategy_l09(spec: AgentSpec, snap) -> Optional[TradeCandidate]:
              f"tendance {_trend_of(lt)} sur {spec.timeframes.get('trend', 'H1')}, ADX {float(le['adx14']):.0f}",
              f"rond suivant ({next_fig:.3f}) à {s * (next_fig - entry) / dist:.1f} R"]
     cons: list[str] = []
+    note = _sl_note(side, entry, raw_sl, sl, atr)      # honnêteté : SL déplacé par rapport à la thèse
+    if note:
+        cons.append(note)
     if step > 2.0 * atr:
         cons.append(f"grille large ({step / atr:.1f} ATR) : la cible peut demander plusieurs séances")
     if (side is Side.BUY and float(le["rsi14"]) > 75) or (side is Side.SELL and float(le["rsi14"]) < 25):
@@ -1335,6 +1403,9 @@ def strategy_l10(spec: AgentSpec, snap) -> Optional[TradeCandidate]:
             "clôture au-delà de l'extrême de la barre précédente (reprise)",
             f"ouverture du jour ({day_open:.5f}) à {room:.1f} R"]
     cons: list[str] = []
+    note = _sl_note(side, entry, raw_sl, sl, atr)      # honnêteté : SL déplacé par rapport à la thèse
+    if note:
+        cons.append(note)
     if _opposed(lt, side):
         cons.append("tendance H1 opposée (ADX modéré) : retour contre le tf supérieur")
     if day_range > 1.6 * med:
@@ -1424,6 +1495,9 @@ def strategy_l11(spec: AgentSpec, snap) -> Optional[TradeCandidate]:
              f"hauteur {height / atr:.1f} ATR depuis le départ de la série",
              f"mèches contraires moyennes {wicks:.0%} (série régulière)", f"ADX {float(le['adx14']):.0f}"]
     cons: list[str] = []
+    note = _sl_note(side, entry, raw_sl, sl, atr)      # honnêteté : SL déplacé par rapport à la thèse
+    if note:
+        cons.append(note)
     if k > 10:
         cons.append(f"série déjà longue ({k} barres) : essoufflement possible")
         score -= 10
@@ -1524,6 +1598,9 @@ def strategy_l12(spec: AgentSpec, snap) -> Optional[TradeCandidate]:
             f"jambe de référence de {leg / atr:.1f} ATR (objectif mesurable)",
             "SL sur la moyenne des 5 derniers extrêmes (insensible à une mèche isolée)"]
     cons: list[str] = []
+    note = _sl_note(side, entry, raw_sl, sl, atr)      # honnêteté : SL déplacé par rapport à la thèse
+    if note:
+        cons.append(note)
     if ratio < 0.45:
         cons.append(f"compression extrême ({ratio:.2f}) : le marché peut rester endormi longtemps")
         score -= 10

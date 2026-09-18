@@ -16,6 +16,11 @@ Conventions communes (voir `agents/screeners.py`, identiques aux familles B, C e
 - le SL final est revalidé par `risk.stop_loss.validate_stop_loss` (côté, stops_level du symbole, 0,25-4 ATR H1) :
   un SL refusé donne `None`, jamais une valeur corrigée à la volée ;
 - distance entrée→SL toujours ramenée dans [0,3 ; 3] ATR du tf d'entrée ET au-dessus de 0,3 ATR H1 (`_bound_sl`) ;
+  ces bornes PRIMENT sur la lecture graphique : quand le niveau structurel visé par un agent est plus éloigné que
+  son plafond (`sl_atr`), le stop réellement placé est plus serré que ce niveau — c'est un choix de risque assumé
+  (même convention que la famille B), et le champ `invalidation` décrit l'invalidation ANALYTIQUE du scénario,
+  pas la position du stop ; un SL brut du MAUVAIS côté de l'entrée fait en revanche refuser le signal, jamais
+  « retourner » le stop ;
 - `setup_score` 0-100 = somme documentée de composantes (structure, confirmation, alignement MTF, volatilité,
   qualité d'exécution) : ce n'est PAS une probabilité de gain ;
 - données insuffisantes, indicateur NaN, volume absent → `None`, jamais une valeur inventée.
@@ -31,14 +36,14 @@ repli (`AgentSpec.base_strategy`) :
 | M03 | GBPUSD | RETEST tenu de la borne du range asiatique déjà cassée |
 | M04 | GBPUSD | balayage de l'extrême de la VEILLE puis réintégration (turtle soup) |
 | M05 | USDJPY | score z des clôtures dans la séance asiatique (retour à la moyenne de séance) |
-| M06 | USDJPY | canal de RÉGRESSION linéaire (pente + R²) et rappel sur la droite |
+| M06 | USDJPY | ESCALIER de marches monotones + ratio d'efficience de Kaufman |
 | M07 | XAUUSD | points PIVOTS journaliers classiques (P, S1/R1, S2/R2) |
 | M08 | XAUUSD | balayage de l'extrême du JOUR avec climax de volume puis réintégration |
 | M09 | NAS100 | opening range 13:30-14:00 aligné avec le GAP d'ouverture |
 | M10 | US500 | RSI(2) survendu/suracheté dans la tendance H1 (repli statistique) |
 | M11 | GER40 | PROFIL DE VOLUME de la veille (POC + zone de valeur) |
 | M12 | AUDUSD | cassure du range asiatique confirmée par l'OBV (accumulation) |
-| M13 | USDCAD | canal de DONCHIAN 20 / stop sur Donchian 10 opposé |
+| M13 | USDCAD | PRESSION DE MÈCHES cumulée (absorption) sur 20 barres |
 | M14 | USOIL  | momentum statistiquement extrême (percentile du déplacement 10 barres) |
 """
 from __future__ import annotations
@@ -508,6 +513,8 @@ def strategy_m01(spec: AgentSpec, snap) -> Optional[TradeCandidate]:
     if not c:
         return None
     e, t, le, lt, atr, bt = c
+    if not _bar_ok(le) or not _bar_ok(lt):
+        return None
     p = spec.params
     closed = _closed(e)
     n = len(closed)
@@ -611,6 +618,8 @@ def strategy_m02(spec: AgentSpec, snap) -> Optional[TradeCandidate]:
     if not c:
         return None
     e, t, le, lt, atr, bt = c
+    if not _bar_ok(le) or not _bar_ok(lt):
+        return None
     p = spec.params
     closed = _closed(e)
     if len(closed) < 60 or not _in_window(le, 12.0, 21.0):
@@ -705,6 +714,8 @@ def strategy_m03(spec: AgentSpec, snap) -> Optional[TradeCandidate]:
     if not c:
         return None
     e, t, le, lt, atr, bt = c
+    if not _bar_ok(le) or not _bar_ok(lt):
+        return None
     p = spec.params
     closed = _closed(e)
     if len(closed) < 60:
@@ -797,7 +808,8 @@ def strategy_m04(spec: AgentSpec, snap) -> Optional[TradeCandidate]:
     Entrée : plus haut / plus bas de la VEILLE disponibles (frame D1) ; aucune barre du jour n'avait clôturé
     au-delà du niveau avant le balayage (niveau encore intact) ; la barre de signal ou la précédente dépasse le
     niveau par son extrême, et la barre de signal clôture en deçà, contre le balayage.
-    Confirmation : mèche de balayage >= 35 % de l'amplitude de la barre et clôture dans la moitié favorable ;
+    Confirmation : mèche de la BARRE DE BALAYAGE (celle qui est allée le plus loin au-delà du niveau, signal ou
+    précédente) >= 35 % de son amplitude, et clôture de la barre de signal dans sa moitié favorable ;
     RSI14 M15 >= 50 pour une vente (<= 50 pour un achat) — le mouvement balayé doit avoir été acheté (vendu).
     Filtres : classe forex ; heure de la barre dans [12h ; 21h) UTC ; veto si la tendance H1 est franchement
     opposée avec ADX >= 32 (contre-courant trop cher) ; spread <= 12 % de l'ATR H1.
@@ -814,6 +826,8 @@ def strategy_m04(spec: AgentSpec, snap) -> Optional[TradeCandidate]:
     if not c:
         return None
     e, t, le, lt, atr, bt = c
+    if not _bar_ok(le) or not _bar_ok(lt):
+        return None
     p = spec.params
     closed = _closed(e)
     d1 = snap.frames.get("D1")
@@ -828,12 +842,21 @@ def strategy_m04(spec: AgentSpec, snap) -> Optional[TradeCandidate]:
     if len(day) < 4 or not _ohlc_ok(day):
         return None
     earlier = day.iloc[:-2] if len(day) > 2 else day.iloc[:0]
+    if not _bar_ok(prev):
+        return None
     if max(float(le["high"]), float(prev["high"])) > pdh and entry < pdh:
-        side, level, sweep = Side.SELL, float(pdh), max(float(le["high"]), float(prev["high"]))
+        side, level = Side.SELL, float(pdh)
+        # la barre de balayage est celle qui est allée le plus loin au-delà du niveau : c'est SA mèche qui
+        # mesure le rejet (mesurer celle de la barre de signal laissait passer un balayage sans rejet quand
+        # le dépassement avait eu lieu sur la barre précédente)
+        bar = le if float(le["high"]) >= float(prev["high"]) else prev
+        sweep = float(bar["high"])
         if len(earlier) and bool((earlier["close"] > pdh).any()):
             return None  # le niveau était déjà dépassé en clôture : ce n'est plus un balayage
     elif min(float(le["low"]), float(prev["low"])) < pdl and entry > pdl:
-        side, level, sweep = Side.BUY, float(pdl), min(float(le["low"]), float(prev["low"]))
+        side, level = Side.BUY, float(pdl)
+        bar = le if float(le["low"]) <= float(prev["low"]) else prev
+        sweep = float(bar["low"])
         if len(earlier) and bool((earlier["close"] < pdl).any()):
             return None
     else:
@@ -841,7 +864,7 @@ def strategy_m04(spec: AgentSpec, snap) -> Optional[TradeCandidate]:
     s = side.sign
     if s * (entry - float(le["open"])) <= 0:
         return None
-    wick = _wick_against(le, side)
+    wick = _wick_against(bar, side)
     if wick < 0.35 or _close_pos(le, side) < 0.5:
         return None
     rsi_v = float(le["rsi14"])
@@ -908,6 +931,8 @@ def strategy_m05(spec: AgentSpec, snap) -> Optional[TradeCandidate]:
     if not c:
         return None
     e, t, le, lt, atr, bt = c
+    if not _bar_ok(le) or not _bar_ok(lt):
+        return None
     p = spec.params
     closed = _closed(e)
     if len(closed) < 60 or not _in_window(le, 1.0, 9.0):
@@ -969,26 +994,31 @@ def strategy_m05(spec: AgentSpec, snap) -> Optional[TradeCandidate]:
 # ==============================================================================================================
 @register("M06")
 def strategy_m06(spec: AgentSpec, snap) -> Optional[TradeCandidate]:
-    """M06 — USDJPY : canal de RÉGRESSION linéaire — on n'achète la tendance que si elle est RÉGULIÈRE.
+    """M06 — USDJPY : ESCALIER de séance — série de plus bas non décroissants, entrée sur la marche suivante.
 
-    Thèse : les tendances d'USDJPY en séance asiatique montent en escalier, avec peu de bruit. Une régression
-    linéaire des 24 dernières clôtures mesure à la fois la pente ET la régularité (R²) ; une tendance de même
-    pente mais de R² faible est un mouvement chaotique qu'il ne faut pas suivre. L'entrée se fait sur le rappel
-    du prix sous la droite (bas du canal), pas sur une EMA.
+    Thèse : en séance de Tokyo puis à l'ouverture de Londres, USDJPY ne monte pas en ligne droite mais par
+    MARCHES : chaque barre laisse son plus bas au-dessus du plus bas précédent, sans jamais rendre le terrain
+    gagné. L'objet de décision de cet agent n'est donc ni une moyenne, ni un canal, ni une structure de swings :
+    c'est la LONGUEUR de la série monotone des extrêmes, doublée du ratio d'efficience de Kaufman (déplacement
+    net / chemin parcouru) qui mesure si cette montée est une ligne ou un aller-retour déguisé. Un escalier meurt
+    à sa première marche cassée : c'est exactement là que se place le stop, et nulle part ailleurs.
 
-    Entrée : régression sur 24 clôtures : R² >= 0,55 et |pente| >= 0,04 ATR par barre — c'est la PENTE qui donne
-    le sens du trade (la régression est la définition de tendance de cet agent) ; la
-    barre PRÉCÉDENTE a clôturé sous la droite (au-dessus pour une vente) d'au moins 0,3 σ résiduel ; la
-    barre de signal clôture au-dessus de la droite − 0,2 σ résiduel et au-dessus de la clôture précédente.
-    Confirmation : bougie de signal dans le sens du trade ; ADX14 H1 >= `adx_min` − 5 (tendance réelle).
-    Filtres : classe forex ; veto si la tendance H1 est franchement opposée (`_hard_opposed`, ADX >= 30) ;
-    heure de la barre dans [0h ; 12h) UTC ; clôture à moins de 2 σ résiduels au-dessus
-    de la droite (pas d'entrée au sommet du canal) ; spread <= 12 % de l'ATR H1.
-    SL : sous (au-dessus) la droite de régression − 1,5 σ résiduel (sortie du canal = fin de la régularité) ;
-    distance bornée à [0,5 ATR ; `sl_atr` ATR].
-    TP : 1,5 R (partiel), projection de la droite 8 barres plus loin, puis cette projection + 1 σ.
-    Invalidation : clôture M15 hors du canal de régression (droite − 2 σ résiduels).
-    Score : 20 (canal valide) + 0-15 R² + 0-10 pente + 15 MTF + 0-10 profondeur du rappel + 0-10 clôture.
+    Entrée : au moins `min_steps` (6) barres clôturées consécutives dont les plus bas sont non décroissants à
+    0,05 ATR près (miroir sur les plus hauts pour une vente), et l'escalier opposé plus court d'au moins
+    2 marches (sinon la série est ambiguë : simple plage) ; déplacement net des clôtures de l'escalier dans le
+    sens du trade ; ratio d'efficience de l'escalier >= 0,35.
+    Confirmation : la barre de signal grimpe une marche de plus — sa clôture dépasse le PLUS HAUT (bas) de la
+    barre précédente — clôture dans le sens de la bougie et dans la moitié favorable de son amplitude.
+    Filtres : classe forex ; heure de la barre dans [0h ; 12h) UTC (Tokyo puis ouverture de Londres) ; escalier
+    plafonné à 30 marches (au-delà, la série est un artefact de marché plat) ; veto si la tendance H1 est
+    franchement opposée (`_hard_opposed`, ADX >= 30) ; ADX14 H1 >= `adx_min` − 8 ; spread <= 12 % de l'ATR H1.
+    SL : sous (au-dessus) le plus bas des DEUX dernières marches − 0,25 ATR : une clôture au-delà casse la série
+    monotone, donc la thèse entière ; distance bornée à [0,5 ATR ; 2 × `sl_atr` ATR].
+    TP : 1,5 R (partiel), prolongement de l'escalier (pas médian × nombre de marches déjà gravies : « il dure
+    autant qu'il a déjà duré »), extrême de la veille ; cible finale = max(`rr` R, cible la plus lointaine).
+    Invalidation : clôture M15 au-delà du plus bas (haut) de la marche précédente — l'escalier est rompu.
+    Score : 20 (escalier >= 6 marches) + 0-15 marches supplémentaires + 0-15 ratio d'efficience + 15 MTF
+    + 0-10 régularité des marches + 0-10 qualité de la clôture. Somme documentée, pas une probabilité.
     """
     if not _class_ok(snap, "forex"):
         return None
@@ -996,60 +1026,74 @@ def strategy_m06(spec: AgentSpec, snap) -> Optional[TradeCandidate]:
     if not c:
         return None
     e, t, le, lt, atr, bt = c
+    if not _bar_ok(le) or not _bar_ok(lt):
+        return None
     p = spec.params
     closed = _closed(e)
-    if len(closed) < 60 or not _in_window(le, 0.0, 12.0):
+    n = len(closed)
+    if n < 60 or not _in_window(le, 0.0, 12.0) or not _ohlc_ok(closed.iloc[-40:]):
         return None
-    win = closed["close"].to_numpy(dtype=float)[-24:]
-    reg = _linreg(win)
-    if reg is None:
+    lows = closed["low"].to_numpy(dtype=float)
+    highs = closed["high"].to_numpy(dtype=float)
+    cl = closed["close"].to_numpy(dtype=float)
+    tol = 0.05 * atr
+    up, dn = _stair_run(lows, tol), _stair_run(-highs, tol)
+    min_steps = 6
+    if up >= min_steps and up >= dn + 2:
+        side, run = Side.BUY, min(up, 30)
+    elif dn >= min_steps and dn >= up + 2:
+        side, run = Side.SELL, min(dn, 30)
+    else:
         return None
-    slope, line, r2, sd = reg
-    if r2 < 0.55 or abs(slope) < 0.04 * atr:
-        return None
-    side = Side.BUY if slope > 0 else Side.SELL
     s = side.sign
+    seg_close = cl[-run:]
+    er = _efficiency(seg_close)
+    if er is None or er < 0.35 or s * (seg_close[-1] - seg_close[0]) <= 0:
+        return None
+    entry = float(le["close"])
+    prev = closed.iloc[-2]
+    step_trigger = float(prev["high"]) if side is Side.BUY else float(prev["low"])
+    if s * (entry - step_trigger) <= 0 or s * (entry - float(le["open"])) <= 0 or _close_pos(le, side) < 0.5:
+        return None
     if _hard_opposed(lt, side, 30.0):
         return None
-    line_prev = line - slope  # valeur de la droite sur la barre précédente
-    prev_close = float(closed["close"].iloc[-2])
-    entry = float(le["close"])
-    if s * (prev_close - line_prev) > -0.3 * sd:
-        return None  # pas de rappel mesurable sous la droite
-    if s * (entry - (line - s * 0.2 * sd)) <= 0 or s * (entry - prev_close) <= 0:
-        return None
-    if s * (entry - line) > 2.0 * sd:
-        return None
-    if s * (entry - float(le["open"])) <= 0:
-        return None
-    adx_min = float(p.get("adx_min", 25)) - 5.0
-    if not _valid(lt, "adx14") or float(lt["adx14"]) < adx_min:
+    if not _valid(lt, "adx14") or float(lt["adx14"]) < float(p.get("adx_min", 25)) - 8.0:
         return None
     if _spread_ratio_h1(snap) > 0.12:
         return None
-    sl = _bound_sl(snap, side, entry, line - s * 1.5 * sd, atr, 0.5, float(p.get("sl_atr", 1.5)))
+    rail = lows[-run:] if side is Side.BUY else highs[-run:]      # la rampe de l'escalier
+    raw = (float(min(rail[-2], rail[-1])) - 0.25 * atr) if side is Side.BUY else (float(max(rail[-2], rail[-1])) + 0.25 * atr)
+    sl = _bound_sl(snap, side, entry, raw, atr, 0.5, 2.0 * float(p.get("sl_atr", 1.5)))
     if sl is None:
         return None
-    depth = abs(prev_close - line_prev) / sd
-    score = 20.0 + _clamp((r2 - 0.55) * 60, 0, 15) + _clamp((abs(slope) / atr - 0.04) * 60, 0, 10)
+    steps = np.diff(rail) * s                                     # hauteur de chaque marche, orientée
+    med_step = float(np.median(steps)) if len(steps) else 0.0
+    spread_step = float(np.std(steps)) if len(steps) else 0.0
+    score = 20.0 + _clamp((run - min_steps) * 2.0, 0, 15) + _clamp((er - 0.35) * 40, 0, 15)
     b, pros = _mtf_bonus(le, lt, side)
     score += b
-    pros += [f"canal de régression 24 barres : R² {r2:.2f}, pente {slope / atr:+.2f} ATR/barre",
-             f"rappel de {depth:.1f} σ résiduel sous la droite puis reprise",
-             f"ADX H1 {lt['adx14']:.0f}"]
+    pros += [f"escalier de {run} marches (plus bas/hauts monotones à 0,05 ATR près)",
+             f"ratio d'efficience {er:.2f} (déplacement net / chemin parcouru)",
+             "la barre de signal grimpe une marche de plus (clôture au-delà de l'extrême précédent)"]
     cons: list[str] = []
-    score += _clamp((depth - 0.3) * 8, 0, 10)
-    if r2 < 0.7:
-        cons.append(f"régularité moyenne (R² {r2:.2f}) : le canal peut se retourner")
-    cp = _close_pos(le, side)
-    score += _clamp(cp * 10, 0, 10)
-    if cp < 0.5:
-        cons.append("clôture dans la moitié défavorable de la barre")
-    cons.append("une régression décrit le passé : elle ne garantit pas la prolongation du canal")
-    proj = line + slope * 8.0
-    targets = [proj, proj + s * sd]
+    if med_step > 0:
+        regularity = _clamp(10.0 * (1.0 - spread_step / med_step), 0, 10)
+        score += regularity
+        if spread_step > med_step:
+            cons.append("marches irrégulières : l'escalier tient surtout à quelques barres")
+    else:
+        cons.append("marches de hauteur quasi nulle : escalier plat, l'efficience fait tout le travail")
+    score += _clamp(_close_pos(le, side) * 10, 0, 10)
+    if er < 0.5:
+        cons.append(f"efficience {er:.2f} : le chemin parcouru dépasse largement le déplacement net")
+    cons.append("un escalier est une lecture du passé : la première marche cassée annule tout le raisonnement")
+    targets = [entry + s * max(med_step, 0.0) * run]
+    d1 = snap.frames.get("D1")
+    if d1 is not None and len(d1) >= 3:
+        ph, pl = daily_high_low(d1)
+        targets.append(ph if side is Side.BUY else pl)
     cand = _build(spec, snap, side, entry, sl, float(p.get("rr", 2.0)), score, pros, cons,
-                  "clôture M15 hors du canal de régression (droite ∓ 2 σ résiduels)", bt)
+                  "clôture M15 au-delà du plus bas (haut) de la marche précédente : escalier rompu", bt)
     return _finalize(_set_tp_plan(cand, side, entry, targets, float(p.get("rr", 2.0))), snap)
 
 
@@ -1085,6 +1129,8 @@ def strategy_m07(spec: AgentSpec, snap) -> Optional[TradeCandidate]:
     if not c:
         return None
     e, t, le, lt, atr, bt = c
+    if not _bar_ok(le) or not _bar_ok(lt):
+        return None
     p = spec.params
     closed = _closed(e)
     d1 = snap.frames.get("D1")
@@ -1180,6 +1226,8 @@ def strategy_m08(spec: AgentSpec, snap) -> Optional[TradeCandidate]:
     if not c:
         return None
     e, t, le, lt, atr, bt = c
+    if not _bar_ok(le) or not _bar_ok(lt):
+        return None
     p = spec.params
     closed = _closed(e)
     if len(closed) < 60 or not _in_window(le, 7.0, 21.0):
@@ -1232,7 +1280,7 @@ def strategy_m08(spec: AgentSpec, snap) -> Optional[TradeCandidate]:
     score += _clamp(reintegration * 20, 0, 10)
     pros = [f"balayage de l'extrême du jour ({level:.5g}) puis réintégration",
             f"climax de volume {ratio:.1f}× la moyenne 20 barres", f"mèche de balayage {wick:.0%}",
-            "clôture sous le milieu de la bougie de balayage"]
+            f"clôture {'sous' if side is Side.SELL else 'au-dessus'} du milieu de la bougie de balayage"]
     cons = ["contre-tendance intrajournalière : l'extrême peut être repris dans la séance suivante"]
     if not _hard_opposed(lt, side, 0.0):
         score += 10
@@ -1278,6 +1326,8 @@ def strategy_m09(spec: AgentSpec, snap) -> Optional[TradeCandidate]:
     if not c:
         return None
     e, t, le, lt, atr, bt = c
+    if not _bar_ok(le) or not _bar_ok(lt):
+        return None
     p = spec.params
     closed = _closed(e)
     d1 = snap.frames.get("D1")
@@ -1303,7 +1353,9 @@ def strategy_m09(spec: AgentSpec, snap) -> Optional[TradeCandidate]:
     gap = float(first.iloc[0]["open"]) - prev_close
     entry = float(le["close"])
     after = _bars_between(closed, end_h, 24.0)
-    if len(after) < 2:
+    # une seule barre suffit : c'est la PREMIÈRE clôture postérieure à l'opening range qui intéresse l'agent.
+    # Exiger deux barres (`< 2`) excluait justement ce premier signal, pourtant décrit par la thèse.
+    if len(after) < 1 or not _ohlc_ok(after):
         return None
     prior = after.iloc[:-1]
     if entry > or_hi and not bool((prior["close"] > or_hi).any()):
@@ -1385,6 +1437,8 @@ def strategy_m10(spec: AgentSpec, snap) -> Optional[TradeCandidate]:
     if not c:
         return None
     e, t, le, lt, atr, bt = c
+    if not _bar_ok(le) or not _bar_ok(lt):
+        return None
     p = spec.params
     closed = _closed(e)
     if len(closed) < 60 or not _in_window(le, 12.0, 21.0):
@@ -1460,8 +1514,9 @@ def strategy_m11(spec: AgentSpec, snap) -> Optional[TradeCandidate]:
     la zone de valeur) est touché par l'extrême de la barre de signal (à 0,3 ATR près) et la barre clôture du bon
     côté de ce niveau, dans le sens du trade.
     Confirmation : corps >= 30 % de l'amplitude et clôture dans la moitié favorable de la bougie.
-    Filtres : classe indices ; heure de la barre dans [7h ; 12h) UTC ; au moins un niveau du profil en cible dans
-    le sens du trade ; spread <= 12 % de l'ATR H1.
+    Filtres : classe indices ; heure de la barre dans [7h ; 12h) UTC ; spread <= 12 % de l'ATR H1. L'absence de
+    niveau de profil en cible devant le trade n'est PAS bloquante (l'objectif retombe alors sur des multiples de
+    R), mais elle est signalée dans `arguments_against` et ne rapporte aucun point de score.
     SL : sous (au-dessus) le niveau testé et l'extrême de la barre de signal − 0,3 ATR ; distance bornée à
     [0,5 ATR ; 2 × `sl_atr` ATR].
     TP : 1,5 R (partiel), niveaux du profil situés devant (POC, bornes de la zone de valeur), extrême de la veille.
@@ -1475,6 +1530,8 @@ def strategy_m11(spec: AgentSpec, snap) -> Optional[TradeCandidate]:
     if not c:
         return None
     e, t, le, lt, atr, bt = c
+    if not _bar_ok(le) or not _bar_ok(lt):
+        return None
     p = spec.params
     closed = _closed(e)
     if len(closed) < 60 or not _in_window(le, 7.0, 12.0):
@@ -1569,6 +1626,8 @@ def strategy_m12(spec: AgentSpec, snap) -> Optional[TradeCandidate]:
     if not c:
         return None
     e, t, le, lt, atr, bt = c
+    if not _bar_ok(le) or not _bar_ok(lt):
+        return None
     p = spec.params
     closed = _closed(e)
     if len(closed) < 60:
@@ -1584,7 +1643,8 @@ def strategy_m12(spec: AgentSpec, snap) -> Optional[TradeCandidate]:
     if atr_h1 <= 0 or not (0.4 * atr_h1 <= rng <= 4.5 * atr_h1):
         return None
     after = _bars_between(closed, end_h, 24.0)
-    if len(after) < 2 or not _ohlc_ok(after):
+    # idem M09 : la première clôture postérieure au range est un signal légitime, ne pas l'exclure (`< 2`)
+    if len(after) < 1 or not _ohlc_ok(after):
         return None
     prior = after.iloc[:-1]
     entry = float(le["close"])
@@ -1642,25 +1702,32 @@ def strategy_m12(spec: AgentSpec, snap) -> Optional[TradeCandidate]:
 # ==============================================================================================================
 @register("M13")
 def strategy_m13(spec: AgentSpec, snap) -> Optional[TradeCandidate]:
-    """M13 — USDCAD : canal de DONCHIAN — nouvelle clôture extrême de 20 barres, stop sur le Donchian 10 opposé.
+    """M13 — USDCAD : PRESSION DE MÈCHES cumulée — l'absorption se lit dans les mèches, pas dans les clôtures.
 
-    Thèse : USDCAD alterne de longues phases plates et des poussées franches liées au pétrole et aux taux. Le
-    canal de Donchian est la traduction la plus simple de « le marché vient de faire quelque chose qu'il n'avait
-    pas fait depuis 20 barres ». Le stop n'est ni un swing ni un multiple d'ATR mais le canal OPPOSÉ à 10
-    barres : tant qu'il n'est pas atteint, la poussée reste valide (logique suiveuse, pas graphique).
+    Thèse : USDCAD est une paire lente, tenue par des flux commerciaux (pétrole) et des teneurs de marché. En
+    séance américaine, ce qui annonce le prochain déplacement n'est pas la suite des clôtures — elles piétinent —
+    mais la répartition des MÈCHES : sur 20 barres, la somme des mèches basses (le prix est allé chercher des
+    vendeurs plus bas et a été racheté) contre la somme des mèches hautes dit quel côté ABSORBE. Quand ce
+    déséquilibre est net et que l'absorption n'a pas encore produit de déplacement, la conversion est devant.
+    Aucun autre agent ne décide sur la géométrie interne des bougies : ni moyenne, ni canal, ni niveau.
 
-    Entrée : clôture de la barre de signal strictement au-delà du plus haut (bas) des 20 barres clôturées
-    précédentes (barre de signal exclue du canal) ; tendance H1 non opposée (`_trend_of` = sens du trade ou FLAT).
-    Confirmation : ADX14 M15 >= `adx_min` − 8 et clôture dans la moitié favorable de la bougie.
-    Filtres : classe forex ; heure de la barre dans [12h ; 21h) UTC ; extension au-delà du canal <= 0,8 ATR
-    (on ne poursuit pas une barre déjà étendue) ; canal d'une hauteur >= 1 ATR (sinon simple bruit) ;
-    spread <= 12 % de l'ATR H1.
-    SL : Donchian 10 opposé (plus bas des 10 dernières barres clôturées) − 0,2 ATR ; distance bornée à
-    [0,5 ATR ; min(3 ATR ; 2 × `sl_atr` ATR)].
-    TP : 1,5 R (partiel), borne du canal + hauteur du canal 20 (mouvement mesuré), extrême de la veille.
-    Invalidation : clôture M15 de retour à l'intérieur du canal de Donchian 10 opposé.
-    Score : 20 (nouvelle extrémité 20 barres) + 0-10 hauteur du canal + 0-10 ADX + 15 MTF
-    + 0-10 extension faible + 0-10 clôture.
+    Entrée : fenêtre de 20 barres clôturées complète ; déséquilibre de pression (Σ mèches basses − Σ mèches
+    hautes) / (Σ des deux) >= +0,25 pour un achat, <= −0,25 pour une vente ; la barre de signal porte elle-même
+    une mèche d'absorption >= 30 % de son amplitude et clôture au-delà de la CLÔTURE précédente, dans le sens
+    de la pression.
+    Confirmation : clôture dans le sens de la bougie et dans la moitié favorable de son amplitude ;
+    ADX14 M15 >= `adx_min` − 10 (l'absorption doit déjà produire un minimum de direction).
+    Filtres : classe forex ; heure de la barre dans [12h ; 21h) UTC ; déplacement net des clôtures de la fenêtre
+    <= 2,5 ATR — au-delà, l'absorption est DÉJÀ convertie et il ne reste rien à jouer ; veto si la tendance H1
+    est franchement opposée (ADX >= 30) ; spread <= 12 % de l'ATR H1.
+    SL : sous (au-dessus) le plus bas (haut) de la BARRE D'ABSORPTION de référence — celle des 6 dernières
+    barres dont la mèche favorable est la plus longue — moins 0,25 ATR : si ce niveau tombe, l'acheteur qui
+    absorbait n'est plus là ; distance bornée à [0,5 ATR ; 2 × `sl_atr` ATR].
+    TP : 1,5 R (partiel), plafond de la fenêtre d'absorption (le niveau que l'absorption doit franchir), puis ce
+    plafond prolongé d'une demi-hauteur de fenêtre ; cible finale = max(`rr` R, cible la plus lointaine).
+    Invalidation : clôture M15 au-delà de l'extrême de la barre d'absorption de référence.
+    Score : 20 (pression nette) + 0-15 amplitude du déséquilibre + 15 MTF + 0-10 mèche de la barre de signal
+    + 0-10 absorption non encore convertie + 0-10 qualité de la clôture. Somme documentée, pas une probabilité.
     """
     if not _class_ok(snap, "forex"):
         return None
@@ -1668,62 +1735,68 @@ def strategy_m13(spec: AgentSpec, snap) -> Optional[TradeCandidate]:
     if not c:
         return None
     e, t, le, lt, atr, bt = c
+    if not _bar_ok(le) or not _bar_ok(lt):
+        return None
     p = spec.params
     closed = _closed(e)
     if len(closed) < 60 or not _in_window(le, 12.0, 21.0):
         return None
-    win20 = closed.iloc[-21:-1]
-    win10 = closed.iloc[-11:-1]
-    if not _ohlc_ok(win20):
+    win = closed.iloc[-20:]
+    wp = _wick_pressure(win)
+    if wp is None:
         return None
-    dc_hi, dc_lo = float(win20["high"].max()), float(win20["low"].min())
-    entry = float(le["close"])
-    if entry > dc_hi:
+    press, lower, upper = wp
+    if press >= 0.25:
         side = Side.BUY
-    elif entry < dc_lo:
+    elif press <= -0.25:
         side = Side.SELL
     else:
         return None
     s = side.sign
-    tr = "UP" if side is Side.BUY else "DOWN"
-    if _trend_of(lt) not in (tr, "FLAT"):
+    entry = float(le["close"])
+    prev_close = float(closed["close"].iloc[-2])
+    if s * (entry - prev_close) <= 0 or s * (entry - float(le["open"])) <= 0 or _close_pos(le, side) < 0.5:
         return None
-    height = dc_hi - dc_lo
-    if height < 1.0 * atr:
+    wick = _wick_against(le, side)
+    if wick < 0.30:
         return None
-    boundary = dc_hi if side is Side.BUY else dc_lo
-    ext = s * (entry - boundary)
-    if ext > 0.8 * atr:
+    if float(le["adx14"]) < float(p.get("adx_min", 25)) - 10.0:
         return None
-    adx_min = float(p.get("adx_min", 25)) - 8.0
-    if float(le["adx14"]) < adx_min or _close_pos(le, side) < 0.5:
+    wc = win["close"].to_numpy(dtype=float)
+    travelled = abs(float(wc[-1] - wc[0])) / atr
+    if travelled > 2.5:
+        return None                        # absorption déjà convertie en déplacement : plus de prime à prendre
+    if _hard_opposed(lt, side, 30.0) or _spread_ratio_h1(snap) > 0.12:
         return None
-    if _spread_ratio_h1(snap) > 0.12:
-        return None
-    opp = float(win10["low"].min()) if side is Side.BUY else float(win10["high"].max())
-    sl = _bound_sl(snap, side, entry, opp - s * 0.2 * atr, atr, 0.5, 2.0 * float(p.get("sl_atr", 1.5)))
+    marks = (lower if side is Side.BUY else upper)[-6:]
+    tail = win.iloc[-6:]
+    j = int(np.argmax(marks))
+    ref = tail.iloc[j]
+    anchor = float(ref["low"]) if side is Side.BUY else float(ref["high"])
+    sl = _bound_sl(snap, side, entry, anchor - s * 0.25 * atr, atr, 0.5, 2.0 * float(p.get("sl_atr", 1.5)))
     if sl is None:
         return None
-    score = 20.0 + _clamp((height / atr - 1.0) * 8, 0, 10) + _clamp((float(le["adx14"]) - adx_min) * 0.8, 0, 10)
+    score = 20.0 + _clamp((abs(press) - 0.25) * 40, 0, 15)
     b, pros = _mtf_bonus(le, lt, side)
     score += b
-    pros += [f"clôture au-delà du canal de Donchian 20 ({dc_lo:.5g}-{dc_hi:.5g}, hauteur {height / atr:.1f} ATR)",
-             f"ADX M15 {le['adx14']:.0f}", f"stop suiveur ancré sur le Donchian 10 opposé ({opp:.5g})"]
+    quel = "basses" if side is Side.BUY else "hautes"
+    pros += [f"pression de mèches {press:+.2f} sur 20 barres (mèches {quel} dominantes)",
+             f"barre de signal absorbée à son tour (mèche {wick:.0%} de l'amplitude)",
+             f"absorption pas encore convertie : {travelled:.1f} ATR parcourus en 20 barres"]
     cons: list[str] = []
-    score += _clamp((0.8 - ext / atr) * 12, 0, 10)
-    if ext > 0.4 * atr:
-        cons.append(f"entrée {ext / atr:.1f} ATR au-delà du canal")
+    score += _clamp(wick * 20, 0, 10)
+    score += _clamp((2.5 - travelled) * 4, 0, 10)
     score += _clamp(_close_pos(le, side) * 10, 0, 10)
-    if _trend_of(lt) == "FLAT":
-        cons.append("tendance H1 neutre : cassure sans soutien du timeframe supérieur")
-    cons.append("un canal de Donchian produit beaucoup de faux signaux en marché sans direction")
-    d1 = snap.frames.get("D1")
-    targets = [boundary + s * height]
-    if d1 is not None and len(d1) >= 3:
-        ph, pl = daily_high_low(d1)
-        targets.append(ph if side is Side.BUY else pl)
+    if abs(press) < 0.4:
+        cons.append(f"déséquilibre modéré ({press:+.2f}) : l'absorption n'est pas franche")
+    if travelled > 1.5:
+        cons.append(f"{travelled:.1f} ATR déjà parcourus : une partie de la conversion est faite")
+    cons.append("une mèche n'est pas un carnet d'ordres : l'absorption reste une inférence, pas une mesure")
+    hi_w, lo_w = float(win["high"].max()), float(win["low"].min())
+    ceiling = hi_w if side is Side.BUY else lo_w
+    targets = [ceiling, ceiling + s * 0.5 * (hi_w - lo_w)]
     cand = _build(spec, snap, side, entry, sl, float(p.get("rr", 2.0)), score, pros, cons,
-                  "clôture M15 de retour à l'intérieur du canal de Donchian 10 opposé", bt)
+                  "clôture M15 au-delà de l'extrême de la barre d'absorption de référence", bt)
     return _finalize(_set_tp_plan(cand, side, entry, targets, float(p.get("rr", 2.0))), snap)
 
 
@@ -1759,6 +1832,8 @@ def strategy_m14(spec: AgentSpec, snap) -> Optional[TradeCandidate]:
     if not c:
         return None
     e, t, le, lt, atr, bt = c
+    if not _bar_ok(le) or not _bar_ok(lt):
+        return None
     p = spec.params
     closed = _closed(e)
     if len(closed) < 120 or not _in_window(le, 12.0, 21.0):
@@ -1786,8 +1861,10 @@ def strategy_m14(spec: AgentSpec, snap) -> Optional[TradeCandidate]:
     if _hard_opposed(lt, side, 32.0) or _spread_ratio_h1(snap) > 0.50:
         return None
     anchor = None
-    for j in range(len(closed) - 2, max(len(closed) - 8, 0) - 1, -1):
+    for j in range(len(closed) - 2, max(len(closed) - 7, 0) - 1, -1):   # les 6 barres précédant le signal
         row = closed.iloc[j]
+        if not _bar_ok(row):
+            continue
         if s * (float(row["close"]) - float(row["open"])) < 0:
             anchor = float(row["low"]) if side is Side.BUY else float(row["high"])
             break
