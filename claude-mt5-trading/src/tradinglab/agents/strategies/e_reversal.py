@@ -91,9 +91,22 @@ def _wick_against(row: pd.Series, side: Side) -> float:
     return float((row["high"] - max(row["open"], row["close"])) / rng)
 
 
+def _atr_h1(snap) -> float:
+    """ATR H1 du snapshot, ramené à 0 si absent ou non fini (NaN/inf) : jamais de NaN propagé aux comparaisons."""
+    try:
+        v = float(snap.atr_h1)
+    except (TypeError, ValueError):
+        return 0.0
+    return v if np.isfinite(v) and v > 0 else 0.0
+
+
 def _spread_ratio_h1(snap) -> float:
-    """Spread courant en fraction de l'ATR H1 (référence du gate : <= 0,15 ATR H1) ; inf si l'ATR H1 est inconnu."""
-    atr_h1 = float(snap.atr_h1 or 0.0)
+    """Spread courant en fraction de l'ATR H1 (référence du gate : <= 0,15 ATR H1) ; inf si l'ATR H1 est inconnu.
+
+    Un ATR H1 nul, absent ou NaN renvoie `inf` : le filtre de spread REFUSE alors le signal au lieu de laisser
+    passer une comparaison avec NaN (toujours fausse), qui désactiverait silencieusement le filtre.
+    """
+    atr_h1 = _atr_h1(snap)
     if atr_h1 <= 0 or snap.spec is None:
         return float("inf")
     return float(snap.spread_points * snap.spec.point / atr_h1)
@@ -120,7 +133,7 @@ def _bound_sl(snap, side: Side, entry: float, sl: float, atr: float, lo: float, 
     """
     if not np.isfinite(sl) or not np.isfinite(entry) or atr <= 0:
         return None
-    atr_h1 = float(snap.atr_h1 or 0.0)
+    atr_h1 = _atr_h1(snap)
     lo_dist = max(lo * atr, SL_MIN_ATR * atr, SL_MIN_H1_ATR * atr_h1)
     hi_dist = min(hi, SL_MAX_ATR) * atr
     if lo_dist > hi_dist:
@@ -214,8 +227,9 @@ def strategy_e01(spec: AgentSpec, snap) -> Optional[TradeCandidate]:
 
     Entrée : sur les 40 barres clôturées précédant la barre de signal, couloir [lo, hi] de largeur comprise entre
     1 et 6 ATR M15, avec >= 2 barres touchant chaque borne (zone de 15 % de la largeur) ; la barre de signal entre
-    dans la zone de borne (low <= lo + 20 % de largeur pour un achat), clôture au-dessus de lo + 10 % de largeur,
-    dans la moitié basse du range, et dans le sens du trade (clôture > ouverture).
+    dans la zone de borne SANS la traverser (lo − 0,35 ATR <= low <= lo + 20 % de largeur pour un achat : au-delà
+    le couloir est cassé — c'est le terrain de E05/E06, pas un repli sur la borne), clôture au-dessus de
+    lo + 10 % de largeur, dans la moitié basse du range, et dans le sens du trade (clôture > ouverture).
     Confirmation : RSI14 M15 <= `rsi_lo` + 15 (miroir en vente) et clôture dans les 50 % supérieurs de sa propre
     amplitude (le vendeur n'a pas gardé la main sur la barre).
     Filtres : ADX14 M15 <= 28 (pas de range en train de se rompre) ; veto si la tendance H1 est opposée avec
@@ -251,11 +265,18 @@ def strategy_e01(spec: AgentSpec, snap) -> Optional[TradeCandidate]:
     mid = (hi + lo) / 2.0
     entry = float(le["close"])
     zone = 0.20 * width
+    # Débordement maximal toléré SOUS (au-dessus de) la borne : la barre doit ENTRER dans la zone de borne, pas la
+    # traverser. Au-delà, le couloir est en train d'être cassé (E05 : réintégration après clôture au-delà) ou
+    # balayé (E06 : prise de liquidité) — ce n'est plus un simple repli sur la borne, et le SL de E01 (borne −
+    # 0,35 ATR) se retrouverait à l'intérieur de l'excursion déjà parcourue par la barre de signal.
+    spill = 0.35 * atr
     rsi_lo, rsi_hi = float(p.get("rsi_lo", 30)), float(p.get("rsi_hi", 70))
-    if float(le["low"]) <= lo + zone and entry > lo + 0.10 * width and entry < mid and le["close"] > le["open"]:
+    if lo - spill <= float(le["low"]) <= lo + zone and entry > lo + 0.10 * width and entry < mid \
+            and le["close"] > le["open"]:
         side, boundary, opposite = Side.BUY, lo, hi - 0.10 * width
         rsi_ok = float(le["rsi14"]) <= rsi_lo + 15.0
-    elif float(le["high"]) >= hi - zone and entry < hi - 0.10 * width and entry > mid and le["close"] < le["open"]:
+    elif hi - zone <= float(le["high"]) <= hi + spill and entry < hi - 0.10 * width and entry > mid \
+            and le["close"] < le["open"]:
         side, boundary, opposite = Side.SELL, hi, lo + 0.10 * width
         rsi_ok = float(le["rsi14"]) >= rsi_hi - 15.0
     else:
@@ -323,7 +344,8 @@ def strategy_e02(spec: AgentSpec, snap) -> Optional[TradeCandidate]:
     TP : premier TP à 1,5 R, cible structurelle = sommet (creux) intermédiaire entre les deux swings, cible finale
     = max(`rr` R, sommet intermédiaire).
     Invalidation : nouveau plus bas (haut) sous (au-dessus de) l'extrême du second swing : la divergence est niée.
-    Score : divergence 25 + écart RSI 0-15 + excès du premier swing 0-10 + MACD 10 + fraîcheur du swing 0-10
+    Score : divergence 25 + écart RSI 0-15 + excès du premier swing 0-10 + MACD 10 + fraîcheur du swing 0-9
+    (le swing est confirmé au plus tôt 3 barres après son extrême : la composante ne peut pas atteindre 10)
     + exécution 0-10 + H1 non opposée 10.
     """
     c = _ctx(spec, snap)
@@ -419,7 +441,8 @@ def strategy_e03(spec: AgentSpec, snap) -> Optional[TradeCandidate]:
 
     Entrée : la barre de signal fait le nouvel extrême des 20 dernières barres clôturées ; la course des 6
     dernières barres atteint >= 2 ATR ; extension de l'extrême par rapport à l'EMA50 M15 >= 2 ATR ; RSI14 M15
-    >= 100 − `rsi_ext` (<= `rsi_ext` en vente) sur la barre de signal ou la précédente.
+    >= 100 − `rsi_ext` pour une VENTE (course haussière épuisée), <= `rsi_ext` pour un ACHAT (course baissière
+    épuisée), sur la barre de signal ou la précédente.
     Confirmation : amplitude de la barre >= 1,3 × l'amplitude moyenne des 20 barres précédentes, mèche de rejet
     >= 40 % de l'amplitude, clôture dans les 45 % favorables au retournement, et volume >= 1,4 × le volume moyen
     des 20 barres précédentes (climax : sans volume exploitable, pas de signal).
@@ -540,11 +563,16 @@ def strategy_e04(spec: AgentSpec, snap) -> Optional[TradeCandidate]:
     exc = closed.iloc[-4:-1]                                   # 3 barres clôturées avant la barre de signal
     if len(exc) < 3 or exc[["bb_low", "bb_up", "bb_mid", "close"]].isna().any().any():
         return None
+    # Chaque barre d'excursion est mesurée avec SON PROPRE écart-type (bandes de la barre concernée) : utiliser
+    # celui de la barre de signal fausserait le z dès que les bandes se sont élargies ou resserrées entre-temps.
+    sd_exc = (exc["bb_up"] - exc["bb_low"]) / 4.0
+    if not np.isfinite(sd_exc.to_numpy(dtype=float)).all() or (sd_exc <= 0).any():
+        return None
     z_min = float(p.get("z_min", 2.2))
     entry = float(le["close"])
     prev = closed.iloc[-2]
-    z_dn = float(((exc["bb_mid"] - exc["close"]) / sd).max())
-    z_up = float(((exc["close"] - exc["bb_mid"]) / sd).max())
+    z_dn = float(((exc["bb_mid"] - exc["close"]) / sd_exc).max())
+    z_up = float(((exc["close"] - exc["bb_mid"]) / sd_exc).max())
     rsi_lo, rsi_hi = float(p.get("rsi_lo", 25)), float(p.get("rsi_hi", 75))
     if (exc["close"] < exc["bb_low"]).any() and z_dn >= z_min and entry > float(le["bb_low"]) \
             and le["close"] > le["open"] and entry > float(prev["close"]) and float(le["rsi14"]) <= rsi_lo + 10.0:
@@ -622,7 +650,8 @@ def strategy_e05(spec: AgentSpec, snap) -> Optional[TradeCandidate]:
     Confirmation : extension maximale au-delà de la borne <= 1,2 ATR (piège, pas départ en tendance) et retour
     en <= 4 barres après la cassure.
     Filtres : ADX14 M15 <= 30 ; veto si la tendance H1 est opposée avec ADX H1 >= 32 ; spread <= 12 % de l'ATR H1.
-    SL : au-delà de l'extrême atteint pendant le piège + 0,3 ATR, borné à [0,4 ATR ; min(3 ; 2,5 × `sl_atr`) ATR].
+    SL : au-delà de l'extrême atteint pendant le piège, BARRE DE SIGNAL COMPRISE, + 0,3 ATR, borné à
+    [0,4 ATR ; min(3 ; 2,5 × `sl_atr`) ATR].
     TP : premier TP à 1,5 R, médiane de la consolidation, puis borne opposée ; cible finale = max(`rr` R, borne
     opposée).
     Invalidation : nouvelle clôture M15 au-delà de la borne cassée (le piège se referme sur nous).
@@ -649,15 +678,17 @@ def strategy_e05(spec: AgentSpec, snap) -> Optional[TradeCandidate]:
     entry = float(le["close"])
     up_break = [i for i in range(len(brk)) if float(brk["close"].iloc[i]) > lvl_hi]
     dn_break = [i for i in range(len(brk)) if float(brk["close"].iloc[i]) < lvl_lo]
+    # L'extrême du piège inclut la barre de signal : c'est elle qui, très souvent, pousse le plus loin au-delà du
+    # niveau avant de refermer. L'exclure placerait le SL À L'INTÉRIEUR de l'excursion déjà parcourue.
     if up_break and entry < lvl_hi - 0.1 * atr and le["close"] < le["open"]:
         side, level, opposite, k = Side.SELL, lvl_hi, lvl_lo + 0.1 * width, up_break[0]
         after = brk.iloc[k:]
-        trap_ext = float(after["high"].max())
+        trap_ext = max(float(after["high"].max()), float(le["high"]))
         over = (trap_ext - lvl_hi) / atr
     elif dn_break and entry > lvl_lo + 0.1 * atr and le["close"] > le["open"]:
         side, level, opposite, k = Side.BUY, lvl_lo, lvl_hi - 0.1 * width, dn_break[0]
         after = brk.iloc[k:]
-        trap_ext = float(after["low"].min())
+        trap_ext = min(float(after["low"].min()), float(le["low"]))
         over = (lvl_lo - trap_ext) / atr
     else:
         return None
@@ -678,7 +709,9 @@ def strategy_e05(spec: AgentSpec, snap) -> Optional[TradeCandidate]:
     sl = _bound_sl(snap, side, entry, trap_ext - s * 0.3 * atr, atr, 0.4, min(3.0, 2.5 * sl_atr))
     if sl is None:
         return None
-    reentry = s * (level - entry) / atr              # profondeur de la réintégration sous/au-dessus du niveau
+    # Profondeur de la réintégration : distance de la clôture À L'INTÉRIEUR du couloir, comptée depuis le niveau
+    # cassé et orientée dans le sens du trade (toujours > 0 ici, cf. les conditions d'entrée ci-dessus).
+    reentry = s * (entry - level) / atr
     score = 25.0
     score += _clamp((5 - bars_since) * 3.0, 0, 10)
     score += _clamp((1.2 - over) * 10, 0, 10)
@@ -721,7 +754,8 @@ def strategy_e06(spec: AgentSpec, snap) -> Optional[TradeCandidate]:
 
     Entrée : au moins deux plus bas (hauts) confirmés par `swing_points` dans les 60 dernières barres clôturées,
     distants de moins de 0,3 ATR entre eux (amas de liquidité) et non balayés depuis leur formation ; la barre de
-    signal descend sous l'amas d'au moins 0,05 ATR et clôture au-dessus de l'amas + 0,05 ATR.
+    signal descend sous le PLUS BAS de l'amas d'au moins 0,05 ATR (c'est là que sont les stops ; s'arrêter au-
+    dessus ne déclenche rien) et clôture au-dessus du PLUS HAUT de l'amas + 0,05 ATR (l'amas entier est repris).
     Confirmation : mèche de balayage >= 45 % de l'amplitude de la barre, clôture dans les 55 % favorables,
     amplitude de la barre <= 2,5 ATR (balayage, pas barre de panique) et >= 0,5 ATR (mouvement réel).
     Filtres : heure de la barre dans [6 ; 21) UTC (hors rollover et Asie creuse) ; ADX14 M15 <= 32 ; veto si la
@@ -749,26 +783,32 @@ def strategy_e06(spec: AgentSpec, snap) -> Optional[TradeCandidate]:
     entry = float(le["close"])
     tol = 0.30 * atr
     pool = None
+    # `floor_` = extrémité de l'amas côté liquidité (le plus bas des plus bas / le plus haut des plus hauts),
+    # `ceil_` = extrémité opposée. Le balayage doit dépasser `floor_` : les stops sont sous le POINT LE PLUS BAS
+    # de l'amas, pas sous sa moyenne — un test qui s'arrête au-dessus de `floor_` ne déclenche rien et ne libère
+    # aucun flux. La réintégration, elle, est exigée au-delà de `ceil_` : l'amas entier doit être repris.
     if lows:
-        base = min(v for _, v in lows)
-        grp = [(i, v) for i, v in lows if v - base <= tol]
+        floor_ = min(v for _, v in lows)
+        grp = [(i, v) for i, v in lows if v - floor_ <= tol]
         if len(grp) >= 2:
+            ceil_ = max(v for _, v in grp)
             lvl = float(np.mean([v for _, v in grp]))
-            if float(le["low"]) < lvl - 0.05 * atr and entry > lvl + 0.05 * atr:
-                pool = (Side.BUY, lvl, max(i for i, _ in grp), len(grp))
+            if float(le["low"]) < floor_ - 0.05 * atr and entry > ceil_ + 0.05 * atr:
+                pool = (Side.BUY, lvl, floor_, max(i for i, _ in grp), len(grp))
     if pool is None and highs:
-        base = max(v for _, v in highs)
-        grp = [(i, v) for i, v in highs if base - v <= tol]
+        floor_ = max(v for _, v in highs)
+        grp = [(i, v) for i, v in highs if floor_ - v <= tol]
         if len(grp) >= 2:
+            ceil_ = min(v for _, v in grp)
             lvl = float(np.mean([v for _, v in grp]))
-            if float(le["high"]) > lvl + 0.05 * atr and entry < lvl - 0.05 * atr:
-                pool = (Side.SELL, lvl, max(i for i, _ in grp), len(grp))
+            if float(le["high"]) > floor_ + 0.05 * atr and entry < ceil_ - 0.05 * atr:
+                pool = (Side.SELL, lvl, floor_, max(i for i, _ in grp), len(grp))
     if pool is None:
         return None
-    side, lvl, last_i, count = pool
+    side, lvl, edge_lvl, last_i, count = pool
     s = side.sign
     mid = closed.iloc[last_i + 1:n - 1]              # barres entre le dernier pivot de l'amas et la barre de signal
-    if not mid.empty and (s * (mid["low" if side is Side.BUY else "high"] - lvl) < -0.05 * atr).any():
+    if not mid.empty and (s * (mid["low" if side is Side.BUY else "high"] - edge_lvl) < -0.05 * atr).any():
         return None                                  # l'amas a déjà été balayé : la liquidité n'est plus là
     rng = _range(le)
     if rng < 0.5 * atr or rng > 2.5 * atr:
@@ -790,8 +830,11 @@ def strategy_e06(spec: AgentSpec, snap) -> Optional[TradeCandidate]:
     sl = _bound_sl(snap, side, entry, sweep - s * 0.15 * atr, atr, 0.35, min(3.0, 2.0 * sl_atr))
     if sl is None:
         return None
-    opp = [v for i, v in (highs if side is Side.BUY else lows)]
-    target = max(opp) if (side is Side.BUY and opp) else min(opp) if (side is Side.SELL and opp) else float("nan")
+    # Cible = DERNIER pivot opposé confirmé (l'amas de liquidité d'en face, celui qui sera visé en premier) et non
+    # l'extrême des 60 barres : viser l'extrême gonflerait le `rr` annoncé d'un multiple sans rapport avec le
+    # niveau réellement atteignable.
+    opp = highs if side is Side.BUY else lows
+    target = float(opp[-1][1]) if opp else float("nan")
     age = (n - 1) - last_i
     score = 25.0
     score += _clamp((count - 2) * 5.0, 0, 10)
@@ -897,7 +940,7 @@ def strategy_e07(spec: AgentSpec, snap) -> Optional[TradeCandidate]:
     target = (min(ahead) if side is Side.BUY else max(ahead)) - s * 0.1 * atr if ahead else float("nan")
     if not np.isfinite(target) or s * (target - entry) < 1.5 * dist:
         return None                                  # pas d'espace jusqu'au niveau suivant : le trade ne paie pas
-    atr_h1 = float(snap.atr_h1 or 0.0)
+    atr_h1 = _atr_h1(snap)
     h1_levels = support_resistance(_closed(t)) if t is not None else []
     confluence = bool(atr_h1 > 0 and any(abs(lv - lvl) <= 0.5 * atr_h1 for lv in h1_levels))
     score = 20.0

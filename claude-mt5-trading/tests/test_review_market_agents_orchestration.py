@@ -393,4 +393,5 @@ def test_account_change_mid_run_locks_and_safe_mode(settings, broker):
     assert o.state.account_login == 999999
     o.cycle(); o.cycle(); o.cycle()
     assert o.state.mode == SystemMode.SAFE_MODE.value           # pas de retour AUTO sans décision humaine
-    assert any(e.get("previous", {}).get("login") == 5056132326 for e in o.journal.read_day(kinds={"account"}))
+    expected_login = int((settings.get("account_expected", {}) or {}).get("login", 0))
+    assert any(e.get("previous", {}).get("login") == expected_login for e in o.journal.read_day(kinds={"account"}))
