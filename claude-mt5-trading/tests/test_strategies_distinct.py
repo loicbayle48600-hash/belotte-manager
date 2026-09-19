@@ -108,9 +108,10 @@ def test_deux_agents_ne_produisent_pas_les_memes_signaux(signatures):
 def test_aucune_regression_de_vitalite(signatures):
     """Filet anti-régression : le nombre d'agents qui déclenchent ne doit pas s'effondrer.
 
-    La vitalité fine (chaque agent doit pouvoir déclencher sur des données réalistes) est vérifiée
-    module par module dans les fichiers `test_strategies_<famille>.py` ; ici on garde un seuil bas mais
-    ferme, qui détecte une régression globale (par exemple une condition cassée dans un helper commun).
+    Le seuil est bas parce que l'échantillonnage l'est aussi : trois instants seulement. La vitalité
+    réelle (balayage de toutes les sessions, scénarios fabriqués) est mesurée par
+    `test_strategies_vitalite.py` ; ici on détecte une régression globale, par exemple une condition
+    cassée dans un helper commun.
     """
     vivants = [a for a, s in signatures.items() if s]
-    assert len(vivants) >= 8, f"seulement {len(vivants)}/{len(signatures)} agents produisent un candidat"
+    assert len(vivants) >= 15, f"seulement {len(vivants)}/{len(signatures)} agents produisent un candidat"
