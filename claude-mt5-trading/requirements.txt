@@ -5,5 +5,8 @@ pandas>=2.1
 anthropic>=0.40
 mcp>=1.0
 MetaTrader5>=5.0.45; sys_platform == "win32"
+# base de fuseaux horaires : Windows n'en fournit pas, or la journée de trading prop bascule
+# à 17:00 America/New_York (sans tzdata, le repli EST décale la bascule d'une heure en été).
+tzdata; sys_platform == "win32"
 # Tests
 pytest>=8.0

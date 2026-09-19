@@ -42,6 +42,10 @@ class WatchdogReport:
     orchestrator_heartbeat_age: float = 0.0
     daily_dd_percent: float = 0.0
     overall_dd_percent: float = 0.0
+    # pertes exprimées dans la base de la prop firm (% du solde initial) : ce sont elles que la prop
+    # firm mesure, les deux champs ci-dessus restent les mesures internes en equity.
+    prop_daily_loss_percent: float = 0.0
+    prop_overall_loss_percent: float = 0.0
     safe_mode_request: bool = False
     reasons: list[str] = field(default_factory=list)
     actions: list[str] = field(default_factory=list)
@@ -102,10 +106,21 @@ class Watchdog:
                     rep.daily_dd_percent = max(0.0, 100 * (state.daily.starting_equity - acc.equity) / state.daily.starting_equity)
                 if state.overall_peak_equity:
                     rep.overall_dd_percent = max(0.0, 100 * (state.overall_peak_equity - acc.equity) / state.overall_peak_equity)
+                # bases prop : plancher du jour assis sur max(solde, equity) au reset, perte totale
+                # statique sur le solde initial — jamais sur un pic d'equity.
+                base = state.initial_balance or acc.balance or acc.equity
+                ref = state.daily.reference_equity or max(state.daily.starting_equity, state.daily.starting_balance)
+                if base > 0:
+                    if ref > 0:
+                        rep.prop_daily_loss_percent = max(0.0, 100 * (ref - acc.equity) / base)
+                    rep.prop_overall_loss_percent = max(0.0, 100 * (base - acc.equity) / base)
                 if rep.daily_dd_percent >= self.internal_daily:
                     rep.reasons.append(f"DD jour {rep.daily_dd_percent:.2f}% >= limite interne {self.internal_daily}%")
-                if rep.daily_dd_percent >= self.hard_daily * 0.75 or rep.overall_dd_percent >= self.hard_overall * 0.75:
-                    rep.reasons.append("drawdown proche des hard limits")
+                if (rep.prop_daily_loss_percent >= self.hard_daily * 0.75
+                        or rep.prop_overall_loss_percent >= self.hard_overall * 0.75):
+                    rep.reasons.append(f"drawdown proche des hard limits prop "
+                                       f"(jour {rep.prop_daily_loss_percent:.2f}%/{self.hard_daily}%, "
+                                       f"total {rep.prop_overall_loss_percent:.2f}%/{self.hard_overall}%)")
             # 2. positions du bot sans SL → action directe
             positions = self.broker.positions(magic=self.magic)
             rep.positions_bot = len(positions)

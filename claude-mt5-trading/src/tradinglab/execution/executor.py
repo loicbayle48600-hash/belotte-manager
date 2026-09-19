@@ -29,10 +29,13 @@ class ExecutionOutcome:
 
 
 class Executor:
-    def __init__(self, broker: BrokerAdapter, store: StateStore, journal: Journal):
+    def __init__(self, broker: BrokerAdapter, store: StateStore, journal: Journal,
+                 idea_window_minutes: float = 10.0):
         self.broker = broker
         self.store = store
         self.journal = journal
+        # fenêtre d'agrégation des idées de trade (prop firm : rouvrir dans le même sens sous 10 min)
+        self.idea_window_minutes = float(idea_window_minutes)
 
     def execute(self, candidate: TradeCandidate, gate: GateResult, req: OrderRequest, risk_money: float,
                 risk_percent: float) -> ExecutionOutcome:
@@ -92,9 +95,16 @@ class Executor:
             last_sl=pos.sl, invalidation=candidate.invalidation,
         )
         state.bot_positions[str(pos.ticket)] = plan
+        # agrégation « idée de trade » exigée par la prop firm : le risque cumulé des positions prises
+        # dans le même sens (réouverture sous N minutes comprise) est plafonné, jamais remis à zéro.
+        idea = state.register_trade_idea(pos.symbol, pos.side.value, initial_risk, ticket=pos.ticket,
+                                         now=utcnow(), window_minutes=self.idea_window_minutes)
+        state.record_trading_day(utcnow())
         self.store.save()
         self.journal.event("position_opened", ticket=pos.ticket, symbol=pos.symbol, side=pos.side.value, volume=pos.volume,
-                           entry=pos.price_open, sl=pos.sl, tp=pos.tp, agent_id=candidate.agent_id, candidate=candidate.to_dict())
+                           entry=pos.price_open, sl=pos.sl, tp=pos.tp, agent_id=candidate.agent_id,
+                           trade_idea_id=idea.idea_id, trade_idea_risk_money=round(idea.risk_money, 2),
+                           trade_idea_entries=idea.entries, candidate=candidate.to_dict())
         return ExecutionOutcome(True, res, pos, True, "ok")
 
     def _actual_risk(self, pos: Position) -> Optional[float]:

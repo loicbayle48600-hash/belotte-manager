@@ -142,9 +142,13 @@ class ExecutionGate:
         add("11_volume", vol_ok, f"{sizing.volume if sizing else 'n/a'}")
         # 12/13. drawdowns + 19. prop rules
         risk_money = sizing.risk_money if sizing and sizing.ok else 0.0
-        for cr in self.prop.limits(ctx.state, risk_money):
-            add({"internal_daily_dd": "12_daily_drawdown", "internal_overall_dd": "13_overall_drawdown",
-                 "prop_hard_daily": "19_prop_hard_daily", "prop_hard_overall": "19_prop_hard_overall"}[cr.name], cr.ok, cr.detail)
+        names = {"internal_daily_dd": "12_daily_drawdown", "internal_overall_dd": "13_overall_drawdown",
+                 "prop_hard_daily": "19_prop_hard_daily", "prop_hard_overall": "19_prop_hard_overall",
+                 "prop_trade_idea_risk": "19_prop_trade_idea", "prop_weekend_sessions": "19_prop_weekend"}
+        for cr in self.prop.limits(ctx.state, risk_money, symbol=c.symbol, side=c.side.value, now=ctx.now,
+                                   asset_class=ctx.spec.asset_class if ctx.spec else ""):
+            # un contrôle prop ajouté plus tard sans entrée de correspondance reste appliqué (préfixe 19_)
+            add(names.get(cr.name, "19_" + cr.name), cr.ok, cr.detail)
         # 14. exposition ouverte (limites risk manager)
         for cr in self.risk.check_limits(ctx.state, c.symbol, c.side, risk_money, ctx.open_positions_symbol, ctx.open_positions_total):
             add("14_" + cr.name, cr.ok, cr.detail)

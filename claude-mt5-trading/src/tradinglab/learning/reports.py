@@ -51,11 +51,16 @@ def daily_report(store: LearningStore, state: SystemState, journal: Journal, now
             for ch in g.get("checks", []):
                 if not ch.get("ok"):
                     refused[ch["name"]] = refused.get(ch["name"], 0) + 1
-    return {"type": "daily", "date": now.date().isoformat(), "mode": state.mode, "equity": state.equity, "balance": state.balance,
+    return {"type": "daily", "date": now.date().isoformat(), "trading_day": state.daily.day,
+            "mode": state.mode, "equity": state.equity, "balance": state.balance,
             "daily_pnl": state.daily_pnl(), "daily_pnl_percent": round(state.daily_pnl_percent(), 3),
             "daily_drawdown_percent": round(state.daily_drawdown_percent(), 3), "overall_drawdown_percent": round(state.overall_drawdown_percent(), 3),
             "trades": _summ(trades), "by_agent": _by(trades, "agent_id"), "by_symbol": _by(trades, "symbol"),
             "gate_refusals": refused, "events": kinds, "locks": state.lock_reasons, "news_degraded": state.news_data_degraded,
+            "prop_daily_loss_percent": round(state.prop_daily_loss_percent(), 3),
+            "prop_overall_loss_percent": round(state.prop_overall_loss_percent(), 3),
+            "consistency_share_percent": round(state.consistency_share_percent(), 3),
+            "trading_days": len(state.trading_days),
             "model_cost_usd": state.model_budget.spent_usd, "open_positions": len(state.bot_positions), "restarts": state.restarts}
 
 
@@ -71,7 +76,10 @@ def weekly_report(store: LearningStore, state: SystemState, now: Optional[dateti
     trades = _period_trades(store, 7, now)
     return {"type": "weekly", "until": now.date().isoformat(), "trades": _summ(trades), "by_agent": _by(trades, "agent_id"),
             "by_regime": _by(trades, "regime"), "by_session": _by(trades, "session"), "leaderboard": store.leaderboard(min_sample=5),
-            "overall_drawdown_percent": round(state.overall_drawdown_percent(), 3)}
+            "overall_drawdown_percent": round(state.overall_drawdown_percent(), 3),
+            "prop_overall_loss_percent": round(state.prop_overall_loss_percent(), 3),
+            "consistency_share_percent": round(state.consistency_share_percent(), 3),
+            "trading_days": len(state.trading_days)}
 
 
 def monthly_report(store: LearningStore, state: SystemState, now: Optional[datetime] = None) -> dict:
@@ -90,6 +98,8 @@ def risk_report(state: SystemState, risk_cfg: dict) -> dict:
     return {"type": "risk", "equity": state.equity, "open_risk_percent": round(state.open_risk_percent(), 3),
             "open_risk_money": state.open_risk_money(), "daily_drawdown_percent": round(state.daily_drawdown_percent(), 3),
             "overall_drawdown_percent": round(state.overall_drawdown_percent(), 3), "consecutive_losses": state.consecutive_losses,
+            "prop_daily_loss_percent": round(state.prop_daily_loss_percent(), 3),
+            "prop_overall_loss_percent": round(state.prop_overall_loss_percent(), 3),
             "limits": risk_cfg, "locks": state.lock_reasons, "positions": {t: p.__dict__ for t, p in state.bot_positions.items()}}
 
 

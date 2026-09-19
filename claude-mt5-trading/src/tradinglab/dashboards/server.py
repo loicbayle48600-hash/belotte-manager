@@ -407,8 +407,10 @@ th{color:var(--muted);font-weight:600}
       <dt>Equity</dt><dd id="equity" class="big"></dd>
       <dt>Balance</dt><dd id="balance"></dd>
       <dt>P&amp;L du jour</dt><dd id="daily_pnl"></dd>
-      <dt>Drawdown jour</dt><dd id="dd_day"></dd>
-      <dt>Drawdown global</dt><dd id="dd_all"></dd>
+      <dt>Drawdown jour (interne)</dt><dd id="dd_day"></dd>
+      <dt>Drawdown global (interne)</dt><dd id="dd_all"></dd>
+      <dt>Perte jour (base prop)</dt><dd id="prop_dd_day"></dd>
+      <dt>Perte totale (base prop)</dt><dd id="prop_dd_all"></dd>
       <dt>Risque ouvert</dt><dd id="open_risk"></dd>
       <dt>Pertes consécutives</dt><dd id="consec"></dd>
       <dt>Trades clos (jour)</dt><dd id="trades_closed"></dd>
@@ -426,6 +428,9 @@ th{color:var(--muted);font-weight:600}
       <dt>Risque / trade (interne)</dt><dd id="risk_per_trade"></dd>
       <dt>Perte jour interne</dt><dd id="risk_daily"></dd>
       <dt>Positions max</dt><dd id="risk_maxpos"></dd>
+      <dt>Journée prop</dt><dd id="prop_day"></dd>
+      <dt>Risque max / idée</dt><dd id="prop_idea"></dd>
+      <dt>Cohérence (part max idée)</dt><dd id="prop_consistency"></dd>
     </dl>
   </section>
   <section class="card"><h2>News &amp; heartbeats</h2>
@@ -501,6 +506,8 @@ th{color:var(--muted);font-weight:600}
     set('daily_pnl', signed(s.daily_pnl, cur) + ' (' + signed(s.daily_pnl_percent, ' %') + ')');
     set('dd_day', pct(s.daily_drawdown_percent));
     set('dd_all', pct(s.overall_drawdown_percent));
+    set('prop_dd_day', pct(s.prop_daily_loss_percent));
+    set('prop_dd_all', pct(s.prop_overall_loss_percent));
     set('open_risk', pct(s.open_risk_percent));
     set('consec', txt(s.consecutive_losses));
     set('trades_closed', txt(s.daily && s.daily.trades_closed));
@@ -511,6 +518,9 @@ th{color:var(--muted);font-weight:600}
     set('prop_daily', pct(p.max_daily_loss_hard_percent));
     set('prop_overall', pct(p.max_overall_loss_hard_percent));
     set('prop_target', pct(p.profit_target_percent));
+    set('prop_day', esc(txt(s.daily && s.daily.day)) + ' (reset ' + esc(txt(p.trading_day_reset_hour)) + ':00 ' + esc(txt(p.trading_day_timezone)) + ')');
+    set('prop_idea', pct(p.max_risk_per_trade_idea_percent) + ' / idée (agrégation ' + esc(txt(p.trade_idea_aggregation_minutes)) + ' min)');
+    set('prop_consistency', pct(s.consistency_share_percent) + ' (max ' + esc(txt(p.consistency_max_share_percent)) + ' %)');
     set('prop_verified', missing(p.prop_rules_verified) ? txt(null) : '<span class="badge '+(p.prop_rules_verified ? 'ok' : 'warn')+'">'+(p.prop_rules_verified ? 'VÉRIFIÉES' : 'NON VÉRIFIÉES')+'</span>');
     set('prop_auto', missing(p.autonomous_prop) ? txt(null) : '<span class="badge '+(p.autonomous_prop ? 'bad' : 'ok')+'">'+(p.autonomous_prop ? 'ACTIF' : 'INACTIF')+'</span>');
     set('risk_per_trade', pct(r.risk_per_trade_percent));

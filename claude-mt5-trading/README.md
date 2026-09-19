@@ -211,7 +211,8 @@ timeframes `M5 M15 H1 H4 D1`. Pas de HFT : le sommeil s'aligne sur la prochaine 
 Execution Gate (`execution/gate.py`) — 20 contrôles, **tous** obligatoires : `01_health` (broker + watchdog vivant), `02_account`,
 `03_authorization` (DEMO / prop), `04_data_fresh`, `05_symbol_tradable`, `06_fresh_price` (≤ 0.5 ATR), `07_spread`, `08_news`,
 `09_daily_guard` + `09b_sizing`, `10_stop_loss`, `11_volume`, `12_daily_drawdown`, `13_overall_drawdown`, `14_*` (limites portefeuille),
-`15_*` (corrélation), `16_duplicate_idea`, `17_existing_position`, `18_order_check`, `19_prop_hard_*`, `20_final_approval`
+`15_*` (corrélation), `16_duplicate_idea`, `17_existing_position`, `18_order_check`, `19_prop_*` (hard limits, idée de trade,
+week-end), `20_final_approval`
 (mode AUTO, pas de verrou, RR, score, verdict).
 
 Valeurs de `config/risk.yaml` :
@@ -272,14 +273,26 @@ réel, clôturées sur les barres M5 (SL prioritaire, timeout 72 h) et enregistr
 
 ## Prop mode
 
-- Profil `config/prop_firms.yaml` (`FOXX_FUNDED`, `1_STEP`, 500 000, cible 7 %, hard limits 4 % jour / 8 % global) : **hypothèses à
-  confirmer officiellement** ; `rules_source_url`, `rules_version`, `rules_verified_at` sont vides.
-- Règles critiques `UNKNOWN` et bloquantes : `ea_allowed`, `news_trading_window_minutes`, `trading_day_definition`, `daily_loss_basis`.
+- Profil `config/prop_firms.yaml` (`FOXX_FUNDED`, `1_STEP`, 500 000, cible 7 %, hard limits 4 % jour / 8 % global). Règles **relevées le
+  2026-09-19** sur https://www.foxx-funded.com/fr/faqs et transcrites dans `docs/prop/foxx_funded_regles.md`
+  (`rules_source_url`, `rules_version`, `rules_verified_at` renseignés).
+- Règles critiques bloquantes si `UNKNOWN` : `ea_allowed`, `news_trading_window_minutes`, `trading_day_definition`, `daily_loss_basis`.
 - `AUTONOMOUS_TRADING_PROP` ne peut devenir effectif que si **`autonomous_prop: true`** (system.yaml) **et `prop_rules_verified: true`
-  et `user_explicitly_authorized_prop_automation: true` et aucune règle critique `UNKNOWN`** (`risk/prop_guard.py`). Sinon tout compte
-  `REAL`/`CONTEST` est refusé par `03_authorization`, le mode DEMO restant autorisé.
-- Limites internes toujours plus strictes : 1 % jour, 60 % du hard global, puis hard limits avec marge de 25 %. `RISK` / outil MCP `risk`
-  renvoient le rapport de conformité (`compliance_report`).
+  et `user_explicitly_authorized_prop_automation: true` et `ea_approval_obtained: true` et aucune règle critique `UNKNOWN`**
+  (`risk/prop_guard.py`). Sinon tout compte `REAL`/`CONTEST` est refusé par `03_authorization`, le mode DEMO restant autorisé.
+  L'approbation de l'EA se demande au support de la prop firm après achat du défi : **le code ne peut pas se l'accorder**.
+- Bases de calcul de la prop firm, appliquées telles quelles (jamais approximées en equity) :
+  - journée de trading = reset **17:00 America/New_York** (`core/trading_day.py`) ; sous Windows, `tzdata` est requis ;
+  - plancher du jour = `max(solde, equity) au reset − 4 % du solde initial` ;
+  - perte totale = drawdown **statique** sur le solde initial (jamais sur un pic d'equity) ;
+  - **idée de trade** : positions du même sens sur le même symbole agrégées (réouverture sous 10 min comprise), risque cumulé
+    plafonné à 2 % du solde initial ;
+  - **week-end** : cryptomonnaies uniquement.
+- Suivis sans blocage : cohérence 25 % du profit total (contrôlée au paiement chez FOXX) et activité minimale
+  (5 jours de trading, ≥ 1 transaction par semaine).
+- Limites internes toujours plus strictes : 1 % jour, 60 % du hard global, puis hard limits avec marge de 25 %. Fenêtre news interne
+  (30 min avant / 15 après) plus large que l'exigence prop (5 min). `RISK` / outil MCP `risk` renvoient le rapport de conformité
+  (`compliance_report` : planchers, journée prop, cohérence, activité, raisons de blocage).
 
 ## Logs
 
@@ -396,7 +409,7 @@ de la procédure ; l'état indique ce qui a été validé sur le broker simulé 
 | 17 | Perte journalière 1 %, 3 pertes consécutives, réduction de risque après profit, Giveback 25 % | validé sur mock |
 | 18 | Exposition totale 1 %, 3 positions max, 1 par symbole, anti-averaging/grid | validé sur mock |
 | 19 | Correlation Guard (facteur devise, classe d'actif, cluster corrélé) | validé sur mock |
-| 20 | Prop Guard : règles `UNKNOWN` bloquantes, triple condition pour l'automatisation prop, limites internes < hard limits | validé sur mock |
+| 20 | Prop Guard : règles FOXX relevées, `UNKNOWN` bloquantes, quadruple condition pour l'automatisation prop (dont approbation EA), journée 17:00 New York, drawdown statique, idée de trade 2 %, week-end crypto | validé sur mock (`test_prop_foxx_rules.py`) |
 | 21 | News : dégradé sans provider / après 3 échecs, blocage 30 min avant / 15 min après un événement HIGH, `SHOCK` | validé sur mock (`test_news.py`) — FMP réel à valider avec clé |
 | 22 | Registre de 105 agents, familles A..M, statuts persistés | validé sur mock |
 | 23 | Market Router : activation régime/session/marché, dédoublonnage, concordance/opposition | validé sur mock (cycles orchestrateur) |

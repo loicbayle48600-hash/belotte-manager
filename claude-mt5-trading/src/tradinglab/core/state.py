@@ -17,10 +17,11 @@ import tempfile
 import threading
 import time
 from dataclasses import dataclass, field, asdict
-from datetime import datetime, date
+from datetime import datetime, date, timedelta, timezone
 from pathlib import Path
 from typing import Any, Optional
 
+from .trading_day import TradingDayCalendar, DEFAULT_CALENDAR
 from .types import SystemMode, utcnow
 
 
@@ -36,6 +37,17 @@ def _replace_with_retry(src: str | Path, dst: str | Path, attempts: int = 6) -> 
             if i == attempts - 1:
                 raise
             time.sleep(0.05 * (i + 1))
+
+
+def _parse_ts(ts: str) -> Optional[datetime]:
+    """Horodatage ISO du fichier d'état → datetime UTC ; None si illisible (jamais d'exception ici)."""
+    if not ts:
+        return None
+    try:
+        dt = datetime.fromisoformat(str(ts))
+    except (TypeError, ValueError):
+        return None
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
 
 
 @dataclass
@@ -66,15 +78,38 @@ class BotPositionPlan:
 
 @dataclass
 class DailyStats:
-    day: str = ""
+    day: str = ""                          # journée de trading prop (reset 17:00 America/New_York)
     starting_equity: float = 0.0
     starting_balance: float = 0.0
+    # base du plancher journalier prop : max(solde, equity) constaté au reset (règle FOXX Funded)
+    reference_equity: float = 0.0
     peak_equity: float = 0.0
     peak_daily_pnl: float = 0.0
     realized_pnl: float = 0.0
     trades_closed: int = 0
     wins: int = 0
     losses: int = 0
+
+
+@dataclass
+class TradeIdea:
+    """Idée de trade au sens prop firm : plusieurs positions agrégées en une seule exposition.
+
+    FOXX Funded agrège les positions prises dans le même sens sur le même instrument, et considère
+    qu'une position fermée puis rouverte dans le même sens **sous 10 minutes** appartient encore à
+    l'idée précédente. Le risque cumulé de l'idée est plafonné (2 % du solde initial) et le profit
+    d'une idée ne doit pas dépasser 25 % du profit total au moment du paiement.
+    """
+    idea_id: str = ""
+    symbol: str = ""
+    side: str = ""
+    opened_at: str = ""
+    last_activity_at: str = ""
+    risk_money: float = 0.0          # cumulé sur toute la vie de l'idée, jamais décrémenté
+    realized_pnl: float = 0.0
+    open_tickets: list[int] = field(default_factory=list)
+    closed_tickets: list[int] = field(default_factory=list)
+    entries: int = 0
 
 
 @dataclass
@@ -103,9 +138,13 @@ class SystemState:
     currency: str = ""
     consecutive_losses: int = 0
     overall_peak_equity: float = 0.0
+    initial_balance: float = 0.0        # solde de référence du compte (base des % prop, drawdown statique)
     daily: DailyStats = field(default_factory=DailyStats)
     bot_positions: dict[str, BotPositionPlan] = field(default_factory=dict)  # ticket(str) -> plan
     executed_keys: dict[str, str] = field(default_factory=dict)              # idempotency key -> ts
+    trade_ideas: dict[str, TradeIdea] = field(default_factory=dict)          # idea_id -> idée agrégée
+    trading_days: list[str] = field(default_factory=list)                    # journées prop avec au moins une entrée
+    last_trade_at: str = ""                                                  # dernière entrée (règle d'activité minimale)
     model_budget: ModelBudget = field(default_factory=ModelBudget)
     orchestrator_heartbeat: str = ""
     watchdog_heartbeat: str = ""
@@ -186,21 +225,38 @@ class SystemState:
             for k in list(self.executed_keys)[: len(self.executed_keys) - 4000]:
                 self.executed_keys.pop(k, None)
 
-    def roll_day_if_needed(self, equity: float, balance: float, today: Optional[date] = None) -> bool:
-        today = today or utcnow().date()
-        d = today.isoformat()
+    def roll_day_if_needed(self, equity: float, balance: float,
+                           now: Optional[date | datetime] = None,
+                           calendar: Optional[TradingDayCalendar] = None) -> bool:
+        """Bascule la journée de trading. `now` est un instant (datetime) converti en journée prop.
+
+        La journée prop ne commence pas à minuit UTC mais au reset de la prop firm (17:00
+        America/New_York chez FOXX Funded) : c'est `calendar` qui tranche. Un `date` est accepté pour
+        compatibilité et pris tel quel. La référence du jour est `max(solde, equity)` au reset, base
+        imposée par la prop firm pour le plancher de perte quotidienne.
+        """
+        cal = calendar or DEFAULT_CALENDAR
+        if now is None:
+            now = utcnow()
+        d = (cal.day(now) if isinstance(now, datetime) else now).isoformat()
+        reference = max(equity, balance)
         if self.daily.day == d:
             # journée déjà ouverte avec une equity nulle (compte pas encore synchronisé) : on fixe la
             # référence dès la première equity valide, sinon perte journalière/drawdown resteraient à 0 %.
             if self.daily.starting_equity <= 0 and equity > 0:
                 self.daily.starting_equity = equity
                 self.daily.starting_balance = balance
+                self.daily.reference_equity = reference
                 self.daily.peak_equity = max(self.daily.peak_equity, equity)
+            elif self.daily.reference_equity <= 0 and reference > 0:
+                # état écrit par une version antérieure : combler la base prop sans rouvrir la journée
+                self.daily.reference_equity = max(self.daily.starting_equity, self.daily.starting_balance)
             return False
         if equity <= 0:
             # equity inconnue/nulle : ne pas figer starting_equity=0 pour toute la journée, réessayer au cycle suivant
             return False
-        self.daily = DailyStats(day=d, starting_equity=equity, starting_balance=balance, peak_equity=equity)
+        self.daily = DailyStats(day=d, starting_equity=equity, starting_balance=balance,
+                                reference_equity=reference, peak_equity=equity)
         self.consecutive_losses = 0
         self.unlock_entries("DAILY_LOSS_LIMIT")
         self.unlock_entries("GIVEBACK_FLOOR")
@@ -210,6 +266,10 @@ class SystemState:
     def update_equity(self, equity: float, balance: float) -> None:
         self.equity = equity
         self.balance = balance
+        if self.initial_balance <= 0 and balance > 0:
+            # solde de référence : figé à la première synchronisation du compte, jamais réévalué ensuite
+            # (le drawdown total prop est STATIQUE, calculé sur le solde initial et non sur un pic).
+            self.initial_balance = balance
         if equity > self.daily.peak_equity:
             self.daily.peak_equity = equity
         pnl = self.daily_pnl()
@@ -217,6 +277,140 @@ class SystemState:
             self.daily.peak_daily_pnl = pnl
         if equity > self.overall_peak_equity:
             self.overall_peak_equity = equity
+
+    # ---------- bases de calcul imposées par la prop firm ----------
+    def prop_reference_balance(self, account_size: float = 0.0) -> float:
+        """Solde initial servant de dénominateur aux limites prop (4 % / 8 % / 2 % par idée)."""
+        return self.initial_balance or float(account_size or 0.0) or self.balance or self.equity
+
+    def prop_daily_floor(self, daily_loss_percent: float, account_size: float = 0.0) -> float:
+        """Plancher d'equity du jour : max(solde, equity) au reset − X % du solde initial."""
+        base = self.prop_reference_balance(account_size)
+        ref = self.daily.reference_equity or max(self.daily.starting_equity, self.daily.starting_balance)
+        return ref - base * daily_loss_percent / 100.0
+
+    def prop_daily_loss_percent(self, account_size: float = 0.0) -> float:
+        """Perte du jour en % du SOLDE INITIAL, mesurée depuis max(solde, equity) au reset."""
+        base = self.prop_reference_balance(account_size)
+        ref = self.daily.reference_equity or max(self.daily.starting_equity, self.daily.starting_balance)
+        if base <= 0 or ref <= 0:
+            return 0.0
+        return max(0.0, 100.0 * (ref - self.equity) / base)
+
+    def prop_overall_floor(self, overall_loss_percent: float, account_size: float = 0.0) -> float:
+        base = self.prop_reference_balance(account_size)
+        return base * (1.0 - overall_loss_percent / 100.0)
+
+    def prop_overall_loss_percent(self, account_size: float = 0.0) -> float:
+        """Perte totale en % du solde initial : drawdown STATIQUE, jamais mesuré depuis un pic d'equity."""
+        base = self.prop_reference_balance(account_size)
+        if base <= 0:
+            return 0.0
+        return max(0.0, 100.0 * (base - self.equity) / base)
+
+    # ---------- idées de trade (agrégation prop) ----------
+    def active_trade_idea(self, symbol: str, side: str, now: Optional[datetime] = None,
+                          window_minutes: float = 10.0) -> Optional[TradeIdea]:
+        """Idée en cours pour ce couple symbole/sens : positions encore ouvertes, ou dernière activité
+        dans la fenêtre d'agrégation (rouvrir dans le même sens sous 10 min = même idée)."""
+        now = now or utcnow()
+        best: Optional[TradeIdea] = None
+        best_ts: Optional[datetime] = None
+        for idea in self.trade_ideas.values():
+            if idea.symbol != symbol or idea.side != side:
+                continue
+            ts = _parse_ts(idea.last_activity_at)
+            fresh = bool(idea.open_tickets)
+            if not fresh:
+                if ts is None:
+                    continue
+                fresh = (now - ts) <= timedelta(minutes=window_minutes)
+            if not fresh:
+                continue
+            if best is None or (ts is not None and (best_ts is None or ts > best_ts)):
+                best, best_ts = idea, ts
+        return best
+
+    def projected_trade_idea_risk(self, symbol: str, side: str, add_risk_money: float,
+                                  now: Optional[datetime] = None, window_minutes: float = 10.0) -> float:
+        idea = self.active_trade_idea(symbol, side, now, window_minutes)
+        return (idea.risk_money if idea else 0.0) + max(0.0, add_risk_money)
+
+    def register_trade_idea(self, symbol: str, side: str, risk_money: float, ticket: Optional[int] = None,
+                            now: Optional[datetime] = None, window_minutes: float = 10.0) -> TradeIdea:
+        """Rattache une entrée à l'idée active, ou en ouvre une nouvelle. Le risque est CUMULÉ :
+        une perte déjà encaissée sur l'idée ne libère pas de budget pour la suivante."""
+        now = now or utcnow()
+        idea = self.active_trade_idea(symbol, side, now, window_minutes)
+        if idea is None:
+            idea = TradeIdea(idea_id=f"{symbol}|{side}|{now.isoformat()}", symbol=symbol, side=side,
+                             opened_at=now.isoformat())
+            self.trade_ideas[idea.idea_id] = idea
+        idea.last_activity_at = now.isoformat()
+        idea.risk_money += max(0.0, risk_money)
+        idea.entries += 1
+        if ticket is not None and int(ticket) not in idea.open_tickets:
+            idea.open_tickets.append(int(ticket))
+        self.prune_trade_ideas(now)
+        return idea
+
+    def close_trade_idea_position(self, ticket: int, pnl: float, now: Optional[datetime] = None) -> Optional[TradeIdea]:
+        """Enregistre la fermeture d'une position dans son idée (P&L cumulé pour la règle de cohérence)."""
+        now = now or utcnow()
+        t = int(ticket)
+        for idea in self.trade_ideas.values():
+            if t in idea.open_tickets:
+                idea.open_tickets.remove(t)
+                if t not in idea.closed_tickets:
+                    idea.closed_tickets.append(t)
+                idea.realized_pnl += float(pnl)
+                idea.last_activity_at = now.isoformat()
+                return idea
+        return None
+
+    def record_trading_day(self, now: Optional[datetime] = None) -> None:
+        """Compte la journée prop en cours comme journée de trading effective (minimum imposé par la
+        prop firm) et note la dernière entrée (règle d'au moins une transaction par semaine)."""
+        now = now or utcnow()
+        self.last_trade_at = now.isoformat()
+        if self.daily.day and self.daily.day not in self.trading_days:
+            self.trading_days.append(self.daily.day)
+            if len(self.trading_days) > 400:
+                del self.trading_days[:-400]
+
+    def days_since_last_trade(self, now: Optional[datetime] = None) -> Optional[float]:
+        ts = _parse_ts(self.last_trade_at)
+        if ts is None:
+            return None
+        return ((now or utcnow()) - ts).total_seconds() / 86400.0
+
+    def consistency_share_percent(self) -> float:
+        """Part du profit total détenue par la meilleure idée (règle de cohérence prop, 25 % chez FOXX).
+
+        0 % si aucune idée gagnante : la règle ne s'applique qu'à un profit existant.
+        """
+        gains = [i.realized_pnl for i in self.trade_ideas.values() if i.realized_pnl > 0]
+        total = sum(gains)
+        if total <= 0:
+            return 0.0
+        return 100.0 * max(gains) / total
+
+    def prune_trade_ideas(self, now: Optional[datetime] = None, keep_days: int = 120, max_ideas: int = 2000) -> None:
+        """Purge les idées closes et anciennes. Une idée avec des positions ouvertes n'est jamais purgée."""
+        now = now or utcnow()
+        limit = now - timedelta(days=keep_days)
+        for key, idea in list(self.trade_ideas.items()):
+            if idea.open_tickets:
+                continue
+            ts = _parse_ts(idea.last_activity_at) or _parse_ts(idea.opened_at)
+            if ts is not None and ts < limit:
+                self.trade_ideas.pop(key, None)
+        if len(self.trade_ideas) > max_ideas:
+            closed = [(k, _parse_ts(i.last_activity_at) or datetime.min.replace(tzinfo=timezone.utc))
+                      for k, i in self.trade_ideas.items() if not i.open_tickets]
+            closed.sort(key=lambda kv: kv[1])
+            for key, _ in closed[: len(self.trade_ideas) - max_ideas]:
+                self.trade_ideas.pop(key, None)
 
     def public_dict(self) -> dict:
         d = asdict(self)
@@ -226,6 +420,9 @@ class SystemState:
         d["overall_drawdown_percent"] = self.overall_drawdown_percent()
         d["open_risk_percent"] = self.open_risk_percent()
         d["open_risk_money"] = self.open_risk_money()
+        d["prop_daily_loss_percent"] = self.prop_daily_loss_percent()
+        d["prop_overall_loss_percent"] = self.prop_overall_loss_percent()
+        d["consistency_share_percent"] = self.consistency_share_percent()
         return d
 
 
@@ -268,6 +465,17 @@ class StateStore:
                             **{kk: vv for kk, vv in p.items() if kk in BotPositionPlan.__dataclass_fields__})
                     except (TypeError, ValueError, AttributeError, KeyError) as e:
                         st.load_warnings.append(f"bot_position {t} invalide ({type(e).__name__}) : ignorée")
+            elif k == "trade_ideas":
+                st.trade_ideas = {}
+                if not isinstance(v, dict):
+                    st.load_warnings.append("trade_ideas invalide : ignoré (agrégation prop repart à vide)")
+                    continue
+                for key, idea in v.items():
+                    try:
+                        st.trade_ideas[str(key)] = TradeIdea(
+                            **{kk: vv for kk, vv in idea.items() if kk in TradeIdea.__dataclass_fields__})
+                    except (TypeError, ValueError, AttributeError, KeyError) as e:
+                        st.load_warnings.append(f"trade_idea {key} invalide ({type(e).__name__}) : ignorée")
             elif k == "load_warnings":
                 continue  # diagnostic du chargement courant uniquement, jamais rechargé depuis le fichier
             elif k in SystemState.__dataclass_fields__:

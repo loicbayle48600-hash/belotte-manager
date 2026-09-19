@@ -66,7 +66,7 @@ Claude Code / agents LLM (TIER_A/B/C)  ──lecture, propositions──┐
 | `config/system.yaml` | flags `autonomous_demo/prop`, `safe_mode_on_startup`, magic `51000`, cadences scheduler, seuils d'exécution, `account_expected` |
 | `config/risk.yaml` | risque par trade, limites, corrélation, `profit_management` (ADAPTIVE_R_MANAGEMENT), `daily_profit` |
 | `config/models.yaml` | tiers TIER_A/B/C/D, budget et quotas LLM |
-| `config/markets.yaml`, `prop_firms.yaml`, `strategies.yaml`, `news_sources.yaml` | univers, profil prop (règles UNKNOWN), champion/challenger + backtest, providers news |
+| `config/markets.yaml`, `prop_firms.yaml`, `strategies.yaml`, `news_sources.yaml` | univers, profil prop (règles relevées, cf. `docs/prop/foxx_funded_regles.md`), champion/challenger + backtest, providers news |
 | `src/tradinglab/core/types.py` | enums (`Side`, `TradeMode`, `Regime`, `AgentStatus`, `SystemMode`, `Provenance`, `Verdict`), dataclasses (`TradeCandidate`, `OrderRequest`, `GateResult`…) |
 | `core/config.py` | `load_settings()` fusionne les 7 YAML ; secrets **uniquement** via l'environnement (`.env` chargé par `load_dotenv`) |
 | `core/state.py` | `SystemState` + `StateStore` (JSON atomique), file `state/commands.jsonl`, heartbeat |
@@ -176,15 +176,36 @@ prochaine clôture de barre, ≥ 1 s, ≤ 15 s).
   `required_setup_score: 65` ; déviation 20 pts ; tick ≤ 30 s ; ≥ 250 barres.
 - Sizing : volume = risque monétaire / perte par lot, arrondi **vers le bas** ; volume minimum broker refusé s'il dépasse 0.35 %.
 
-## 9. Prop guard (`risk/prop_guard.py`, `config/prop_firms.yaml`)
+## 9. Prop guard (`risk/prop_guard.py`, `config/prop_firms.yaml`, `core/trading_day.py`)
 
-- Profil `FOXX_FUNDED / 1_STEP / 500000`, hard limits 4 % jour / 8 % global : **hypothèses non confirmées**.
+- Profil `FOXX_FUNDED / 1_STEP / 500000`. Règles **relevées le 2026-09-19** sur
+  https://www.foxx-funded.com/fr/faqs et transcrites dans `docs/prop/foxx_funded_regles.md` : objectif 7 %,
+  perte jour 4 %, perte totale 8 %, 2 % par idée de trade, cohérence 25 %, 5 jours de trading minimum.
 - `CRITICAL_RULES = ea_allowed, news_trading_window_minutes, trading_day_definition, daily_loss_basis` ; toute valeur `UNKNOWN` rend le profil ambigu.
 - `AUTONOMOUS_TRADING_PROP` n'est effectif que si `system.autonomous_prop` **et** `prop_rules_verified` **et**
-  `user_explicitly_authorized_prop_automation` sont vrais **et** aucune règle critique `UNKNOWN` (`Settings.autonomous_prop`,
-  `PropGuard.prop_automation_allowed`). Sinon tout compte `REAL/CONTEST` est refusé (`03_authorization`).
-- Limites : internes (1 % jour, 60 % du hard global = 4.8 %) puis hard limits avec marge 25 % (3 % / 6 %), risque à ajouter inclus.
+  `user_explicitly_authorized_prop_automation` **et** `ea_approval_obtained` sont vrais **et** aucune règle critique
+  `UNKNOWN` (`Settings.autonomous_prop`, `PropGuard.prop_automation_allowed`, `PropGuard.blocking_reasons`).
+  Sinon tout compte `REAL/CONTEST` est refusé (`03_authorization`). L'approbation de l'EA par la prop firm est une
+  **démarche humaine** : elle ne peut pas être accordée par le code.
+- **Bases de calcul imposées par la prop firm** (ne jamais les remplacer par des approximations en equity) :
+  - journée de trading = reset **17:00 America/New_York** (`core/trading_day.py`, `TradingDayCalendar`), pas minuit UTC ;
+    `SystemState.roll_day_if_needed(equity, balance, now, calendar)` prend un **instant**, plus une date ;
+  - plancher du jour = `max(solde, equity) au reset − 4 % du SOLDE INITIAL` (`DailyStats.reference_equity`,
+    `SystemState.prop_daily_loss_percent/prop_daily_floor`) ;
+  - perte totale = drawdown **statique** sur `SystemState.initial_balance` (figé à la première synchronisation),
+    jamais sur un pic d'equity (`prop_overall_loss_percent/prop_overall_floor`) ;
+  - **idée de trade** : positions du même sens sur le même symbole agrégées, réouverture sous 10 min comprise
+    (`SystemState.register_trade_idea`, `active_trade_idea`) ; risque cumulé plafonné à 2 % du solde initial
+    (contrôle `19_prop_trade_idea`) et jamais décrémenté par une perte déjà encaissée ;
+  - **week-end** : cryptomonnaies uniquement (contrôle `19_prop_weekend`, borné par le reset 17:00 NY).
+- Limites : internes en equity (1 % jour, 60 % du hard global = 4.8 %) puis hard limits prop en % du solde initial
+  avec marge 25 % (3 % / 6 % / 1.5 % par idée), risque à ajouter inclus.
+- Non bloquants mais suivis dans `compliance_report` : cohérence 25 % (`consistency_status`, contrôlée au paiement
+  chez FOXX, jamais disqualifiante) et activité minimale (`activity_status` : 5 jours de trading, ≥ 1 trade/semaine).
+- Fenêtre news interne (30 min avant / 15 après) **plus large** que l'exigence prop (5 min) : on ne l'assouplit jamais.
 - Le watchdog signale « drawdown proche des hard limits » à 75 % des hard limits.
+- Windows : `tzdata` est requis (`requirements.txt`) ; sans base de fuseaux, `TradingDayCalendar.degraded` passe à vrai
+  et le repli est l'heure d'hiver (bascule une heure trop tôt en été).
 
 ## 10. Profit management (`ADAPTIVE_R_MANAGEMENT`, `execution/position_manager.py`)
 
@@ -231,7 +252,7 @@ jamais retiré, jamais placé au-delà du prix courant/`stops_level`.
 
 | Fichier | Contenu |
 |---|---|
-| `state/system_state.json` | mode, verrous, compte, equity, `daily`, `bot_positions`, `executed_keys`, `model_budget`, heartbeats, `top_setups`, `regimes` |
+| `state/system_state.json` | mode, verrous, compte, equity, `initial_balance`, `daily` (dont `reference_equity`), `bot_positions`, `executed_keys`, `trade_ideas`, `trading_days`, `model_budget`, heartbeats, `top_setups`, `regimes` |
 | `state/watchdog.json` | rapport du watchdog (écrit uniquement par lui) |
 | `state/commands.jsonl` | file de commandes (vidée par l'orchestrateur) |
 | `state/proposals.jsonl` | propositions MCP `propose_trade` |
@@ -249,8 +270,10 @@ jamais retiré, jamais placé au-delà du prix courant/`stops_level`.
 ## 15. Tests
 
 `TRADINGLAB_BROKER=mock python -m pytest` (config dans `pyproject.toml` : `testpaths=["tests"]`, `pythonpath=["src"]`, `-q`).
-101 tests : `test_risk_and_gate.py` (SL, sizing, verrous, prop, corrélation, 20 contrôles, exécution, ré-entrée, fermeture toujours
-autorisée), `test_market_data.py`, `test_news.py`, `test_backtest.py` (déterminisme, anti-lookahead), `test_dashboard.py`.
+807 tests : `test_risk_and_gate.py` (SL, sizing, verrous, prop, corrélation, 20 contrôles, exécution, ré-entrée, fermeture toujours
+autorisée), `test_prop_foxx_rules.py` (règles FOXX relevées : journée 17:00 New York, planchers, drawdown statique, idée de trade,
+week-end, cohérence, activité), `test_market_data.py`, `test_news.py`, `test_backtest.py` (déterminisme, anti-lookahead),
+`test_strategies_distinct.py`, `test_dashboard.py`.
 `conftest.py` fixe `FIXED_NOW = 2026-01-20 10:00 UTC` (session LONDON) et supprime `ANTHROPIC_API_KEY`/`FMP_API_KEY`.
 
 ## 16. Dépannage

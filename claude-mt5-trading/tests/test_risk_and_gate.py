@@ -139,12 +139,17 @@ def test_non_demo_account_blocks_execution(settings):
 
 
 def test_prop_unknown_rules_block_even_with_flags(settings):
-    cfg = dict(settings.prop, prop_rules_verified=True, user_explicitly_authorized_prop_automation=True)
-    pg = PropGuard(PropProfile.from_config(cfg), True, True, 1.0)
+    base = dict(settings.prop, prop_rules_verified=True, user_explicitly_authorized_prop_automation=True)
+    # une règle critique effacée du profil → ambiguïté → exécution prop bloquée malgré tous les drapeaux
+    pg = PropGuard(PropProfile.from_config(dict(base, ea_allowed="UNKNOWN", daily_loss_basis=None)), True, True, 1.0)
     assert not pg.prop_automation_allowed and pg.profile.ambiguous
-    cfg2 = dict(cfg, ea_allowed=True, news_trading_window_minutes=2, trading_day_definition="server_day", daily_loss_basis="balance")
-    pg2 = PropGuard(PropProfile.from_config(cfg2), True, True, 1.0)
-    assert pg2.prop_automation_allowed and pg2.authorization(TradeMode.REAL).ok
+    # règles relevées mais approbation de l'EA par la prop firm non obtenue → toujours bloqué
+    pg2 = PropGuard(PropProfile.from_config(base), True, True, 1.0)
+    assert not pg2.profile.ambiguous and not pg2.prop_automation_allowed
+    assert any("EA_APPROVAL_OBTAINED" in r for r in pg2.blocking_reasons)
+    # approbation obtenue + drapeaux + autorisation explicite → seul cas autorisé
+    pg3 = PropGuard(PropProfile.from_config(dict(base, ea_approval_obtained=True)), True, True, 1.0)
+    assert pg3.prop_automation_allowed and pg3.authorization(TradeMode.REAL).ok
 
 
 def test_settings_autonomous_prop_requires_all_flags(settings):

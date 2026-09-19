@@ -75,7 +75,11 @@ class Orchestrator:
         self.daily = DailyGuard(settings.risk, settings.daily_profit)
         self.corr = CorrelationGuard(CorrelationLimits.from_config(settings.correlation), settings.markets.get("asset_class_rules", {}))
         self.gate = ExecutionGate(broker, self.risk, self.prop, self.daily, self.corr)
-        self.executor = Executor(broker, self.store, self.journal)
+        # calendrier de la journée de trading prop (reset 17:00 America/New_York) : c'est lui qui décide
+        # quand la perte quotidienne repart de zéro, pas le calendrier UTC.
+        self.trading_day = self.prop.profile.trading_day_calendar()
+        self.executor = Executor(broker, self.store, self.journal,
+                                 idea_window_minutes=self.prop.profile.trade_idea_aggregation_minutes)
         self.pm = PositionManager(broker, self.store, self.journal, PMConfig.from_config(settings.profit_management), self.magic)
         tfs = settings.scheduler.get("timeframes", ["M5", "M15", "H1", "H4", "D1"])
         self.feed = MarketDataFeed(broker, tfs, bars=max(300, int(settings.system.get("min_bars_required", 250)) + 50),
@@ -162,7 +166,7 @@ class Orchestrator:
         modèles et pipeline de recherche. Appelée par `startup()` ou, si la connexion a échoué au démarrage,
         par le premier `cycle()` connecté (sinon l'orchestrateur tournerait sans univers ni adoption)."""
         st = self.state
-        st.roll_day_if_needed(acc.equity, acc.balance, self.now_fn().date())
+        st.roll_day_if_needed(acc.equity, acc.balance, self.now_fn(), self.trading_day)
         st.update_equity(acc.equity, acc.balance)
         self._check_account(acc)
         self._build_universe()
@@ -246,8 +250,10 @@ class Orchestrator:
             self.journal.error("compte changé en cours d'exécution : entrées verrouillées, SAFE_MODE", previous=previous, login=acc.login, server=acc.server)
         st.mt5_connected = True
         st.account_trade_mode = acc.trade_mode.value
-        if st.roll_day_if_needed(acc.equity, acc.balance, now.date()):
-            self.journal.event("new_day", starting_equity=acc.equity)
+        if st.roll_day_if_needed(acc.equity, acc.balance, now, self.trading_day):
+            self.journal.event("new_day", trading_day=st.daily.day, starting_equity=acc.equity,
+                               reference_equity=st.daily.reference_equity,
+                               reset_at=self.trading_day.reset_at(now).isoformat())
         st.update_equity(acc.equity, acc.balance)
         # 2. positions : sync + post-trade sur les fermetures
         closed = self.pm.sync()
@@ -498,6 +504,8 @@ class Orchestrator:
             st.daily.losses += 1
             st.consecutive_losses += 1
         st.daily.realized_pnl += rec.pnl
+        # P&L rattaché à l'idée de trade : sert la règle de cohérence (part du profit total par idée)
+        st.close_trade_idea_position(plan.ticket, rec.pnl, now)
         review = self.post_trade.analyze(rec)
         self.journal.event("post_trade_review", ticket=plan.ticket, agent_id=plan.agent_id, result_r=rec.result_r, pnl=rec.pnl, review=review.to_dict())
         if review.challenger_needed and self.research is not None:

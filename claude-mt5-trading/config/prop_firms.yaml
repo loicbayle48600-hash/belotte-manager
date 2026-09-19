@@ -1,22 +1,71 @@
-# Profil prop firm. Les valeurs ci-dessous sont des HYPOTHÈSES à confirmer
-# officiellement avant toute exécution prop (section 10 du master prompt).
+# Profil prop firm — valeurs RELEVÉES sur la documentation officielle.
+# Source unique de vérité pour le code : voir docs/prop/foxx_funded_regles.md pour la transcription
+# complète et la méthode de relevé. Toute valeur non confirmée doit rester UNKNOWN (bloquante).
 prop:
   prop_firm: FOXX_FUNDED
   program: 1_STEP
   account_size: 500000
-  profit_target_percent: 7.0
-  max_daily_loss_hard_percent: 4.0
-  max_overall_loss_hard_percent: 8.0
-  prop_rules_verified: false                       # PROP_RULES_VERIFIED
-  user_explicitly_authorized_prop_automation: false
-  rules_source_url: null
-  rules_version: null
-  rules_verified_at: null
-  # Règles NON confirmées → considérées UNKNOWN et bloquantes en mode prop
-  ea_allowed: UNKNOWN
-  news_trading_window_minutes: UNKNOWN
-  trading_day_definition: UNKNOWN
-  consistency_rule: UNKNOWN
-  payout_rules: UNKNOWN
-  daily_loss_basis: UNKNOWN        # balance | equity | UNKNOWN
-  weekend_holding_allowed: UNKNOWN
+  profit_target_percent: 7.0                      # 10 % pour le programme en 2 phases
+  max_daily_loss_hard_percent: 4.0                # en % du SOLDE INITIAL, pas de l'equity du jour
+  max_overall_loss_hard_percent: 8.0              # en % du SOLDE INITIAL, drawdown STATIQUE
+  prop_rules_verified: true                       # PROP_RULES_VERIFIED (relevé du 2026-09-19)
+  user_explicitly_authorized_prop_automation: false   # l'utilisateur n'a PAS encore autorisé l'exécution prop
+  rules_source_url: "https://www.foxx-funded.com/fr/faqs"
+  rules_version: "faq-2026-09-19"
+  rules_verified_at: "2026-09-19"
+
+  # --- Définition de la journée de trading ---
+  trading_day_definition: "reset quotidien à 17:00 America/New_York (heure de New York)"
+  trading_day_reset_hour: 17
+  trading_day_reset_minute: 0
+  trading_day_timezone: "America/New_York"
+
+  # --- Bases de calcul des pertes ---
+  daily_loss_basis: "max(solde, equity) au reset moins 4 % du solde initial"
+  daily_loss_reference: MAX_BALANCE_EQUITY_AT_RESET   # base du plancher journalier
+  loss_reference_balance: INITIAL_BALANCE             # dénominateur des 4 % et des 8 %
+  drawdown_type: STATIC                               # ni trailing en 1 phase, ni en 2 phases
+  floating_equity_counts: true                        # l'equity flottante compte dans la perte totale
+
+  # --- Idée de trade (agrégation) ---
+  max_risk_per_trade_idea_percent: 2.0            # perte max par idée de trade, en % du solde initial
+  trade_idea_aggregation_minutes: 10              # rouvrir dans le même sens sous 10 min = même idée
+  max_profit_per_trade_percent: 1.5
+
+  # --- Cohérence ---
+  consistency_rule: "aucune idée de trade ne peut dépasser 25 % du profit total ; vérifié au paiement, non disqualifiant"
+  consistency_max_share_percent: 25.0
+  consistency_checked_at: PAYOUT                  # contrôlée au paiement, pas en continu
+  consistency_blocking: false                     # dépasser le seuil n'élimine pas : il faut continuer à trader
+
+  # --- Activité minimale ---
+  min_trading_days: 5
+  min_trades_per_week: 1
+  time_limit_days: null                           # période de trading illimitée
+
+  # --- Stratégies et outils ---
+  stop_loss_mandatory: true
+  max_trades_without_sl: 3                        # 3 transactions sans SL = rupture immédiate
+  martingale_allowed: false
+  hedging_allowed: true                           # dans le même compte, stratégie légitime uniquement
+  high_frequency_trading_allowed: false
+  copy_trading_allowed: true                      # entre comptes personnels du titulaire
+  ea_allowed: true
+  ea_requires_approval: true                      # approbation explicite du support après achat du défi
+  ea_approval_obtained: false                     # démarche humaine : bloque l'automatisation prop tant qu'elle est fausse
+
+  # --- News ---
+  news_trading_allowed_during_evaluation: true
+  news_trading_allowed_on_funded: false
+  news_trading_window_minutes: 5                  # 5 min avant ET après un événement à fort impact (compte financé)
+
+  # --- Sessions ---
+  weekend_trading_allowed: CRYPTO_ONLY
+  weekend_holding_allowed: CRYPTO_ONLY
+
+  # --- Paiements ---
+  payout_rules: "1er paiement après 14 jours de trading puis tous les 7 jours ; fenêtre de demande 24 h ; partage 70/30 puis 80/20 puis 90/10 ; retrait max 15 % du solde initial par cycle"
+  payout_first_after_trading_days: 14
+  payout_interval_trading_days: 7
+  payout_request_window_hours: 24
+  max_withdrawal_percent_per_cycle: 15.0
