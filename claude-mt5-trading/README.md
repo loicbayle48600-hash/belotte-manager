@@ -66,14 +66,14 @@ Détails dans `scripts/README_SCRIPTS.md`.
 python -m venv .venv && . .venv/bin/activate
 pip install -r requirements.txt            # MetaTrader5 est ignoré hors Windows (marqueur sys_platform)
 export TRADINGLAB_BROKER=mock PYTHONPATH=src
-python -m pytest                           # 127 tests
+python -m pytest                           # 820 tests
 python -m tradinglab.orchestration.orchestrator --broker mock --cycles 4 --mode AUTO
 python -m tradinglab.monitoring.watchdog --broker mock
 python -m tradinglab.api.cli STATUS
 python scripts/smoke_test_demo.py --broker mock --yes
 ```
 
-Le `MockBroker` (`src/tradinglab/mt5/mock_adapter.py`) fournit 16 symboles synthétiques déterministes (graine fixe), les règles broker
+Le `MockBroker` (`src/tradinglab/mt5/mock_adapter.py`) fournit 18 symboles synthétiques déterministes et décorrélés (graine dérivée du symbole), les règles broker
 (volume min/step, `stops_level`), un fill immédiat, des SL/TP déclenchés sur les barres suivantes et des hooks de test
 (`fail_next_order`, `drop_sl_on_fill`, `reject_modify`, `set_connected(False)`). Il se présente par défaut comme le compte DEMO attendu.
 
