@@ -59,6 +59,13 @@ E04_RSI_EXCESS_MARGIN = 15.0
 # E04 — distance minimale entre l'entrée et la médiane de Bollinger, en ATR du tf d'entrée (le trajet de retour à
 # la moyenne doit rester réel ; l'exprimer en R le rendait dépendant de la profondeur de l'excursion).
 E04_MID_MIN_ATR = 0.5
+# E06 — confirmation de la bougie de balayage : la preuve du balayage est STRUCTURELLE (l'extrême passe sous
+# l'amas, la clôture le reprend) ; la forme de la bougie n'est qu'une confirmation secondaire.
+E06_WICK_MIN = 0.25
+E06_CLOSE_POS_MIN = 0.60
+# E06 — fenêtre horaire UTC des barres exploitées (fin de séance asiatique incluse, rollover exclu).
+E06_HOUR_START = 5
+E06_HOUR_END = 21
 # E07 — espace minimal, en R, jusqu'au niveau S/R suivant : le premier TP partiel doit tenir avant ce niveau.
 E07_SPACE_MIN_R = 1.0
 
@@ -212,6 +219,26 @@ def _touch_count(df: pd.DataFrame, level: float, tol: float, side: Side) -> int:
         return 0
     col = "low" if side is Side.BUY else "high"
     return int(((df[col] - level).abs() <= tol).sum())
+
+
+def _liquidity_pools(pivots: list[tuple[int, float]], tol: float, side: Side) -> list[list[tuple[int, float]]]:
+    """Amas de pivots quasi égaux, du plus extrême au moins extrême (du plus bas au plus haut pour un achat).
+
+    Deux pivots appartiennent au même amas si leurs prix sont distants de moins de `tol`. Un pivot isolé n'est pas
+    une réserve de liquidité : seuls les groupes d'au moins deux extrêmes sont renvoyés.
+    """
+    s = side.sign
+    groups: list[list[tuple[int, float]]] = []
+    cur: list[tuple[int, float]] = []
+    for i, v in sorted(pivots, key=lambda iv: s * iv[1]):
+        if not cur or s * (v - cur[0][1]) <= tol:
+            cur.append((i, v))
+        else:
+            groups.append(cur)
+            cur = [(i, v)]
+    if cur:
+        groups.append(cur)
+    return [g for g in groups if len(g) >= 2]
 
 
 def _mean_range(df: pd.DataFrame) -> float:
@@ -802,14 +829,25 @@ def strategy_e06(spec: AgentSpec, snap) -> Optional[TradeCandidate]:
     qui referme au-dessus de l'amas est une prise de liquidité, pas une cassure. Le signal est purement
     intra-barre (mèche + clôture), là où E05 exige une clôture au-delà du niveau puis un retour.
 
-    Entrée : au moins deux plus bas (hauts) confirmés par `swing_points` dans les 60 dernières barres clôturées,
-    distants de moins de 0,3 ATR entre eux (amas de liquidité) et non balayés depuis leur formation ; la barre de
+    Entrée : les plus bas (hauts) confirmés par `swing_points` sur les 60 dernières barres clôturées sont
+    regroupés en amas de pivots distants de moins de 0,3 ATR (`_liquidity_pools`) ; on retient l'amas le PLUS
+    EXTRÊME qui n'a pas déjà été balayé depuis sa formation, et c'est CET amas que la barre de signal doit
+    prendre : s'il reste de la liquidité intacte plus bas (plus haut), le balayage n'est pas le bon. La barre de
     signal descend sous le PLUS BAS de l'amas d'au moins 0,05 ATR (c'est là que sont les stops ; s'arrêter au-
     dessus ne déclenche rien) et clôture au-dessus du PLUS HAUT de l'amas + 0,05 ATR (l'amas entier est repris).
-    Confirmation : mèche de balayage >= 45 % de l'amplitude de la barre, clôture dans les 55 % favorables,
-    amplitude de la barre <= 2,5 ATR (balayage, pas barre de panique) et >= 0,5 ATR (mouvement réel).
-    Filtres : heure de la barre dans [6 ; 21) UTC (hors rollover et Asie creuse) ; ADX14 M15 <= 32 ; veto si la
-    tendance H1 est opposée avec ADX H1 >= 30 ; spread <= 10 % de l'ATR H1 (stop serré : le coût compte double).
+    Le contrôle « amas non balayé » ignore les 3 dernières barres avant le signal : elles appartiennent au
+    mouvement qui produit le balayage et ne peuvent de toute façon pas porter de pivot confirmé (`swing_points`
+    confirme un pivot 3 barres après son extrême). Les inclure rendait la condition contradictoire avec le
+    balayage lui-même — c'est ce qui empêchait tout signal.
+    Confirmation : mèche de balayage >= `E06_WICK_MIN` (25 %) de l'amplitude de la barre, clôture dans les
+    `E06_CLOSE_POS_MIN` (60 %) favorables, amplitude de la barre <= 2,5 ATR (balayage, pas barre de panique) et
+    >= 0,5 ATR (mouvement réel). La preuve du balayage est structurelle (dépassement de l'amas puis clôture
+    au-dessus) ; exiger en plus une mèche de 45 % revenait à réclamer un marteau parfait, jamais observé
+    conjointement avec les conditions structurelles.
+    Filtres : heure de la barre dans [`E06_HOUR_START` ; `E06_HOUR_END`) UTC, soit [5 ; 21) — fenêtre élargie
+    d'une heure vers la fin de séance asiatique, où les premiers flux européens prennent déjà les stops, rollover
+    exclu ; ADX14 M15 <= 32 ; veto si la tendance H1 est opposée avec ADX H1 >= 30 ; spread <= 10 % de l'ATR H1
+    (stop serré : le coût compte double).
     SL : sous (au-dessus) l'extrême de la mèche de balayage − 0,15 ATR (stop serré collé au balayage), borné à
     [0,35 ATR ; min(3 ; 2 × `sl_atr`) ATR].
     TP : premier TP à 1,5 R, cible = amas de liquidité opposé (dernier swing haut (bas) confirmé), cible finale
@@ -837,37 +875,37 @@ def strategy_e06(spec: AgentSpec, snap) -> Optional[TradeCandidate]:
     # `ceil_` = extrémité opposée. Le balayage doit dépasser `floor_` : les stops sont sous le POINT LE PLUS BAS
     # de l'amas, pas sous sa moyenne — un test qui s'arrête au-dessus de `floor_` ne déclenche rien et ne libère
     # aucun flux. La réintégration, elle, est exigée au-delà de `ceil_` : l'amas entier doit être repris.
-    if lows:
-        floor_ = min(v for _, v in lows)
-        grp = [(i, v) for i, v in lows if v - floor_ <= tol]
-        if len(grp) >= 2:
-            ceil_ = max(v for _, v in grp)
-            lvl = float(np.mean([v for _, v in grp]))
-            if float(le["low"]) < floor_ - 0.05 * atr and entry > ceil_ + 0.05 * atr:
-                pool = (Side.BUY, lvl, floor_, max(i for i, _ in grp), len(grp))
-    if pool is None and highs:
-        floor_ = max(v for _, v in highs)
-        grp = [(i, v) for i, v in highs if floor_ - v <= tol]
-        if len(grp) >= 2:
-            ceil_ = min(v for _, v in grp)
-            lvl = float(np.mean([v for _, v in grp]))
-            if float(le["high"]) > floor_ + 0.05 * atr and entry < ceil_ - 0.05 * atr:
-                pool = (Side.SELL, lvl, floor_, max(i for i, _ in grp), len(grp))
+    for cand_side, pivots in ((Side.BUY, lows), (Side.SELL, highs)):
+        if pool is not None or not pivots:
+            continue
+        cs = cand_side.sign
+        col = "low" if cand_side is Side.BUY else "high"
+        for grp in _liquidity_pools(pivots, tol, cand_side):
+            floor_ = min(v for _, v in grp) if cand_side is Side.BUY else max(v for _, v in grp)
+            ceil_ = max(v for _, v in grp) if cand_side is Side.BUY else min(v for _, v in grp)
+            last_i = max(i for i, _ in grp)
+            between = closed.iloc[last_i + 1:n - 1]   # barres entre le dernier pivot de l'amas et la barre de signal
+            older = between.iloc[:-3] if len(between) > 3 else between.iloc[0:0]
+            if not older.empty and (-cs * (older[col] - floor_) > 0.05 * atr).any():
+                continue                              # amas déjà balayé : la liquidité n'est plus là, on passe au suivant
+            # premier amas INTACT en partant du plus extrême : c'est lui qui porte la liquidité encore en place.
+            # S'il n'est pas balayé par la barre de signal, on ne descend pas vers un amas moins extrême (il
+            # resterait des stops plus bas : le balayage ne serait pas celui qui libère le flux).
+            if -cs * (float(le[col]) - floor_) > 0.05 * atr and cs * (entry - ceil_) > 0.05 * atr:
+                pool = (cand_side, float(np.mean([v for _, v in grp])), floor_, last_i, len(grp))
+            break
     if pool is None:
         return None
-    side, lvl, edge_lvl, last_i, count = pool
+    side, lvl, _edge_lvl, last_i, count = pool
     s = side.sign
-    mid = closed.iloc[last_i + 1:n - 1]              # barres entre le dernier pivot de l'amas et la barre de signal
-    if not mid.empty and (s * (mid["low" if side is Side.BUY else "high"] - edge_lvl) < -0.05 * atr).any():
-        return None                                  # l'amas a déjà été balayé : la liquidité n'est plus là
     rng = _range(le)
     if rng < 0.5 * atr or rng > 2.5 * atr:
         return None
     wick = _wick_against(le, side)
-    if wick < 0.45 or _close_pos(le, side) < 0.55:
+    if wick < E06_WICK_MIN or _close_pos(le, side) < E06_CLOSE_POS_MIN:
         return None
     hour = _bar_hour(le)
-    if hour is None or not (6 <= hour < 21):
+    if hour is None or not (E06_HOUR_START <= hour < E06_HOUR_END):
         return None
     if float(le["adx14"]) > 32.0:
         return None
@@ -888,8 +926,8 @@ def strategy_e06(spec: AgentSpec, snap) -> Optional[TradeCandidate]:
     age = (n - 1) - last_i
     score = 25.0
     score += _clamp((count - 2) * 5.0, 0, 10)
-    score += _clamp((wick - 0.45) * 40, 0, 15)
-    score += _clamp((_close_pos(le, side) - 0.55) * 30, 0, 10)
+    score += _clamp((wick - E06_WICK_MIN) * 40, 0, 15)
+    score += _clamp((_close_pos(le, side) - E06_CLOSE_POS_MIN) * 30, 0, 10)
     score += _clamp(10.0 - max(0.0, age - 20) * 0.5, 0, 10)
     score += _clamp((2.5 - rng / atr) * 6, 0, 10)
     pros = [f"amas de {count} extrêmes égaux vers {lvl:.5g} balayé par une seule mèche",
