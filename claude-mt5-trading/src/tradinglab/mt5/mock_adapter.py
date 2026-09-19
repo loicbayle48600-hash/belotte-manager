@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import math
+import zlib
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
@@ -31,11 +32,17 @@ DEFAULT_SPECS: dict[str, dict] = {
     "EURJPY": dict(digits=3, point=1e-3, tick_value=0.65, contract=100000, price=164.10, vol=0.055, spread=16),
     "GBPJPY": dict(digits=3, point=1e-3, tick_value=0.65, contract=100000, price=191.30, vol=0.075, spread=22),
     "XAUUSD": dict(digits=2, point=0.01, tick_value=1.0, contract=100, price=2320.0, vol=1.6, spread=25),
-    "XAGUSD": dict(digits=3, point=0.001, tick_value=5.0, contract=5000, price=27.50, vol=0.035, spread=30),
+    "XAGUSD": dict(digits=3, point=0.001, tick_value=5.0, contract=5000, price=27.50, vol=0.035, spread=15),
     "US500": dict(digits=1, point=0.1, tick_value=1.0, contract=10, price=5200.0, vol=3.5, spread=6),
     "NAS100": dict(digits=1, point=0.1, tick_value=1.0, contract=10, price=18200.0, vol=14.0, spread=15),
     "GER40": dict(digits=1, point=0.1, tick_value=1.0, contract=10, price=18000.0, vol=11.0, spread=12),
-    "USOIL": dict(digits=2, point=0.01, tick_value=1.0, contract=100, price=80.50, vol=0.09, spread=30),
+    # spread du WTI ramené à 0,04 $ : à 0,30 $ il valait 80 % de l'ATR M15 simulé, une valeur que
+    # l'on ne rencontre sur aucun broker et qui rendait l'instrument intradable pour les stratégies.
+    "USOIL": dict(digits=2, point=0.01, tick_value=1.0, contract=100, price=80.50, vol=0.09, spread=4),
+    # cryptos : présentes dans config/markets.yaml, donc indispensables pour que les stratégies
+    # dédiées (famille L) et la règle prop « week-end crypto uniquement » soient réellement testées.
+    "BTCUSD": dict(digits=2, point=0.01, tick_value=1.0, contract=1, price=64000.0, vol=95.0, spread=400),
+    "ETHUSD": dict(digits=2, point=0.01, tick_value=1.0, contract=1, price=3300.0, vol=6.5, spread=60),
 }
 
 
@@ -136,13 +143,27 @@ class MockBroker(BrokerAdapter):
     def server_time(self) -> datetime:
         return self.now()
 
+    @staticmethod
+    def _symbol_seed(name: str) -> int:
+        """Décalage de graine propre au symbole, stable d'une exécution à l'autre.
+
+        `hash()` sur une chaîne est salé par processus : il rendrait le broker simulé non reproductible.
+        """
+        return zlib.crc32(name.encode("utf-8")) % 1_000_003 * 7
+
     def advance_bars(self, n: int = 1) -> None:
-        """Ajoute n barres M5 (génération à la volée) et déclenche SL/TP."""
+        """Ajoute n barres M5 (génération à la volée) et déclenche SL/TP.
+
+        La graine dépend du SYMBOLE : sans cela, tous les instruments recevaient les mêmes incréments
+        aléatoires dès la première avance et devenaient parfaitement corrélés (un seul marché simulé
+        décliné en 18 échelles de prix), ce qui faussait autant les stratégies que le garde de corrélation.
+        """
         for name, df in self.series.items():
             spec = self.specs[name]
             d = DEFAULT_SPECS.get(spec.root, DEFAULT_SPECS["EURUSD"])
             last = df.iloc[-1]
-            extra = _make_series(self.seed * 7919 + len(df), n, float(last["close"]), d["vol"],
+            extra = _make_series(self.seed * 7919 + len(df) + self._symbol_seed(name), n,
+                                 float(last["close"]), d["vol"],
                                  last["time"].to_pydatetime() + timedelta(minutes=5))
             self.series[name] = pd.concat([df, extra], ignore_index=True)
             self._cursor[name] = len(self.series[name]) - 1
@@ -244,6 +265,12 @@ class MockBroker(BrokerAdapter):
         if tf in ("M5", "M1"):
             return df.tail(count)[RATES_COLUMNS].reset_index(drop=True)
         rule = {"M15": "15min", "M30": "30min", "H1": "1h", "H4": "4h", "D1": "1D", "W1": "1W"}[tf]
+        # ne ré-échantillonner que la queue utile : sinon le coût croît avec tout l'historique simulé, ce qui
+        # interdit en pratique d'allonger la série (une stratégie D1 a besoin de plusieurs mois de barres).
+        per_bar = {"M15": 3, "M30": 6, "H1": 12, "H4": 48, "D1": 288, "W1": 2016}[tf]
+        need = (count + 2) * per_bar
+        if len(df) > need:
+            df = df.tail(need)
         g = df.set_index("time").resample(rule, label="left", closed="left").agg(
             {"open": "first", "high": "max", "low": "min", "close": "last", "tick_volume": "sum", "spread": "last"}
         ).dropna().reset_index()

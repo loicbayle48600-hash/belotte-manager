@@ -1126,8 +1126,8 @@ def strategy_l08(spec: AgentSpec, snap) -> Optional[TradeCandidate]:
     des agents de réintégration de bandes.
 
     Règles d'entrée : symbole de classe `crypto` ; >= 80 barres clôturées ; écart-type des 50 rendements
-    clôturés précédant le choc > 0 ; barre de CHOC = avant-dernière barre clôturée avec |z| >= 2,5 et clôture
-    au-delà de la bande de Bollinger (sous `bb_low` pour un achat) ; barre de SIGNAL = dernière barre clôturée,
+    clôturés précédant le choc > 0 ; barre de CHOC = avant-dernière barre clôturée avec |z| >= 2,5 dont
+    l'EXCURSION perce la bande de Bollinger (plus bas sous `bb_low` pour un achat) ; barre de SIGNAL = dernière barre clôturée,
     qui ne fait pas de nouvel extrême (pas de plus bas sous celui du choc), clôture dans le sens du rebond et
     réintègre les bandes.
     Confirmation : RSI14 de la barre de choc <= `rsi_lo` (>= `rsi_hi` pour une vente) ; amplitude de la barre de
@@ -1167,9 +1167,13 @@ def strategy_l08(spec: AgentSpec, snap) -> Optional[TradeCandidate]:
         return None
     side = Side.BUY if z < 0 else Side.SELL
     s = side.sign
-    if side is Side.BUY and not float(shock["close"]) < float(shock["bb_low"]):
+    # La cascade se reconnaît à l'EXCURSION de la bougie de choc au-delà de la bande, pas à sa clôture :
+    # un mouvement de 2,5 écarts-types qui part du milieu du canal perce la bande sans forcément y clôturer,
+    # et exiger la clôture au-delà revenait à ne jamais déclencher. La réintégration reste exigée, mais sur la
+    # barre de SIGNAL (ci-dessous) — c'est elle qui distingue L08 des agents de réintégration de bandes.
+    if side is Side.BUY and not float(shock["low"]) < float(shock["bb_low"]):
         return None
-    if side is Side.SELL and not float(shock["close"]) > float(shock["bb_up"]):
+    if side is Side.SELL and not float(shock["high"]) > float(shock["bb_up"]):
         return None
     lo_r, hi_r = float(p.get("rsi_lo", 25)), float(p.get("rsi_hi", 75))
     if side is Side.BUY and float(shock["rsi14"]) > lo_r:
