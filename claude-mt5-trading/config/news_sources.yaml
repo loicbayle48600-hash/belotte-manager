@@ -1,0 +1,20 @@
+# Sources news/macro. Priorité aux API structurées. Si aucune source n'est
+# disponible : NEWS_DATA_DEGRADED = true et les stratégies news-sensibles sont bloquées.
+news:
+  max_age_minutes: 90               # une info plus vieille n'est jamais traitée comme "temps réel"
+  block_minutes_before_high_impact: 30
+  block_minutes_after_high_impact: 15
+  degraded_after_failures: 3
+  providers:
+    - name: fmp_economic_calendar
+      kind: economic_calendar
+      enabled: true
+      api_key_env: FMP_API_KEY       # clé lue dans l'environnement, jamais ici
+      base_url: https://financialmodelingprep.com/stable
+      quality: structured_api
+    - name: fmp_news
+      kind: news
+      enabled: true
+      api_key_env: FMP_API_KEY
+      base_url: https://financialmodelingprep.com/stable
+      quality: structured_api

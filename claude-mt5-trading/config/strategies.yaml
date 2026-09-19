@@ -1,0 +1,25 @@
+# Paramètres de validation / promotion des stratégies (champion/challenger)
+learning:
+  enabled: true
+  champion_challenger: true
+  live_self_mutation: false
+  shadow_required: true
+  min_sample_size: 40
+  min_profit_factor: 1.2
+  min_expectancy_r: 0.10
+  max_drawdown_r: 15.0
+  degradation:
+    windows: [20, 30, 50]
+    min_history: 60
+    pf_drop_ratio: 0.6          # PF récent < 60 % du PF long terme → dégradation
+    expectancy_drop_r: 0.15
+    auto_suspend_degraded: true
+  challenger_generation:
+    max_new_per_cycle: 3
+    parameter_jitter_percent: 20
+backtest:
+  default_spread_points: 12
+  commission_per_lot: 0.0
+  slippage_points: 3
+  walk_forward_folds: 4
+  monte_carlo_runs: 500

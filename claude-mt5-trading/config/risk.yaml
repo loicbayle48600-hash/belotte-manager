@@ -1,0 +1,54 @@
+risk:
+  risk_per_trade_percent: 0.25
+  max_risk_per_trade_percent: 0.35
+  max_daily_loss_internal_percent: 1.0
+  max_total_open_risk_percent: 1.0
+  max_open_positions: 3
+  max_positions_per_symbol: 1
+  max_consecutive_losses: 3
+  allow_martingale: false
+  allow_grid: false
+  allow_averaging_down: false
+  allow_remove_sl: false
+  allow_risk_increase_after_entry: false
+
+correlation:
+  max_correlated_cluster_risk_percent: 0.5
+  max_currency_factor_risk_percent: 0.6
+  max_asset_class_risk_percent: 0.75
+  correlation_threshold: 0.7
+  lookback_bars: 200
+
+profit_management:
+  mode: ADAPTIVE_R_MANAGEMENT
+  tp1_r: 1.5
+  tp1_close_percent: 30
+  tp2_r: 2.5
+  tp2_close_percent: 40
+  runner_percent: 30
+  break_even_enabled: true
+  break_even_r: 1.2
+  break_even_requires_structure: true
+  break_even_offset_r: 0.05
+  trailing_enabled: true
+  trailing_start_r: 2.0
+  trailing_atr_multiplier: 1.5
+  trailing_use_market_structure: true
+  never_widen_stop: true
+  never_remove_stop: true
+  allow_early_exit_on_invalidation: true
+  regime_overrides:
+    RANGING: {tp1_r: 1.0, tp1_close_percent: 50, tp2_r: 1.8, tp2_close_percent: 35, runner_percent: 15}
+    NEWS_SHOCK: {block_new_entries: true}
+
+daily_profit:
+  level_1_percent: 0.75
+  level_1_new_risk_percent: 0.15
+  level_1_setup_score_bonus: 5
+  level_2_percent: 1.00
+  level_2_new_risk_percent: 0.10
+  level_2_setup_score_bonus: 10
+  level_3_percent: 1.50
+  level_3_new_risk_percent: 0.075
+  level_3_setup_score_bonus: 15
+  max_giveback_percent: 25
