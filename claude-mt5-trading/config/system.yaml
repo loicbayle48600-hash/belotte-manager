@@ -34,7 +34,9 @@ commands:
 # Compte attendu (informations NON secrètes ; le mot de passe n'est jamais ici).
 # Le smoke test refuse tout compte qui ne correspond pas ou qui n'est pas DEMO.
 account_expected:
-  login: 5056182608          # compte DEMO utilisé (le mot de passe va UNIQUEMENT dans .env)
+  login: 10012756217         # compte utilisé (le mot de passe va UNIQUEMENT dans .env)
+  # ATTENTION : serveur à confirmer pour ce compte. Tant qu'il ne correspond pas au serveur réellement
+  # connecté, l'orchestrateur pose le verrou ACCOUNT_MISMATCH et n'ouvre aucune position (échec sûr).
   server: "MetaQuotes-Demo"
   trade_mode: DEMO
   currency: EUR

@@ -33,7 +33,7 @@ Détails dans `scripts/README_SCRIPTS.md`.
    `pip install -r requirements.txt`, `pip install -e .`, copie `.env.example` → `.env`, vérifications finales (`import MetaTrader5`).
 3. **Remplir `.env`** (jamais versionné) :
    ```
-   MT5_LOGIN=5056182608
+   MT5_LOGIN=10012756217
    MT5_PASSWORD=<mot de passe du compte DEMO>      # OU laissez vide et connectez-vous dans le terminal MT5
    MT5_SERVER=MetaQuotes-Demo
    MT5_TERMINAL_PATH=C:\Program Files\MetaTrader 5\terminal64.exe
@@ -44,7 +44,7 @@ Détails dans `scripts/README_SCRIPTS.md`.
    ```
    Le mot de passe ne va **que** dans `.env` (variable `MT5_PASSWORD`). Si le terminal MT5 est déjà connecté au compte, `mt5.initialize()`
    est appelé sans credentials et **aucun mot de passe n'est nécessaire** au package Python.
-4. **Connexion MT5** : ouvrir le terminal, `Fichier > Connexion à un compte de trading` (compte DEMO `5056182608`, serveur
+4. **Connexion MT5** : ouvrir le terminal, `Fichier > Connexion à un compte de trading` (compte `10012756217`, serveur
    `MetaQuotes-Demo`), activer le bouton *Algo Trading*.
 5. **Smoke test DEMO** (marché ouvert) :
    ```powershell
@@ -354,7 +354,7 @@ Aucune commande ne permet d'ouvrir une position.
 | Problème | Diagnostic | Résolution |
 |---|---|---|
 | `STATUS` → `mt5_connected: false`, mode `SAFE_MODE` « broker déconnecté » | terminal MT5 fermé/déconnecté, `MT5_TERMINAL_PATH` faux, *Algo Trading* désactivé, package `MetaTrader5` absent | ouvrir/connecter MT5, corriger `.env`, relancer `audit_windows.ps1` ; l'orchestrateur et le watchdog retentent en boucle |
-| `lock_reasons: ACCOUNT_MISMATCH` | compte connecté ≠ `account_expected` ou non DEMO | connecter le compte `5056182608` / `MetaQuotes-Demo` |
+| `lock_reasons: ACCOUNT_MISMATCH` | compte connecté ≠ `account_expected` ou non DEMO | connecter le compte `10012756217` sur le serveur déclaré dans `account_expected` |
 | `01_health` refusé alors que MT5 est connecté | watchdog absent (pas de `state/watchdog.json` récent) | lancer `python -m tradinglab.monitoring.watchdog` (fait par `start_all.ps1`) |
 | `04_data_fresh` / `routing.skipped: STALE, NO_TICK, INSUFFICIENT` | tick > 30 s, marché fermé, < 250 barres | attendre l'ouverture, vérifier le flux MT5, charger l'historique dans le terminal |
 | `05_symbol_tradable` / smoke test « MARCHE FERME » | hors dim. 22:00 → ven. 21:00 UTC, ou `trade_allowed` faux | attendre ; vérifier le symbole dans MT5 |
@@ -394,7 +394,7 @@ de la procédure ; l'état indique ce qui a été validé sur le broker simulé 
 | 2 | Installation idempotente (`install_windows.ps1`, venv, `import MetaTrader5`) et tâche planifiée (`register_autostart.ps1`, SAFE) | à valider sur Windows |
 | 3 | `.env` seul dépositaire des secrets ; aucune clé/mot de passe dans YAML, journaux, dashboard | validé sur mock (scrub journal, tests providers) — à revérifier sur Windows |
 | 4 | Connexion `mt5.initialize()` + `account_info()` réels | à valider sur Windows |
-| 5 | `DEMO ACCOUNT CONFIRMED` (login `5056182608`, `MetaQuotes-Demo`, `DEMO`, EUR) | validé sur mock — à valider sur Windows |
+| 5 | `DEMO ACCOUNT CONFIRMED` (login `10012756217`, serveur d'`account_expected`, `DEMO`, EUR) | validé sur mock — à valider sur Windows |
 | 6 | Refus de tout compte non DEMO / différent d'`account_expected` (smoke test + `ACCOUNT_MISMATCH`) | validé sur mock |
 | 7 | Résolution des suffixes broker et classes d'actifs | validé sur mock — à valider sur le terminal réel |
 | 8 | Ticks, OHLC multi-TF, fraîcheur (`OK/STALE/NO_TICK/INSUFFICIENT`), régime déterministe | validé sur mock — à valider sur Windows |

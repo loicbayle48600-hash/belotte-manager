@@ -6,7 +6,7 @@ fichiers `config/*.yaml` : ne rien supposer qui n'y figure pas.
 ## 1. Mission et périmètre
 
 - Laboratoire de trading algorithmique **multi-agents autonome** relié à **MetaTrader 5**, sur **compte DEMO d'abord**
-  (`config/system.yaml` → `account_expected` : login `5056182608`, serveur `MetaQuotes-Demo`, `trade_mode: DEMO`, `EUR`, hedging).
+  (`config/system.yaml` → `account_expected` : login `10012756217`, serveur à confirmer, `trade_mode: DEMO`, `EUR`, hedging).
 - Package Python `tradinglab` (`src/tradinglab`, Python ≥ 3.11, `pyproject.toml`), processus séparés : orchestrateur,
   watchdog, dashboard (lecture seule), serveur MCP (stdio), CLI.
 - Deux brokers : `TRADINGLAB_BROKER=mt5` (package `MetaTrader5`, **Windows x64 uniquement**) et `TRADINGLAB_BROKER=mock`
@@ -302,7 +302,7 @@ week-end, cohérence, activité), `test_market_data.py`, `test_news.py`, `test_b
 
 - [ ] `scripts/audit_windows.ps1` → code 0 (Windows 64 bits, Python 3.11 x64, MT5, package `MetaTrader5`).
 - [ ] `scripts/install_windows.ps1` (venv `.venv`, `pip install -r requirements.txt`, `pip install -e .`, `.env` créé).
-- [ ] Remplir `.env` : `MT5_LOGIN=5056182608`, `MT5_SERVER=MetaQuotes-Demo`, `MT5_PASSWORD` (ou connexion manuelle dans le terminal, alors
+- [ ] Remplir `.env` : `MT5_LOGIN=10012756217`, `MT5_SERVER=<serveur du compte>`, `MT5_PASSWORD` (ou connexion manuelle dans le terminal, alors
       aucun mot de passe requis par le package Python), `MT5_TERMINAL_PATH`, `TRADINGLAB_HOME`, `TRADINGLAB_BROKER=mt5`, `ANTHROPIC_API_KEY`, `FMP_API_KEY` (optionnel).
 - [ ] Ouvrir MT5, connecter le compte DEMO, activer *Algo Trading*.
 - [ ] `python scripts/smoke_test_demo.py` puis `--yes` (marché ouvert) → « SMOKE TEST DEMO REUSSI », aucune position `TLAB:SMOKE` restante.
