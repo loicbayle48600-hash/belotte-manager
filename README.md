@@ -82,8 +82,16 @@ L'application est **préconfigurée d'après le PMS FAM/EHPAD 2025 de l'établis
 
 Tout reste modifiable dans ⚙️ Réglages pour suivre les mises à jour du PMS.
 
+## 📨 Bot Telegram (dossier `telegram-bot/`)
+
+Outil indépendant de l'application : un bot Telegram qui **transfère dans un
+groupe tous les messages qu'il reçoit** (texte, photos, documents, vocaux…).
+Pratique pour centraliser les remontées de l'équipe dans un seul fil.
+Mise en route en trois étapes dans [`telegram-bot/README.md`](./telegram-bot/README.md).
+
 ## Technique
 
 - HTML / CSS / JavaScript pur, sans dépendance ni étape de build — ouvrir `index.html` suffit pour développer.
 - `sw.js` : service worker (cache hors ligne) · `js/db.js` : stockage IndexedDB · `js/app.js` : modules métier.
 - Interface optimisée tablette (paysage et portrait), gros boutons utilisables en cuisine.
+- `telegram-bot/` : bot Telegram autonome (Node.js ≥ 18, aucune dépendance npm) — `npm test` pour ses tests.
