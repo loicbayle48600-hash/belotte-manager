@@ -1,0 +1,16 @@
+{
+  "name": "telegram-forward-bot",
+  "version": "1.0.0",
+  "description": "Bot Telegram qui transfère vers un groupe tous les messages qu'il reçoit",
+  "private": true,
+  "type": "module",
+  "main": "index.js",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "start": "node index.js",
+    "test": "node --test \"test/*.test.js\""
+  },
+  "license": "MIT"
+}

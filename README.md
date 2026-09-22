@@ -7,18 +7,35 @@ C'est une **PWA** (application web progressive) : elle s'installe comme une vrai
 
 | Module | Contenu |
 |---|---|
-| ❄️ **Enceintes froides** | Relevés matin/soir des frigos, chambres froides, congélateurs — conformité automatique selon les consignes de chaque équipement |
+| ❄️ **Enceintes froides** | Relevé quotidien du matin (frigos, chambres froides, congélateurs) — conformité automatique, relevés « à la chaîne », enceinte à l'arrêt traçable |
 | 🚚 **Réceptions** | Contrôle à la livraison : fournisseur, produit, T°, état — seuils frais ≤ 4 °C / surgelé ≤ −15 °C |
 | 📉 **Refroidissement / remise en T°** | Suivi chronométré : +63 → +10 °C en 2 h max, +10 → +63 °C en 1 h max, alerte si délai dépassé |
 | 🍽️ **Températures de service** | Liaison chaude ≥ 63 °C, liaison froide ≤ 10 °C, suivi des plats témoins |
-| 🏷️ **Traçabilité étiquettes** | Photo des étiquettes avec l'appareil photo de la tablette (produit, lot, DLC) |
+| 🍲 **Menu** | Catalogue de plats + menu du jour (midi/soir) ; **import Excel/CSV** du menu à l'année (le format « grille hebdomadaire » de l'établissement — une feuille par semaine — est reconnu automatiquement) ; les plats alimentent les listes de Refroidissement, Remise en T° et Service |
+| 🏷️ **Traçabilité étiquettes** | Photo des étiquettes, classement par semaine et par jour de destination avec les menus |
 | 🧽 **Plan de nettoyage** | Checklist quotidienne / hebdomadaire / mensuelle, traçabilité date + agent |
-| 🍟 **Huiles de friture** | Contrôle visuel, filtration, changement |
+| 🍟 **Huiles de friture** | Contrôle visuel, test de composés polaires (≤ 25 %), traçabilité de l'huile usagée (volume, collecteur, bon) |
 | ⚠️ **Non-conformités** | Signalement manuel + remontée automatique de tous les relevés non conformes, actions correctives obligatoires |
-| 📋 **Historique & export** | Consultation par registre et par période, **export CSV** (Excel) pour les contrôles sanitaires, impression |
-| ⚙️ **Réglages** | Équipements, agents, plan de nettoyage, friteuses personnalisables + **sauvegarde/restauration JSON** |
+| 📚 **Documents & PMS** | Mémo des consignes clés + import des documents (PMS complet, analyses laboratoire, autocontrôles, contrat nuisibles, formations) consultables sur la tablette et inclus dans les sauvegardes |
+| 📋 **Historique & export** | Calendrier de complétude (jours vides justifiables par fermeture), recherche de lot multi-registres, **annulation tracée** d'une erreur de saisie (ligne barrée avec motif, jamais de suppression), **exports CSV et PDF** avec en-tête officiel, impression |
+| ⚙️ **Réglages** | Équipements, agents, fournisseurs, plan de nettoyage, instruments de mesure personnalisables, **code PIN optionnel** + **sauvegarde/restauration JSON** et **sauvegarde cloud automatique** (Google Drive avec photos en fichiers images, Dropbox, Nextcloud/WebDAV, serveur maison — voir `google-drive/`) |
 
 Chaque enregistrement trace l'**agent**, la **date** et l'**heure**. Toute mesure hors consigne exige une **action corrective** avant enregistrement.
+
+## 📱 Télécharger l'APK sur la tablette
+
+Le plus simple : ouvrir cette page **sur la tablette** et toucher le fichier :
+
+**https://github.com/loicbayle48600-hash/belotte-manager/releases/latest**
+
+→ télécharger `haccp-cuisine.apk` → l'ouvrir → autoriser « installer des applications
+inconnues » si demandé → Installer. (Mise à jour : même lien, le fichier est
+recompilé automatiquement à chaque évolution ; installer par-dessus conserve les données.)
+
+La même page propose aussi **le fichier des menus de l'année**
+(`menu-2025-ehpad-fam.xlsx`, également dans le dossier [`menus/`](./menus/)) :
+télécharge-le sur la tablette puis importe-le dans l'appli via
+**🍲 Menu → 📥 Importer** (le format est reconnu automatiquement).
 
 ## Installation sur la tablette
 
@@ -50,19 +67,31 @@ Le plus simple : **GitHub Pages**.
 - Penser à faire régulièrement **⚙️ Réglages → Exporter la sauvegarde** (fichier JSON) et à la conserver ailleurs (ordinateur, clé USB, e-mail).
 - Pour les contrôles sanitaires : **📋 Historique → Exporter ce registre (CSV)**, ouvrable dans Excel/LibreOffice.
 
-## Seuils réglementaires utilisés (GBPH restauration collective)
+## Conformité au Plan de Maîtrise Sanitaire (PMS)
 
-- Froid positif : 0 à +4 °C · Froid négatif : ≤ −18 °C
-- Réception : frais ≤ +4 °C, surgelés ≤ −15 °C (tolérance ponctuelle)
-- Liaison chaude ≥ +63 °C · Liaison froide ≤ +10 °C
-- Refroidissement rapide : +63 → +10 °C en moins de 2 h
-- Remise en température : +10 → +63 °C en moins d'1 h
-- Plat témoin : 100 g conservés 5 jours entre 0 et 3 °C
+L'application est **préconfigurée d'après le PMS FAM/EHPAD 2025 de l'établissement** (Cuisine EHPAD Nostr'Oustaou, Grandrieu) — arrêté du 21 décembre 2009 et règlement (CE) n° 852/2004 :
 
-Les consignes de chaque enceinte sont modifiables dans les Réglages pour coller au plan de maîtrise sanitaire (PMS) de l'établissement.
+- **Enceintes froides** : les 12 enceintes réelles du PMS (chambres froides négative/fruits-légumes/produits laitiers/viandes, armoires froides, frigo jour, frigo plats témoins, table réfrigérée, frigos économat…). Positif : cible 3 °C, limite critique 6 °C · Négatif : cible −18 °C, tolérance −15 °C. Relevé quotidien en début de journée.
+- **Réception** : frais cible 3 °C (limite 6 °C), viandes hachées/abats ≤ 2 °C, contrôle à cœur obligatoire au-delà du seuil, refus > 10 °C ; surgelés ≤ −15 °C ; température obligatoire hors épicerie ; contrôle DLC/étiquetage/emballage ; n° de lot / bon de livraison ; les 13 fournisseurs du PMS préchargés avec leurs jours de livraison.
+- **Refroidissement** : +63 → +10 °C en moins de 2 h (pas de tolérance) · **Remise en température** : +10 → +63 °C en moins d'1 h, avec actions correctives du PMS.
+- **Service / expédition** : liaison chaude ≥ 63 °C (pas de tolérance) ; liaison froide cible 3 °C, limite 6 °C, tolérée jusqu'à 10 °C si consommation dans les 2 h ; suivi des plats témoins (100 g, 5 jours à 3 °C).
+- **Décongélation** : registre dédié (enceinte à 3 °C uniquement, 48 h max, jamais de recongélation) avec alerte de dépassement.
+- **Nettoyage & désinfection** : les fiches de suivi réelles du PMS par zone (préparation froide, cuisson, légumerie, plonge, office, économat/réception — 57 tâches).
+- **Non-conformités** : fiche complète (lieu d'incident, n° de lot, date de péremption, description, action corrective, visa) + remontée automatique de tout relevé hors limites.
+- **Équipe HACCP 2025** préchargée (coordinateur : BAYLE Loïc) — chaque enregistrement porte le visa de l'agent.
+
+Tout reste modifiable dans ⚙️ Réglages pour suivre les mises à jour du PMS.
+
+## 📨 Bot Telegram (dossier `telegram-bot/`)
+
+Outil indépendant de l'application : un bot Telegram qui **transfère dans un
+groupe tous les messages qu'il reçoit** (texte, photos, documents, vocaux…).
+Pratique pour centraliser les remontées de l'équipe dans un seul fil.
+Mise en route en trois étapes dans [`telegram-bot/README.md`](./telegram-bot/README.md).
 
 ## Technique
 
 - HTML / CSS / JavaScript pur, sans dépendance ni étape de build — ouvrir `index.html` suffit pour développer.
 - `sw.js` : service worker (cache hors ligne) · `js/db.js` : stockage IndexedDB · `js/app.js` : modules métier.
 - Interface optimisée tablette (paysage et portrait), gros boutons utilisables en cuisine.
+- `telegram-bot/` : bot Telegram autonome (Node.js ≥ 18, aucune dépendance npm) — `npm test` pour ses tests.
