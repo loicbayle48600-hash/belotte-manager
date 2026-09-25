@@ -178,7 +178,7 @@ function Start-Component {
         }
     }
     $proc = Start-Process -FilePath $VenvPython -ArgumentList $ModuleArgs -WorkingDirectory $ProjectDir `
-        -WindowStyle Minimized -RedirectStandardOutput $outLog -RedirectStandardError $errLog -PassThru
+        -WindowStyle Hidden -RedirectStandardOutput $outLog -RedirectStandardError $errLog -PassThru
     Start-Sleep -Seconds 3
     $alive = $null -ne (Get-Process -Id $proc.Id -ErrorAction SilentlyContinue)
     if ($alive) {
@@ -234,6 +234,64 @@ $env:PYTHONIOENCODING = 'utf-8'
 $env:PYTHONUNBUFFERED = '1'
 if (-not $env:TRADINGLAB_BROKER) { $env:TRADINGLAB_BROKER = 'mt5' }
 
+function Enable-AlgoTrading {
+    <# Force le bouton « Algo Trading » d'un terminal AVANT son lancement (2026-09-24, demande utilisateur : « activé en
+       automatique à chaque nouveau compte »). Clé [Experts] Enabled=1 de config\common.ini (UTF-16) : dans le dossier
+       du terminal en mode /portable, sinon dans son dossier de données AppData (retrouvé par origin.txt). Constat du
+       jour : les 4 nouveaux comptes avaient Enabled=0 (le terminal réécrit son .ini) → 67 copies refusées chacun. #>
+    param([string]$Exe, [switch]$Portable)
+    $dirs = @()
+    $tdir = Split-Path -Parent $Exe
+    if ($Portable) { $dirs += $tdir } else {
+        $root = Join-Path $env:APPDATA 'MetaQuotes\Terminal'
+        if (Test-Path $root) {
+            foreach ($d in Get-ChildItem $root -Directory -ErrorAction SilentlyContinue) {
+                $o = Join-Path $d.FullName 'origin.txt'
+                if ((Test-Path $o) -and ((Get-Content $o -Raw -Encoding Unicode).Trim() -ieq $tdir)) { $dirs += $d.FullName }
+            }
+        }
+    }
+    foreach ($d in $dirs) {
+        try {
+            $ini = Join-Path $d 'config\common.ini'
+            $t = if (Test-Path $ini) { Get-Content $ini -Raw -Encoding Unicode } else { '' }
+            if ($t -match '(?m)^\[Experts\]') {
+                $sec = [regex]::Match($t, '(?ms)^\[Experts\].*?(?=^\[|\z)')
+                $new = $sec.Value
+                # Enabled=1 : bouton Algo Trading actif ; Account=0 / Profile=0 : NE PAS le couper quand le compte ou le
+                # profil change (options MT5 cochées par défaut — c'est ce qui le désactivait à chaque nouveau compte)
+                foreach ($kv in @(@('Enabled', '1'), @('Account', '0'), @('Profile', '0'))) {
+                    if ($new -match "(?m)^$($kv[0])=") { $new = [regex]::Replace($new, "(?m)^$($kv[0])=.*$", "$($kv[0])=$($kv[1])") }
+                    else { $new = $new -replace '^\[Experts\]\r?\n', "[Experts]`r`n$($kv[0])=$($kv[1])`r`n" }
+                }
+                $t = $t.Substring(0, $sec.Index) + $new + $t.Substring($sec.Index + $sec.Length)
+            } else { $t = $t.TrimEnd() + "`r`n[Experts]`r`nEnabled=1`r`nAccount=0`r`nProfile=0`r`nAllowDllImport=0`r`n" }
+            New-Item -ItemType Directory -Force -Path (Split-Path $ini) | Out-Null
+            Set-Content -Path $ini -Value $t -Encoding Unicode -NoNewline
+            Write-TlLog "Algo Trading pré-activé : $ini" 'OK'
+        } catch { Write-TlLog "Algo Trading non pré-activé ($d) : $($_.Exception.Message)" 'WARN' }
+    }
+}
+
+# --- 2b. sauvegarde automatique (2026-09-25, demande utilisateur : « fais des sauvegardes régulières pour pouvoir y
+# revenir ») : copie de src, config, tests, scripts, docs à chaque démarrage dans archives\auto\<date_heure>, 30 gardées.
+try {
+    $snap = Join-Path $ProjectDir ('archives\auto\' + (Get-Date -Format 'yyyy-MM-dd_HHmm'))
+    if (-not (Test-Path $snap)) {
+        New-Item -ItemType Directory -Force -Path $snap | Out-Null
+        foreach ($d in 'src', 'config', 'tests', 'scripts', 'docs') {
+            $from = Join-Path $ProjectDir $d
+            if (Test-Path $from) { Copy-Item -Path $from -Destination $snap -Recurse -Force -Exclude '__pycache__' }
+        }
+        Copy-Item (Join-Path $ProjectDir 'CLAUDE.md') $snap -Force -ErrorAction SilentlyContinue
+        # statuts des agents (dont les challengers CH1xx) : hors Git depuis le 2026-09-25, donc sauvegardés ici
+        Copy-Item (Join-Path $ProjectDir 'datagent_status.json') $snap -Force -ErrorAction SilentlyContinue
+        $all = @(Get-ChildItem (Join-Path $ProjectDir 'archives\auto') -Directory | Sort-Object Name)
+        if ($all.Count -gt 30) { $all | Select-Object -First ($all.Count - 30) | ForEach-Object { Remove-Item $_.FullName -Recurse -Force -Confirm:$false } }
+        Write-TlLog "sauvegarde du code et de la configuration : $snap" 'OK'
+    }
+} catch { Write-TlLog "sauvegarde automatique impossible : $($_.Exception.Message)" 'WARN' }
+
 # --- 3. MetaTrader 5 ----------------------------------------------------------
 if ($env:TRADINGLAB_BROKER -eq 'mock') {
     Write-TlLog 'TRADINGLAB_BROKER=mock : MetaTrader 5 non requis, étape ignorée.'
@@ -253,6 +311,7 @@ if ($env:TRADINGLAB_BROKER -eq 'mock') {
     } elseif ($mt5Path) {
         Write-TlLog "Démarrage de MetaTrader 5 : $mt5Path"
         try {
+            Enable-AlgoTrading -Exe $mt5Path
             Start-Process -FilePath $mt5Path -WorkingDirectory (Split-Path -Parent $mt5Path) | Out-Null
             Write-TlLog "Attente de $MT5StartWaitSec s pour l'initialisation du terminal..."
             Start-Sleep -Seconds $MT5StartWaitSec
@@ -290,7 +349,39 @@ $components = @(
     @{ Name = 'orchestrator'; Pattern = 'tradinglab.orchestration.orchestrator';   Args = @('-m', 'tradinglab.orchestration.orchestrator', '--mode', $Mode) }
 )
 if (-not $NoDashboard) {
-    $components += @{ Name = 'dashboard'; Pattern = 'tradinglab.dashboards.server'; Args = @('-m', 'tradinglab.dashboards.server') }
+    # --host 0.0.0.0 (2026-09-22, demande utilisateur : accès depuis le téléphone via le LAN/VPN Tailscale).
+    # Depuis le 2026-09-22 le dashboard est authentifié (DASHBOARD_AUTH_USER/PASSWORD, cookie 30 j) et servi en
+    # HTTPS (DASHBOARD_TLS) : c'est ce qui autorise l'exposition sur tradingdu48.ddns.net:8765. Sans jeton ni
+    # TLS, ne JAMAIS rediriger le port 8765 sur la box.
+    $components += @{ Name = 'dashboard'; Pattern = 'tradinglab.dashboards.server'; Args = @('-m', 'tradinglab.dashboards.server', '--host', '0.0.0.0') }
+}
+# Notifieur Telegram : démarré seulement si le jeton ET le chat sont renseignés dans .env.
+# Processus séparé : un envoi réseau dans la boucle mettrait le heartbeat (45 s) en danger.
+if ($env:TELEGRAM_BOT_TOKEN -and $env:TELEGRAM_CHAT_ID) {
+    $components += @{ Name = 'telegram'; Pattern = 'tradinglab.monitoring.telegram_notifier'; Args = @('-m', 'tradinglab.monitoring.telegram_notifier') }
+    # Copy trading (2026-09-22) : un processus copieur par compte suiveur PRÊT (déclaré dans
+    # config/copy_trading.yaml, identifiants complets dans .env, terminal dédié présent).
+    try {
+        $readyFollowers = & $VenvPython -m tradinglab.copy.ready 2>$null
+        foreach ($line in @($readyFollowers)) {
+            $parts = "$line".Split("`t")
+            $fname = $parts[0].Trim()
+            $fterm = if ($parts.Count -gt 1) { $parts[1].Trim() } else { '' }
+            $fprefix = if ($parts.Count -gt 2) { $parts[2].Trim() } else { '' }
+            $fslug = if ($parts.Count -gt 3) { $parts[3].Trim() } else { $fprefix }
+            if ($fname -and $fprefix) {
+                # terminal dédié lancé en /portable (profil dans son propre dossier) s'il ne tourne pas déjà, en
+                # fenêtre MASQUÉE (2026-09-22, demande utilisateur : « en silencieux ») — seul le MT5 maître reste visible.
+                # Lancé par le package Python sans ce drapeau, il repartirait sur un profil vierge (assistant bloquant).
+                if ($fterm -and (Test-Path -LiteralPath $fterm)) {
+                    $running = Get-Process terminal64 -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $fterm }
+                    if (-not $running) { Enable-AlgoTrading -Exe $fterm -Portable; Start-Process -FilePath $fterm -ArgumentList '/portable' -WindowStyle Hidden; Start-Sleep -Seconds 20; Write-TlLog "terminal suiveur '$fname' lancé (/portable, masqué)" 'OK' }
+                }
+                # identifié par son préfixe .env (COPYn) : robuste aux noms avec espaces/accents
+                $components += @{ Name = "copy-$fslug"; Pattern = "tradinglab.copy --prefix $fprefix"; Args = @('-m', 'tradinglab.copy', '--prefix', $fprefix) }
+            }
+        }
+    } catch { Write-TlLog "liste des suiveurs copy trading indisponible : $_" 'WARN' }
 }
 
 foreach ($comp in $components) {
@@ -318,6 +409,16 @@ foreach ($comp in $components) {
     }
     $entries += (Start-Component -Name $comp.Name -ModuleArgs $comp.Args -Pattern $comp.Pattern)
 }
+
+# --- 5b. fenêtres MT5 masquées (2026-09-24, demande utilisateur : « je ne veux plus les voir, en silencieux ») ---
+# Boucle silencieuse unique (state\hide_mt5.pid) qui masque toutes les fenêtres terminal64 (et les consoles python du
+# labo, lancées Hidden depuis le 2026-09-24) toutes les 20 s ;
+# les terminaux continuent de fonctionner. Réafficher : scripts\hide_mt5_windows.ps1 -Show
+try {
+    $hider = Join-Path $PSScriptRoot 'hide_mt5_windows.ps1'
+    Start-Process -FilePath 'powershell.exe' -WindowStyle Hidden -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$hider`"", '-Loop') | Out-Null
+    Write-TlLog 'fenêtres MT5 : masquage automatique actif (hide_mt5_windows.ps1 -Show pour les revoir)' 'OK'
+} catch { Write-TlLog "masquage des fenêtres MT5 impossible : $($_.Exception.Message)" 'WARN' }
 
 # --- 6. pids.json + MCP --------------------------------------------------------
 try {

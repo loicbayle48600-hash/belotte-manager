@@ -42,6 +42,9 @@ class MarketSnapshot:
     bar_times: dict[str, str]                # tf -> ISO de la dernière barre CLÔTURÉE
     bar_counts: dict[str, int] = field(default_factory=dict)   # tf -> nombre de barres disponibles
     tick_age_sec: Optional[float] = None     # âge du tick (s) par rapport à `now` ; None si absent ou non fini
+    # annonces HIGH récentes des devises du symbole (renseignées par l'orchestrateur, 2026-09-24) :
+    # [{ts, minutes_ago, title, currency, central_bank, surprise}] — vide sans calendrier (jamais inventé)
+    news_events: list = field(default_factory=list)
 
     def to_public_dict(self) -> dict:
         """Représentation sérialisable sans les DataFrames (pour les agents / le journal)."""
@@ -161,7 +164,7 @@ class MarketDataFeed:
         else:
             quality = "OK"
         return MarketSnapshot(
-            symbol=symbol, spec=spec, tick=tick, frames=frames, regime=regime, session=current_session(now),
+            symbol=symbol, spec=spec, tick=tick, frames=frames, regime=regime, session=current_session(now, round_the_clock=(spec.asset_class == "crypto")),
             spread_points=int(spread_points), atr_h1=atr_h1, data_fresh=bool(data_fresh), data_quality=quality,
             fetched_at=now, bar_times=bar_times, bar_counts=bar_counts, tick_age_sec=tick_age,
         )

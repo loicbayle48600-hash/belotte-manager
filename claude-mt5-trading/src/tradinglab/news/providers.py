@@ -364,9 +364,269 @@ class FMPProvider(NewsProvider):
 # Fabrique
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Finnhub (titres forex et crypto, clé gratuite)
+# ---------------------------------------------------------------------------
+
+class FinnhubProvider(NewsProvider):
+    """Finnhub : titres de marché. ``GET {base_url}/news?category=...&token=...``
+
+    Choisi pour une raison simple et mesurable : la cadence news du labo est de 120 s, soit
+    **720 appels par jour**. Marketaux (~100/jour) et Alpha Vantage (~25/jour) ne tiennent pas,
+    et l'offre gratuite de NewsAPI.org interdit l'usage en production. Finnhub annonce 60 appels
+    par minute sur sa clé gratuite, ce qui laisse une marge confortable.
+
+    Ce provider ne fournit **que** des titres : le calendrier économique de Finnhub est réservé
+    aux plans payants, donc ``fetch_calendar`` lève ``ProviderError`` au lieu de renvoyer une liste
+    vide — un calendrier vide serait indiscernable d'un calendrier sans événement, et le hub doit
+    pouvoir se replier en connaissance de cause. Le calendrier reste servi par ForexFactory.
+
+    Réponse (``datetime`` est un epoch en secondes) :
+
+        {"category": "forex", "datetime": 1596589501, "headline": "...",
+         "id": 5085164, "related": "", "source": "Reuters", "summary": "...", "url": "..."}
+
+    L'importance et les actifs ne sont pas fournis : ils sont dérivés en aval par le hub, comme
+    pour FMP. La provenance reste ``FACT`` (le titre et son horodatage sont rapportés tels quels).
+    """
+
+    #: catégories interrogées, dans l'ordre. "general" couvre la macro, absente de "forex".
+    CATEGORIES = ("forex", "crypto", "general")
+
+    def __init__(self, base_url: str, api_key_env: str, name: str = "finnhub", kind: str = "news",
+                 quality: str = "structured_api", timeout: float = DEFAULT_TIMEOUT_S,
+                 categories: Optional[list[str]] = None, **_ignored: Any) -> None:
+        self.base_url = base_url.rstrip("/")
+        self.api_key_env = api_key_env
+        self.name = name
+        self.kind = kind
+        self.quality = quality
+        self.timeout = float(timeout)
+        self.categories = tuple(categories) if categories else self.CATEGORIES
+
+    def _api_key(self) -> Optional[str]:
+        v = os.environ.get(self.api_key_env, "").strip()
+        return v or None
+
+    def available(self) -> bool:
+        return self._api_key() is not None
+
+    def _get_json(self, category: str) -> Any:
+        """GET JSON pour une catégorie. Lève ``ProviderError`` (clé masquée) sur toute erreur."""
+        key = self._api_key()
+        if key is None:
+            raise ProviderError(f"{self.name}: clé API absente ({self.api_key_env})")
+        url = f"{self.base_url}/news?{urllib.parse.urlencode({'category': category, 'token': key})}"
+        req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT, "Accept": "application/json"})
+        try:
+            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                status = getattr(resp, "status", 200)
+                body = resp.read()
+        except urllib.error.HTTPError as e:
+            # 401/403 = clé invalide, 429 = quota dépassé : tous des échecs francs, jamais un repli silencieux
+            raise ProviderError(f"{self.name}: HTTP {e.code} sur /news?category={category}") from None
+        except (urllib.error.URLError, TimeoutError, OSError, http.client.HTTPException, ValueError) as e:
+            raise ProviderError(mask_secret(
+                f"{self.name}: erreur réseau sur /news?category={category}: {type(e).__name__}: {e}", key)) from None
+        if status != 200:
+            raise ProviderError(f"{self.name}: HTTP {status} sur /news?category={category}")
+        try:
+            return json.loads(body.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as e:
+            raise ProviderError(mask_secret(f"{self.name}: JSON invalide sur /news?category={category}: {e}", key)) from None
+
+    def fetch_news(self, now: datetime) -> list[NewsItem]:
+        """Agrège les catégories. Une seule doit suffire : si toutes échouent, on lève."""
+        items: list[NewsItem] = []
+        vus: set[int] = set()
+        echecs: list[str] = []
+        for cat in self.categories:
+            try:
+                payload = self._get_json(cat)
+            except ProviderError as e:
+                echecs.append(str(e))
+                continue
+            for it in self.parse_news(payload, vus):
+                items.append(it)
+        if not items and echecs:
+            raise ProviderError("; ".join(echecs[:3]))
+        return items
+
+    def parse_news(self, payload: Any, vus: Optional[set[int]] = None) -> list[NewsItem]:
+        """Parse une réponse. ``vus`` déduplique par identifiant Finnhub entre catégories."""
+        if isinstance(payload, dict):
+            if "error" in payload:
+                raise ProviderError(f"{self.name}: réponse d'erreur de l'API news")
+            payload = payload.get("data") or payload.get("results") or []
+        if not isinstance(payload, list):
+            raise ProviderError(f"{self.name}: format news inattendu ({type(payload).__name__})")
+        from tradinglab.news.hub import assets_from_text, classify_importance
+
+        vus = vus if vus is not None else set()
+        out: list[NewsItem] = []
+        for row in payload:
+            if not isinstance(row, dict):
+                continue
+            ident = row.get("id")
+            if isinstance(ident, int):
+                if ident in vus:
+                    continue
+                vus.add(ident)
+            ts = parse_timestamp(_first(row, "datetime", "publishedDate", "date"))
+            title = _first(row, "headline", "title")
+            if ts is None or not title:
+                continue                      # pas d'horodatage inventé, pas de titre reconstruit
+            text = str(_first(row, "summary", "text") or "")
+            assets: list[str] = []
+            related = _first(row, "related", "symbol")
+            if isinstance(related, str):
+                assets = [s.strip().upper() for s in related.replace(";", ",").split(",") if s.strip()]
+            for a in assets_from_text(str(title), text):
+                if a not in assets:
+                    assets.append(a)
+            site = str(_first(row, "source", "publisher") or self.name)
+            out.append(
+                NewsItem(
+                    timestamp=ts,
+                    source=f"{self.name}:{site}" if site != self.name else self.name,
+                    title=str(title).strip(),
+                    assets=assets,
+                    importance=classify_importance(str(title), text),
+                    quality=self.quality,
+                    provenance=Provenance.FACT,
+                )
+            )
+        return out
+
+    def fetch_calendar(self, now: datetime, days_ahead: int = 2) -> list[CalendarEvent]:
+        raise ProviderError(f"{self.name}: calendrier économique réservé aux plans payants")
+
+
+# ---------------------------------------------------------------------------
+# ForexFactory (calendrier hebdomadaire public, sans clé)
+# ---------------------------------------------------------------------------
+
+class ForexFactoryProvider(NewsProvider):
+    """Calendrier économique ForexFactory : ``GET {base_url}`` (JSON, aucune clé).
+
+    Pourquoi ce provider : les endpoints calendrier de FMP sont réservés aux plans
+    payants (HTTP 402). Cette source est gratuite et surtout elle **fournit** le niveau
+    d'impact (`impact`) au lieu de le faire déduire, ce qui permet de conserver la
+    provenance ``FACT`` sur un contrôle de sécurité du gate.
+
+    Limites assumées, vérifiées le 2026-09-20 :
+    - seule la **semaine en cours** est exposée (``ff_calendar_nextweek.json`` → 404) ;
+    - le débit est bridé (HTTP 429 après quelques appels rapprochés) : le cache du hub
+      est indispensable, la cadence `calendar_interval_sec` ne doit pas être réduite ;
+    - le champ ``actual`` n'existe pas : il reste ``None``, donc ``surprise`` aussi.
+
+    C'est une source communautaire, pas une API contractuelle : toute erreur lève
+    ``ProviderError`` et le hub bascule en mode dégradé plutôt que d'inventer.
+    """
+
+    #: ForexFactory -> importance interne (LOW | MEDIUM | HIGH)
+    IMPACTS = {"high": "HIGH", "medium": "MEDIUM", "low": "LOW", "holiday": "LOW"}
+
+    def __init__(self, base_url: str, name: str = "forexfactory", kind: str = "economic_calendar",
+                 quality: str = "structured_api", timeout: float = DEFAULT_TIMEOUT_S, **_ignored: Any) -> None:
+        self.base_url = base_url
+        self.name = name
+        self.kind = kind
+        self.quality = quality
+        self.timeout = float(timeout)
+
+    def available(self) -> bool:
+        return bool(self.base_url)
+
+    # ----- HTTP -----
+    def _get_json(self) -> Any:
+        """GET JSON. Méthode isolée pour être remplacée dans les tests."""
+        req = urllib.request.Request(self.base_url, headers={"User-Agent": USER_AGENT, "Accept": "application/json"})
+        try:
+            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                status = getattr(resp, "status", 200)
+                body = resp.read()
+        except urllib.error.HTTPError as e:
+            raise ProviderError(f"{self.name}: HTTP {e.code}") from None
+        except (urllib.error.URLError, TimeoutError, OSError, http.client.HTTPException, ValueError) as e:
+            raise ProviderError(f"{self.name}: erreur réseau: {type(e).__name__}: {e}") from None
+        if status != 200:
+            raise ProviderError(f"{self.name}: HTTP {status}")
+        try:
+            return json.loads(body.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as e:
+            raise ProviderError(f"{self.name}: JSON invalide: {e}") from None
+
+    # ----- parsing -----
+    @staticmethod
+    def parse_number(raw: Any) -> Optional[float]:
+        """'0.5%' -> 0.5 ; '-11.0K' -> -11000 ; '2.5M' -> 2500000 ; '' ou illisible -> None.
+
+        Renvoie ``None`` plutôt qu'une valeur approchée : une donnée absente reste absente.
+        """
+        if raw is None:
+            return None
+        t = str(raw).strip().replace(",", "").replace("%", "")
+        if not t or t in ("-", "--"):
+            return None
+        mult = 1.0
+        if t[-1:].upper() in ("K", "M", "B", "T"):
+            mult = {"K": 1e3, "M": 1e6, "B": 1e9, "T": 1e12}[t[-1].upper()]
+            t = t[:-1]
+        try:
+            return float(t) * mult
+        except ValueError:
+            return None
+
+    def parse_calendar(self, payload: Any) -> list[CalendarEvent]:
+        """Parse la réponse. Une ligne sans date ou sans titre exploitable est ignorée."""
+        if not isinstance(payload, list):
+            raise ProviderError(f"{self.name}: format inattendu ({type(payload).__name__})")
+        out: list[CalendarEvent] = []
+        for row in payload:
+            if not isinstance(row, dict):
+                continue
+            title = str(row.get("title") or "").strip()
+            raw_date = str(row.get("date") or "").strip()
+            if not title or not raw_date:
+                continue
+            try:
+                ts = datetime.fromisoformat(raw_date)
+            except ValueError:
+                continue
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=timezone.utc)
+            out.append(CalendarEvent(
+                timestamp=ts.astimezone(timezone.utc),
+                source=self.name,
+                title=title,
+                currency=str(row.get("country") or "").strip().upper(),
+                importance=self.IMPACTS.get(str(row.get("impact") or "").strip().lower(), "LOW"),
+                actual=None,                                   # non fourni par la source
+                forecast=self.parse_number(row.get("forecast")),
+                previous=self.parse_number(row.get("previous")),
+                provenance=Provenance.FACT,
+            ))
+        return out
+
+    def fetch_calendar(self, now: datetime, days_ahead: int = 2) -> list[CalendarEvent]:
+        now = now if now.tzinfo else now.replace(tzinfo=timezone.utc)
+        debut = now - timedelta(days=1)
+        fin = now + timedelta(days=int(days_ahead))
+        return [e for e in self.parse_calendar(self._get_json()) if debut <= e.timestamp <= fin]
+
+    def fetch_news(self, now: datetime) -> list[NewsItem]:
+        raise ProviderError(f"{self.name}: source calendrier uniquement, aucune news")
+
+
 _PROVIDER_CLASSES = {
     "fmp": FMPProvider,
+    "finnhub": FinnhubProvider,
+    "forexfactory": ForexFactoryProvider,
 }
+
+#: implémentations qui n'utilisent aucune clé API (source publique)
+_KEYLESS_IMPLS = {"forexfactory"}
 
 
 def build_providers(news_cfg: dict) -> list[NewsProvider]:
@@ -385,25 +645,28 @@ def build_providers(news_cfg: dict) -> list[NewsProvider]:
         base_url = str(p.get("base_url", ""))
         impl = str(p.get("impl") or ("fmp" if name.startswith("fmp") or "financialmodelingprep" in base_url else ""))
         cls = _PROVIDER_CLASSES.get(impl)
-        if cls is None or not base_url or not p.get("api_key_env"):
+        sans_cle = impl in _KEYLESS_IMPLS
+        # une source publique n'a pas de `api_key_env` : l'exiger la rendrait inutilisable
+        if cls is None or not base_url or (not sans_cle and not p.get("api_key_env")):
             providers.append(NullProvider(name=name, kind=kind))
             continue
-        providers.append(
-            cls(
-                base_url=base_url,
-                api_key_env=str(p["api_key_env"]),
-                name=name,
-                kind=kind,
-                quality=str(p.get("quality", "structured_api")),
-                timeout=float(p.get("timeout_seconds", DEFAULT_TIMEOUT_S)),
-            )
+        kwargs = dict(
+            base_url=base_url,
+            name=name,
+            kind=kind,
+            quality=str(p.get("quality", "structured_api")),
+            timeout=float(p.get("timeout_seconds", DEFAULT_TIMEOUT_S)),
         )
+        if not sans_cle:
+            kwargs["api_key_env"] = str(p["api_key_env"])
+        providers.append(cls(**kwargs))
     return providers
 
 
 __all__ = [
     "DEFAULT_TIMEOUT_S",
     "FMPProvider",
+    "FinnhubProvider",
     "NewsProvider",
     "NullProvider",
     "ProviderError",

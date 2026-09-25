@@ -10,9 +10,10 @@ from typing import Optional
 
 from ..core.journal import Journal
 from ..core.state import BotPositionPlan, StateStore, SystemMode
-from ..core.types import GateResult, OrderRequest, OrderResult, Position, TradeCandidate, utcnow
+from ..core.types import GateResult, OrderRequest, OrderResult, Position, Side, TradeCandidate, utcnow
 from ..mt5.adapter import BrokerAdapter
 from ..risk.risk_manager import loss_per_lot
+from ..risk.stop_loss import normalize_price
 
 # le terminal MT5 peut ne pas refléter la position immédiatement après order_send : quelques tentatives espacées
 FIND_POSITION_ATTEMPTS = 5
@@ -36,6 +37,42 @@ class Executor:
         self.journal = journal
         # fenêtre d'agrégation des idées de trade (prop firm : rouvrir dans le même sens sous 10 min)
         self.idea_window_minutes = float(idea_window_minutes)
+
+    def _preserver_rr_cible(self, pos: Position, candidate: TradeCandidate) -> Optional[Position]:
+        """Replace la cible broker au multiple de R que le gate a approuvé. Ne la rapproche jamais.
+
+        Le gate pose `tp_plan[-1]` (la cible la plus lointaine) comme TP broker, calculé sur l'entrée du
+        candidat — c'est-à-dire sur le prix du scan. Quand le marché a bougé entre le scan et l'envoi, cette
+        cible se retrouve à un multiple de R plus faible qu'approuvé : le 2026-09-21 EURAUD est passé de
+        2,08 R au plan à 1,35 R réel (entrée 1,61045 au lieu de ~1,61004, SL 1,609).
+
+        C'est plus gênant qu'un simple manque à gagner. `tp_plan` n'est jamais relu par le position manager,
+        qui gère en multiples de R (TP1 1,5 R, TP2 2,5 R, runner). Une cible broker tombée sous 1,5 R ferme
+        donc **100 % de la position avant que l'échelle n'ait pu commencer** — le gagnant à +1,14 R du jour a
+        cette forme. On restaure la géométrie approuvée ; le SL n'est pas touché, le risque reste identique.
+        """
+        if not candidate.tp_plan or pos.tp is None or pos.tp <= 0:
+            return None
+        r_plan, r_reel = candidate.sl_distance, abs(pos.price_open - pos.sl)
+        if r_plan <= 0 or r_reel <= 0:
+            return None
+        rr_approuve = abs(candidate.tp_plan[-1] - candidate.entry) / r_plan
+        rr_reel = abs(pos.tp - pos.price_open) / r_reel
+        if rr_reel >= rr_approuve - 1e-9:
+            return None                       # cible intacte (ou fill favorable) : ne rien toucher
+        try:
+            spec = self.broker.symbol_info(pos.symbol)
+        except Exception:  # noqa: BLE001 - spec indisponible : on laisse la cible d'origine, jamais d'approximation
+            return None
+        sens = 1.0 if pos.side == Side.BUY else -1.0
+        cible = normalize_price(pos.price_open + sens * rr_approuve * r_reel, spec)
+        # `ancienne` est relevée AVANT l'appel : l'adaptateur peut modifier l'objet Position en place,
+        # auquel cas la journaliser après ferait afficher la nouvelle valeur dans les deux champs.
+        ancienne = pos.tp
+        res = self.broker.modify_position(pos.ticket, pos.sl, cible)
+        self.journal.warn("cible broker replacée au R approuvé", ticket=pos.ticket, rr_approuve=rr_approuve,
+                          rr_reel=rr_reel, ancienne=ancienne, nouvelle=cible, ok=res.ok, retcode=res.retcode)
+        return self.broker.position(pos.ticket) if res.ok else None
 
     def execute(self, candidate: TradeCandidate, gate: GateResult, req: OrderRequest, risk_money: float,
                 risk_percent: float) -> ExecutionOutcome:
@@ -84,6 +121,7 @@ class Executor:
         if actual is not None and actual > planned * 1.10:
             self.journal.warn("risque réel après fill supérieur au risque planifié", ticket=pos.ticket,
                               planned=planned, actual=actual, price_open=pos.price_open, sl=pos.sl)
+        pos = self._preserver_rr_cible(pos, candidate) or pos
         initial_risk = actual if actual is not None else planned
         equity = state.equity
         plan = BotPositionPlan(

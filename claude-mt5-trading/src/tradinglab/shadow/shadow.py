@@ -34,11 +34,15 @@ class ShadowPosition:
 
 
 class ShadowTrader:
-    def __init__(self, store: LearningStore, state_file: Path, risk_money: float = 100.0, max_open: int = 50):
+    def __init__(self, store: LearningStore, state_file: Path, risk_money: float = 100.0, max_open: int = 50,
+                 max_per_agent: int = 0):
         self.store = store
         self.file = Path(state_file)
         self.risk_money = risk_money
         self.max_open = max_open
+        # 2026-09-25 : 48 des 50 places étaient tenues par les 6 agents de cycle long (positions H4 gardées des jours) ;
+        # les 100 nouveaux agents SHADOW ne pouvaient rien ouvrir. 0 = pas de plafond par agent.
+        self.max_per_agent = int(max_per_agent or 0)
         self.positions: dict[str, ShadowPosition] = {}
         # dict ordonné par ancienneté (insertion) : la troncature garde les clés les plus RÉCENTES, tous symboles confondus
         self.executed: dict[str, None] = {}
@@ -70,6 +74,8 @@ class ShadowTrader:
             if len(self.positions) >= self.max_open or c.idempotency_key in self.executed:
                 continue
             if any(p.symbol == c.symbol and p.agent_id == c.agent_id for p in self.positions.values()):
+                continue
+            if self.max_per_agent and sum(1 for p in self.positions.values() if p.agent_id == c.agent_id) >= self.max_per_agent:
                 continue
             p = ShadowPosition(id=f"sh_{c.id}", agent_id=c.agent_id, symbol=c.symbol, side=c.side.value, entry=c.entry, sl=c.sl,
                                tp=c.tp_plan[-1] if c.tp_plan else c.entry + c.side.sign * 2.5 * c.sl_distance,

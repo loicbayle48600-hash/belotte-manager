@@ -38,7 +38,16 @@ SWEEP_STEP_BARS = 12            # 1 heure de M5 par pas
 #: compression dans une tendance D1) ou vise un ou deux symboles seulement : la marche aléatoire simulée
 #: ne le produit pas en 1 620 snapshots. Ce n'est PAS un permis d'être muet : L08 et L12 sont démontrés
 #: atteignables par les scénarios ci-dessous. La liste ne doit que RÉTRÉCIR.
-SILENCIEUX_TOLERES = {"C08", "E03", "L07", "L08", "L09", "L10", "L12", "M04", "M09", "M10", "M14"}
+# M09 (nas100_open_range) et M14 (usoil_ny_momentum) sont sortis de la liste le 2026-09-20 :
+# l'ajout des noms IC Markets au broker simulé (USTEC, DE40, XTIUSD, XBRUSD) leur donne un
+# instrument de plus à balayer, et ils déclenchent désormais.
+# N01/N02 (saisonnalité, 2026-09-21) : exigent >= 150 barres D1 d'historique et un biais calendaire
+# statistiquement net — le balayage ne fournit que ~41 jours de D1. Atteignables : démontré par les
+# scénarios fabriqués de tests/test_cot_banques_centrales_saisonnalite.py (biais injecté dans le D1).
+SILENCIEUX_TOLERES = {"C08", "E03", "L07", "L08", "L09", "L10", "L12", "M04", "M10", "N01", "N02",
+                      # agents d'annonces (2026-09-24) : ne se déclenchent que sur une annonce RÉELLE du calendrier
+                      # (`snap.news_events`), absente du broker simulé ; couverts par test_agents_annonces_2026_09_24.py
+                      "K03", "K04", "K05", "K06", "K07"}
 
 #: Plancher d'agents vivants sur le balayage (mesuré : 60).
 MIN_VIVANTS = 58

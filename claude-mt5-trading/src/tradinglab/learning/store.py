@@ -265,10 +265,17 @@ class LearningStore:
         for aid in self.all_agent_ids(mode):
             st = self.agent_stats(aid, mode)
             if st.sample_size >= min_sample:
-                out.append({"agent_id": aid, "sample_size": st.sample_size, "profit_factor": round(st.profit_factor, 2),
-                            "expectancy_r": round(st.expectancy_r, 3), "win_rate": round(st.win_rate, 3),
+                # `no_losses` : aucun perdant → le profit factor n'est pas défini (99.0 est une sentinelle
+                # interne, pas une performance). Le lecteur voit « aucune perte », pas un chiffre absurde.
+                sans_perte = st.losses == 0 and st.wins > 0
+                out.append({"agent_id": aid, "sample_size": st.sample_size, "trades": st.sample_size,
+                            "wins": st.wins, "losses": st.losses,
+                            "profit_factor": None if sans_perte else round(st.profit_factor, 2), "no_losses": sans_perte,
+                            "expectancy_r": round(st.expectancy_r, 3), "total_r": round(st.total_r, 2),
+                            "win_rate": round(st.win_rate, 3),
                             "max_drawdown_r": round(st.max_drawdown_r, 2), "degradation_score": st.degradation_score})
-        return sorted(out, key=lambda x: (x["expectancy_r"], x["sample_size"]), reverse=True)
+        # un agent à 1 trade gagnant ne « domine » pas un agent à 14 trades : échantillon ≥ 5 d'abord
+        return sorted(out, key=lambda x: (x["sample_size"] >= 5, x["expectancy_r"], x["sample_size"]), reverse=True)
 
     # ---------- événements agents ----------
     def agent_event(self, agent_id: str, event: str, detail: dict | str = "") -> None:

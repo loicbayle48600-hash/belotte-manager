@@ -37,3 +37,14 @@ backups/*
 !backups/.gitkeep
 models/*
 !models/.gitkeep
+
+# archives des anciens comptes maîtres (état du compte, rapports)
+archives/
+
+# Données d'exécution du bot (2026-09-25, plan pro point 1) : modifiées en permanence par le bot, elles marqueraient
+# toujours la version comme « modifiée ». Sauvegardées par start_all (archives\auto) et par les copies datées.
+data/agent_status.json
+data/agent_stats.json
+data/cot_cache.json
+data/research/
+data/validation_live/

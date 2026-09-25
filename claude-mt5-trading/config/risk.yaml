@@ -1,11 +1,38 @@
 risk:
-  risk_per_trade_percent: 0.25
+  # 2026-09-20, décisions explicites.
+  # 1. Diversifier à budget de risque CONSTANT : 0,125 % par trade au lieu de 0,25 %.
+  # 2. max_open_positions porté à 30. Le nombre d'emplacements et le budget de risque sont
+  #    deux limites INDÉPENDANTES : chez IC Markets, `volume_max` plafonne 16 cryptos sur 18
+  #    (XLM à 0,6 % de la taille visée, XRP à 4,5 %). Une position à 5 $ de risque consommait
+  #    un emplacement entier pour 0,1 % du budget, et bloquait les autres pour rien.
+  #    Les vrais plafonds restent max_total_open_risk_percent (1 %), le cluster corrélé (0,5 %,
+  #    où toute la crypto tombe) et la classe d'actif (0,75 %) : 30 emplacements n'y changent
+  #    rien. MAX_ENTRIES_PER_CYCLE=2 limite par ailleurs le rythme de remplissage.
+  # 0.125 → 0.05 le 2026-09-23, TEMPORAIRE et sur demande explicite (« divise par deux ou par trois
+  # pour le moment en mode test ») : lots ~2,5x plus petits → jusqu'à 20 positions simultanées au lieu
+  # de 8 pour le MÊME budget de risque total (1 %). But : accumuler plus vite les échantillons par agent
+  # (40 trades requis pour juger un agent) et voir lesquels tiennent. À REMETTRE à 0.125 avant tout
+  # passage en réel — l'utilisateur dira quand.
+  # 0.05 → 0.125 le 2026-09-24 sur demande explicite (« on peut augmenter comme avant et que ça reste sur les
+  # règles de FOXX ») : retour à la valeur d'origine. Les règles FOXX restent appliquées par le gate (plafonds
+  # de lots par classe, 2 % par idée, cohérence 25 %, 4 % / 8 %) ; les plafonds de concentration ci-dessous
+  # sont déjà ceux calibrés pour 0.125.
+  # 0.125 → 0.25 le 2026-09-24, décision utilisateur (option « Modéré ») : risque ouvert total et perte jour
+  # interne portés à 2 %, plafonds de concentration et paliers après profit doublés (ratio constant). Reste
+  # sous les règles FOXX (2 % par idée, 4 % par jour, 8 % au total) avec une marge de moitié.
+  risk_per_trade_percent: 0.125  # 628 $ sur 500 000 $ — demande utilisateur 2026-09-25 (plafonds de concentration calibrés pour 0.125)
   max_risk_per_trade_percent: 0.35
-  max_daily_loss_internal_percent: 1.0
-  max_total_open_risk_percent: 1.0
-  max_open_positions: 3
+  max_daily_loss_internal_percent: 1.0  # retour à l'état du 23/09 (demande utilisateur 2026-09-25)
+  max_total_open_risk_percent: 1.0  # retour à l'état du 23/09 (demande utilisateur 2026-09-25)
+  max_open_positions: 30
   max_positions_per_symbol: 1
   max_consecutive_losses: 3
+  # Plancher de risque utile, en fraction de risk_per_trade_percent (0.2 = 20 % de la cible, soit 0,025 %).
+  # Sous ce seuil, volume_max du broker a raboté la position au point qu'elle ne peut plus peser : le
+  # 2026-09-21, XRPUSD a été pris deux fois à 11,52 $ et 12,10 $ de risque sur 500 000 $ tout en consommant
+  # un emplacement et le quota d'une position par symbole. Ratio et non valeur absolue, pour suivre
+  # risk_per_trade_percent sans dérive silencieuse au prochain ajustement.
+  min_effective_risk_ratio: 0.2
   allow_martingale: false
   allow_grid: false
   allow_averaging_down: false
@@ -13,9 +40,19 @@ risk:
   allow_risk_increase_after_entry: false
 
 correlation:
-  max_correlated_cluster_risk_percent: 0.5
-  max_currency_factor_risk_percent: 0.6
-  max_asset_class_risk_percent: 0.75
+  # 2026-09-21 : plafonds DIVISÉS PAR DEUX en même temps que risk_per_trade_percent
+  # (0,25 % -> 0,125 %). Ces limites sont exprimées en % de l'equity : les laisser
+  # inchangées après avoir halvé le risque unitaire doublait mécaniquement le nombre de
+  # positions corrélées autorisées (2 -> 4). Conséquence réelle : XAGUSD, XAGEUR et XAGAUD
+  # — le MÊME métal — ouverts en 10 minutes, -1 946 $ au total. Le rapport
+  # plafond / risque_par_trade doit rester constant.
+  max_correlated_cluster_risk_percent: 0.25  # retour à l'état du 23/09 (demande utilisateur 2026-09-25)
+  max_currency_factor_risk_percent: 0.3  # retour à l'état du 23/09 (demande utilisateur 2026-09-25)
+  # 2026-09-21 soir, accord utilisateur (« fait tout ») : classe portée de 0,375 % (3 positions) à 0,5 %
+  # (4 positions) — forex et indices saturaient tous deux leur plafond (≈ 190 refus en une après-midi)
+  # alors que le budget total (1 %) restait loin d'être consommé. La hiérarchie est préservée :
+  # cluster 2 < devise 2,4 < classe 4 < total 8 positions équivalentes.
+  max_asset_class_risk_percent: 0.5  # retour à l'état du 23/09 (demande utilisateur 2026-09-25)
   correlation_threshold: 0.7
   lookback_bars: 200
 
@@ -27,11 +64,18 @@ profit_management:
   tp2_close_percent: 40
   runner_percent: 30
   break_even_enabled: true
-  break_even_r: 1.2
-  break_even_requires_structure: true
+  # 1.2 → 1.0 le 2026-09-22 sur accord utilisateur : la nuit du 21 au 22, trois trades ont dépassé +0,9 R
+  # avant de revenir au stop plein (-1 R) ; à 1,0 R deux d'entre eux auraient fini ~0. L'offset 0.05 reste.
+  break_even_r: 1.0
+  # true → false le 2026-09-22 sur accord utilisateur. L'exigence de structure neutralisait le break-even
+  # à 1,0 R tant que TP1 (1,5 R) n'était pas pris : un trade qui plafonne entre 1,0 et 1,5 R ne déclenchait
+  # RIEN et revenait au stop plein. Mesuré sur 54 trades : 4 cas, -1 895 $ (CADCHF -1,17 R après +1,11 R).
+  break_even_requires_structure: false
   break_even_offset_r: 0.05
   trailing_enabled: true
-  trailing_start_r: 2.0
+  # 2.0 → 1.05 le 2026-09-25, demande utilisateur (« stop suiveur : quand ça passe en positif à 1,05, rester
+  # toujours en bénéfice ») : le suivi démarre à +1,05 R, jamais sous le break-even (entrée + 0,05 R + commission)
+  trailing_start_r: 1.05
   trailing_atr_multiplier: 1.5
   trailing_use_market_structure: true
   never_widen_stop: true
@@ -40,6 +84,9 @@ profit_management:
   regime_overrides:
     RANGING: {tp1_r: 1.0, tp1_close_percent: 50, tp2_r: 1.8, tp2_close_percent: 35, runner_percent: 15}
     NEWS_SHOCK: {block_new_entries: true}
+
+# rollover des paires exotiques : règle ajoutée puis ANNULÉE le 2026-09-24 sur demande de l'utilisateur (code conservé,
+# inactif sans section `rollover:`).
 
 daily_profit:
   level_1_percent: 0.75
@@ -52,3 +99,10 @@ daily_profit:
   level_3_new_risk_percent: 0.075
   level_3_setup_score_bonus: 15
   max_giveback_percent: 25
+  # 2026-09-22, décision utilisateur finale (« continue normalement ») : en phase DEMO de collecte
+  # d'échantillons, le plancher Giveback est JOURNALISÉ mais ne restreint rien — les réductions progressives
+  # après bonne journée (levels 1-3 ci-dessus) restent seules à moduler le risque. Alternatives codées et
+  # testées : "reduce_risk" (risque minimal giveback_risk_percent) et "lock" (gel historique, à remettre
+  # pour le mode prop réel).
+  giveback_action: "off"
+  giveback_risk_percent: 0.05

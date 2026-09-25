@@ -57,9 +57,30 @@ def test_tous_les_modules_de_strategies_se_chargent():
     assert len(strategies.LOADED) == len(strategies.FAMILY_MODULES)
 
 
+#: La famille O (cycle long, 2026-09-22) réutilise DÉLIBÉRÉMENT les screeners génériques : ce sont les
+#: mêmes règles éprouvées, jouées sur entrée H4 / tendance D1. Écrire six copies identiques à un
+#: paramètre de timeframe près serait du code dupliqué, pas une stratégie propre. Exception fermée :
+#: ces agents sont en SHADOW et leur horizon est leur seule différence assumée.
+REPLI_GENERIQUE_ASSUME = {"O01", "O02", "O03", "O04", "O05", "O06"}
+
+
 def test_chaque_agent_generateur_a_sa_propre_strategie(generators, own_functions):
-    manquants = sorted(a.agent_id for a in generators if a.agent_id not in own_functions)
+    manquants = sorted(a.agent_id for a in generators
+                       if a.agent_id not in own_functions and a.agent_id not in REPLI_GENERIQUE_ASSUME)
     assert not manquants, f"agents sans stratégie propre (repli générique) : {manquants}"
+
+
+def test_le_repli_generique_assume_reste_resolvable(generators):
+    """Les agents tolérés doivent quand même produire des candidats : leur screener de repli existe."""
+    from tradinglab.agents import screeners as sc
+
+    sc._load_own_strategies()
+    tolerés = [a for a in generators if a.agent_id in REPLI_GENERIQUE_ASSUME]
+    assert len(tolerés) == len(REPLI_GENERIQUE_ASSUME), "la liste d'exceptions doit rester à jour"
+    for a in tolerés:
+        assert a.base_strategy in sc.SCREENERS, f"{a.agent_id} : screener de repli {a.base_strategy} introuvable"
+        assert sc.resolve_screener(a) is not None
+        assert a.status == "SHADOW", f"{a.agent_id} doit rester en SHADOW tant qu'il n'a pas sa stratégie propre"
 
 
 def test_les_sources_des_strategies_sont_toutes_differentes(own_functions):

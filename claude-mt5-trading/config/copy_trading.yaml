@@ -1,0 +1,42 @@
+# Copy trading (2026-09-22, activé sur demande utilisateur) — réplication des positions du bot
+# maître vers des comptes MT5 suiveurs. AUCUN identifiant ici : ils vont dans .env.
+#
+# Pour ajouter un compte suiveur :
+#   1. Installer une COPIE PORTABLE de MetaTrader 5 dédiée à ce compte (le package Python ne tient
+#      qu'une connexion par processus) et s'y connecter une fois à la main.
+#   2. Ajouter dans .env :  COPY1_MT5_LOGIN / COPY1_MT5_PASSWORD / COPY1_MT5_SERVER / COPY1_MT5_TERMINAL_PATH
+#   3. Décommenter et adapter le bloc ci-dessous, puis lancer :
+#      .venv\Scripts\python.exe -m tradinglab.copy --follower <nom>
+copy_trading:
+  enabled: true
+  magic_number: 52000            # identifie les positions COPIÉES chez les suiveurs
+  poll_interval_sec: 5
+  stale_after_sec: 120           # export maître plus vieux → aucune OUVERTURE (fermetures toujours permises)
+  followers:
+  - name: blueguardian
+    env_prefix: COPY1
+    size_factor: 0.5
+    enabled: true
+    allow_real: true     # compte challenge prop firm déclaré REAL par le broker, sans argent réel — confirmé par l'utilisateur le 2026-09-22
+  #  - name: compte2
+  #    env_prefix: COPY1          # → COPY1_MT5_LOGIN etc. dans .env
+  #    size_factor: 1.0           # 1.0 = même risque RELATIF que le maître (proportionnel à l'equity)
+  #    enabled: true
+  # 2026-09-24 : comptes « demo 2 500k » (COPY2) et « Demo 3 » (COPY3) retirés sur demande de l'utilisateur.
+  # Leurs identifiants restent dans .env (non modifié) : les réinscrire via le panneau de contrôle si besoin.
+  - name: "demo 1"
+    env_prefix: COPY4
+    size_factor: 1.0
+    enabled: true
+  - name: "demo 2"
+    env_prefix: COPY5
+    size_factor: 2.0
+    enabled: true
+  - name: "demo 4"
+    env_prefix: COPY6
+    size_factor: 3.0
+    enabled: true
+  - name: "demo 0.5"
+    env_prefix: COPY7
+    size_factor: 0.5
+    enabled: true

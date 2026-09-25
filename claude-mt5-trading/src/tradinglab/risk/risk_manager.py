@@ -20,6 +20,12 @@ class SizingResult:
     risk_percent_effective: float = 0.0
     loss_per_lot: float = 0.0
     reason: str = ""
+    # Volume rabote par `volume_max` du broker : la position risque MOINS que la cible.
+    # Chez IC Markets, 16 cryptos sur 18 sont concernees (XLM plafonne a 0,6 % de la taille
+    # visee, XRP a 4,5 %). L'ecretage etait silencieux : `risk_percent_effective` tombait a
+    # 0,001 % sans que rien ne le signale.
+    volume_capped: bool = False
+    volume_wanted: float = 0.0        # volume avant ecretage (0 si aucun)
 
 
 @dataclass
@@ -31,6 +37,12 @@ class RiskLimits:
     max_open_positions: int = 3
     max_positions_per_symbol: int = 1
     max_consecutive_losses: int = 3
+    #: plancher de risque *utile*, en fraction de `risk_per_trade_percent`. Sous ce seuil, le plafond de
+    #: volume du broker a tellement raboté la position qu'elle ne peut plus rien changer au compte : le
+    #: 2026-09-21 XRPUSD a été pris deux fois à 11,52 $ et 12,10 $ de risque sur 500 000 $ (0,0023 %), en
+    #: occupant un emplacement et le quota d'une position par symbole. Exprimé en ratio et non en valeur
+    #: absolue pour suivre automatiquement `risk_per_trade_percent` (cf. test_concentration_suit_le_risque).
+    min_effective_risk_ratio: float = 0.2
     allow_martingale: bool = False
     allow_grid: bool = False
     allow_averaging_down: bool = False
@@ -69,6 +81,10 @@ def compute_volume(equity: float, risk_percent: float, entry: float, sl: float, 
         return SizingResult(False, reason="perte par lot nulle")
     raw = risk_money / lpl
     vol = round_volume_down(raw, spec)
+    # Écrêtage = le volume voulu, DÉJÀ arrondi au pas, dépasse le plafond du broker.
+    # Comparer `raw` brut ferait passer le simple arrondi au pas pour un écrêtage.
+    sans_plafond = math.floor(raw / spec.volume_step + 1e-9) * spec.volume_step
+    capped = sans_plafond > spec.volume_max + 1e-9
     if vol < spec.volume_min:
         # le volume minimum broker implique-t-il un risque acceptable ?
         min_risk = spec.volume_min * lpl
@@ -81,6 +97,12 @@ def compute_volume(equity: float, risk_percent: float, entry: float, sl: float, 
     eff_pct = 100.0 * eff_money / equity
     if eff_pct > max_risk_percent + 1e-9:
         return SizingResult(False, reason=f"risque effectif {eff_pct:.3f}% > max {max_risk_percent}%", loss_per_lot=lpl)
+    if capped:
+        part = 100.0 * eff_pct / risk_percent if risk_percent > 0 else 0.0
+        return SizingResult(True, volume=vol, risk_money=eff_money, risk_percent_effective=eff_pct, loss_per_lot=lpl,
+                            volume_capped=True, volume_wanted=raw,
+                            reason=f"volume rabote par le broker : {raw:.2f} voulu, {spec.volume_max} autorise "
+                                   f"-> risque {eff_pct:.4f}% au lieu de {risk_percent:.3f}% ({part:.1f}% de la cible)")
     return SizingResult(True, volume=vol, risk_money=eff_money, risk_percent_effective=eff_pct, loss_per_lot=lpl,
                         reason="ok")
 
@@ -112,6 +134,13 @@ class RiskManager:
                                f"{total_pct:.3f}% / {L.max_total_open_risk_percent}%"))
         out.append(CheckResult("daily_loss_internal", state.daily_drawdown_percent() < L.max_daily_loss_internal_percent,
                                f"DD jour {state.daily_drawdown_percent():.3f}% / {L.max_daily_loss_internal_percent}%"))
+        # Budget jour : le verrou perte-jour ne regarde que le passé, le risque ouvert total ne regarde
+        # que les positions. Entre les deux, une journée à -0,7 % avec 0,7 % encore en jeu pouvait finir
+        # à -1,4 % pour un plafond de 1 % (constaté le 2026-09-21). On refuse l'entrée dont le pire cas
+        # (toutes les positions au SL courant + la nouvelle) franchirait le plafond interne.
+        worst = state.worst_case_daily_drawdown_percent(new_risk_money)
+        out.append(CheckResult("daily_budget_incl_open_risk", worst < L.max_daily_loss_internal_percent + 1e-9,
+                               f"pire cas jour {worst:.3f}% (solde - risque ouvert restant - nouveau) / {L.max_daily_loss_internal_percent}%"))
         out.append(CheckResult("max_consecutive_losses", state.consecutive_losses < L.max_consecutive_losses,
                                f"{state.consecutive_losses}/{L.max_consecutive_losses}"))
         # anti martingale / grid / averaging : refus d'une 2e position même sens sur le symbole (couvert par per_symbol=1)

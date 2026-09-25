@@ -96,3 +96,29 @@ Tests de non-régression : `tests/test_prop_foxx_rules.py`.
    **solde réellement constaté** (`SystemState.initial_balance`) qui sert de base aux pourcentages.
 4. Relire ce document à chaque mise à jour de la FAQ de la prop firm et remonter `rules_version` /
    `rules_verified_at`.
+
+## Complément relevé le 2026-09-23 (FAQ + pages « Ce qu'on autorise / n'autorise pas », collées par l'utilisateur)
+
+Source : https://www.foxx-funded.com/fr/faqs/ , https://www.foxx-funded.com/terms-and-conditions/ .
+Tout ce qui suit est **appliqué par le code** (`config/prop_firms.yaml`, `risk/prop_guard.py`, `execution/gate.py`,
+`orchestration/orchestrator.py`), tests : `tests/test_prop_foxx_lots_coherence_2026_09_23.py`.
+
+| Règle FOXX | Valeur relevée | Application dans le laboratoire |
+|---|---|---|
+| Taille de lots maximale « pour le respect de la cohérence » | 500 000 $ : forex 10 lots, matières premières 3, indices 6, crypto 3 (table complète 5 k → 500 k dans `max_lots_by_account_size`) | contrôle `19_prop_max_lots` : lots ouverts de la même idée + nouvel ordre ≤ plafond ; le volume est raboté au reste, refus s'il n'y a plus de reste ; classe inconnue = colonne la plus stricte |
+| Cohérence des profits | aucune idée > 25 % du profit total du cycle ; contrôlée au paiement, non disqualifiante (« continuer à trader ») | **appliquée en direct dès 1 % de profit net** (`consistency_enforced`, `consistency_enforce_from_profit_percent`) : `19_prop_consistency` plafonne le gain visé d'une nouvelle idée à « autres idées / 3 » en réduisant le risque ; une idée ouverte qui atteint ce plafond est fermée (`consistency_cap_close`). Sous 1 %, inapplicable (la première idée = 100 %) |
+| Hedging | interdit | `19_prop_no_hedge` : aucune position opposée sur le même instrument (indépendant de `max_positions_per_symbol`) |
+| Inversions immédiates après une perte (politique de jeu) | interdit | `19_prop_no_reversal` : 30 min de délai avant l'autre sens sur un instrument où la dernière idée a perdu |
+| Durée de détention | scalping autorisé, « > 1 minute » recommandé | aucune sortie anticipée sur invalidation avant 60 s (`MIN_HOLD_SEC`) ; le SL broker reste actif |
+| Segmentation d'ordres | > 4 couches sur la même idée avec > 2 % d'exposition = interdit | impossible : 1 position par symbole + 2 % par idée déjà appliqués |
+| Perte par idée | 2 % du solde initial, réouverture < 10 min = même idée, 2 dépassements = infraction | déjà appliqué (`19_prop_trade_idea`, marge 25 %) |
+| Perte jour | 4 % du solde initial, base = max(solde, equity) au reset 17:00 New York | déjà appliqué |
+| Perte totale | 8 % statique du solde initial, flottant compris | déjà appliqué |
+| Objectif | 7 % après clôture de toutes les positions | suivi (`profit_target_percent`) |
+| Levier | forex 1:100, indices 1:20, matières premières 1:20, crypto 1:2 | `leverage_by_class` (information : le sizing est en risque, pas en marge) |
+| Commissions | forex 7 $/lot, matières premières 7 $, indices 0, crypto 3 $ | `commissions_per_lot` : ajoutée au spread dans le contrôle `07b_spread_vs_sl` (coût d'entrée réel / distance au stop ≤ 35 %) |
+| Activité | ≥ 1 trade / semaine, 5 jours de trading minimum | déjà suivi (`activity_status`) |
+| Paiements | 1er après 14 jours de trading puis tous les 7 ; fenêtre de demande 24 h ; aucune position ouverte à la demande ; retrait max 15 % du solde initial par cycle ; partage 70/80/90 % | **cycle automatique** (`payout_auto_cycle`, décision utilisateur 23/09) : jours de trading du cycle comptés après le dernier paiement ; éligible → verrou `PAYOUT_WINDOW`, positions fermées, retrait de tout le profit (plafond 15 %). DEMO = compte financé : retrait **simulé** (`simulated_withdrawal`), cycle suivant à 7 jours. Compte financé : `payout_ready` puis commande `PAYOUT_DONE <montant>` (démarche humaine sur le tableau de bord FOXX). Cohérence du cycle > 25 % → pas de retrait, on continue à trader |
+| EA / copy trading | EA autorisé ; logiciel de copy trading autorisé pour **ses propres** trades ; signaux tiers et trading coordonné interdits | le laboratoire est un EA ; le copy trading ne réplique que les trades du maître de l'utilisateur |
+| Mot de passe | ne jamais changer le mot de passe envoyé par email | rappel opérationnel |
+| Styles interdits | martingale, tick scalping, arbitrage de latence, exploitation d'erreurs de flux, paris à sens unique, « tout ou rien » | martingale/grid/moyenne déjà interdits ; pas de HFT (cycles ≥ 15 s) ; risque fixe par trade |

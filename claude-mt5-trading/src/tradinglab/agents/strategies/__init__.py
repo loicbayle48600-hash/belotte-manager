@@ -9,7 +9,7 @@ from __future__ import annotations
 import importlib
 
 FAMILY_MODULES = ["b_trend", "c_breakout", "d_pullback", "e_reversal", "f_structure", "g_volatility",
-                  "k_news", "l_assets", "m_symbols"]
+                  "k_news", "l_assets", "m_symbols", "n_seasonality"]
 LOADED: list[str] = []
 FAILED: dict[str, str] = {}
 

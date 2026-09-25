@@ -17,6 +17,11 @@ FIXED_NOW = datetime(2026, 1, 20, 10, 0, tzinfo=timezone.utc)  # mardi 10:00 UTC
 @pytest.fixture
 def home(tmp_path):
     shutil.copytree(ROOT / "config", tmp_path / "config")
+    # la date de début du compte maître RÉEL (`master_account_since`, changement de compte du 2026-09-24) filtrerait
+    # les trades fictifs des tests : les tests partent d'une config sans compte maître daté
+    sysf = tmp_path / "config" / "system.yaml"
+    sysf.write_text("".join(l for l in sysf.read_text(encoding="utf-8").splitlines(keepends=True)
+                            if not l.lstrip().startswith("master_account_since:")), encoding="utf-8")
     return tmp_path
 
 

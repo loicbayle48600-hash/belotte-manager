@@ -9,7 +9,7 @@ prop:
   max_daily_loss_hard_percent: 4.0                # en % du SOLDE INITIAL, pas de l'equity du jour
   max_overall_loss_hard_percent: 8.0              # en % du SOLDE INITIAL, drawdown STATIQUE
   prop_rules_verified: true                       # PROP_RULES_VERIFIED (relevé du 2026-09-19)
-  user_explicitly_authorized_prop_automation: false   # l'utilisateur n'a PAS encore autorisé l'exécution prop
+  user_explicitly_authorized_prop_automation: true    # autorisé explicitement par l'utilisateur le 2026-09-21 (« AUTONOMOUS_PROP active le »)
   rules_source_url: "https://www.foxx-funded.com/fr/faqs"
   rules_version: "faq-2026-09-19"
   rules_verified_at: "2026-09-19"
@@ -37,6 +37,52 @@ prop:
   consistency_max_share_percent: 25.0
   consistency_checked_at: PAYOUT                  # contrôlée au paiement, pas en continu
   consistency_blocking: false                     # dépasser le seuil n'élimine pas : il faut continuer à trader
+  # Application en direct (décision utilisateur 2026-09-23) : une fois le profit net du cycle >= 1 % du solde
+  # initial, aucune nouvelle idée ne peut viser plus de 25 % du profit total (gain plafonné = profit des
+  # autres idées / 3 : le risque est réduit en conséquence) et une idée ouverte qui atteint ce plafond est
+  # fermée. En dessous du seuil la règle est mathématiquement inapplicable (la première idée = 100 %).
+  consistency_enforced: true  # réactivé le 2026-09-25 (demande utilisateur)
+  consistency_enforce_from_profit_percent: 0.3     # 1.0 → 0.3 le 2026-09-24 (décision utilisateur : protéger la cohérence plus tôt)
+
+  # --- Taille de lots maximale « pour le respect de la cohérence » (FAQ relevée le 2026-09-23) ---
+  # Clé = taille de compte (USD) ; la ligne appliquée est la plus grande clé <= account_size.
+  # Le plafond s'applique aux lots OUVERTS d'une même idée (même symbole, même sens) : positions déjà
+  # ouvertes + nouvel ordre. Un sous-jacent inconnu prend la colonne la plus stricte.
+  max_lots_by_account_size_desactive:  # retour à l'état du 23/09 (demande utilisateur 2026-09-25)
+    5000:   {forex: 0.5,  commodities: 0.15, indices: 0.38, crypto: 0.2}
+    10000:  {forex: 1.0,  commodities: 0.3,  indices: 0.75, crypto: 0.38}
+    25000:  {forex: 2.5,  commodities: 0.75, indices: 1.5,  crypto: 0.75}
+    50000:  {forex: 5.0,  commodities: 1.5,  indices: 3.0,  crypto: 1.5}
+    100000: {forex: 10.0, commodities: 3.0,  indices: 6.0,  crypto: 3.0}
+    200000: {forex: 10.0, commodities: 3.0,  indices: 6.0,  crypto: 3.0}
+    300000: {forex: 10.0, commodities: 3.0,  indices: 6.0,  crypto: 3.0}
+    500000: {forex: 10.0, commodities: 3.0,  indices: 6.0,  crypto: 3.0}
+
+  # --- Pratiques interdites (page « Ce qu'on n'autorise pas » + politique de jeu, relevées le 2026-09-23) ---
+  hedging_allowed: false  # réactivé le 2026-09-25 (demande utilisateur)
+  reversal_after_loss_cooldown_minutes: 0  # retour à l'état du 23/09 (demande utilisateur 2026-09-25)
+  min_hold_seconds: 60                            # « maintenir les positions ouvertes plus d'une minute »
+  copy_trading_own_trades_allowed: true           # logiciel de copy trading autorisé pour SES trades ; signaux tiers interdits
+  max_order_layers_per_idea: 4                    # > 4 couches sur la même idée avec > 2 % d'exposition = interdit
+
+  # --- Levier maximal fixe (FAQ relevée le 2026-09-23), évaluation et financé ---
+  leverage_by_class: {forex: 100, indices: 20, commodities: 20, crypto: 2}
+
+  # --- Commissions (FAQ relevée le 2026-09-23), par lot aller-retour, USD ---
+  commissions_per_lot: {forex: 7.0, commodities: 7.0, indices: 0.0, crypto: 3.0}
+
+  # --- Cycle de paiement automatique (décision utilisateur 2026-09-23 : « je trade tous les jours et tous
+  # les 7 jours je retire tous mes bénéfices ; les comptes démo font comme un compte financé ») ---
+  # Dès que le cycle compte assez de jours de trading (14 pour le 1er paiement, 7 ensuite) et que le solde
+  # dépasse le solde initial : entrées verrouillées (PAYOUT_WINDOW), positions du bot fermées (FOXX exige
+  # aucune position ouverte à la demande), puis retrait de TOUT le profit (plafonné à 15 % du solde initial
+  # par cycle) — simulé sur DEMO (`simulated_withdrawal`), demandé à l'humain sur un compte financé
+  # (`payout_ready`, puis commande PAYOUT_DONE <montant>). Cohérence 25 % non respectée → pas de retrait,
+  # on continue à trader (règle FOXX). Le nouveau cycle démarre au retrait.
+  payout_auto_cycle: true  # réactivé le 2026-09-25 (demande utilisateur)
+  payout_withdraw_all_profit: true
+  payout_requires_no_open_positions: true
+  payout_demo_as_funded: true
 
   # --- Activité minimale ---
   min_trading_days: 5
@@ -47,12 +93,12 @@ prop:
   stop_loss_mandatory: true
   max_trades_without_sl: 3                        # 3 transactions sans SL = rupture immédiate
   martingale_allowed: false
-  hedging_allowed: true                           # dans le même compte, stratégie légitime uniquement
+  # hedging_allowed : voir « Pratiques interdites » ci-dessus (false depuis la page « Ce qu'on n'autorise pas », 2026-09-23)
   high_frequency_trading_allowed: false
   copy_trading_allowed: true                      # entre comptes personnels du titulaire
   ea_allowed: true
   ea_requires_approval: true                      # approbation explicite du support après achat du défi
-  ea_approval_obtained: false                     # démarche humaine : bloque l'automatisation prop tant qu'elle est fausse
+  ea_approval_obtained: true                      # approbation de l'EA confirmée par l'utilisateur le 2026-09-21 (démarche humaine auprès de la prop firm)
 
   # --- News ---
   news_trading_allowed_during_evaluation: true
@@ -69,3 +115,7 @@ prop:
   payout_interval_trading_days: 7
   payout_request_window_hours: 24
   max_withdrawal_percent_per_cycle: 15.0
+  payout_profit_split_sequence: [70, 80, 90]      # part du trader : 1er paiement, 2e, puis 3e et suivants
+  # La FAQ relevée le 2026-09-19 ne dit PAS si le plancher de drawdown est recalé après un paiement.
+  # UNKNOWN => le simulateur retient l'hypothèse prudente (plancher inchangé) et le signale.
+  payout_floor_rebased_after_withdrawal: UNKNOWN

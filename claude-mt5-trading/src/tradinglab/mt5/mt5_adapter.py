@@ -52,7 +52,8 @@ OFFSET_RECALIBRATE_SEC = 600        # nouvelle mesure toutes les 10 min (changem
 OFFSET_FUTURE_TOLERANCE_SEC = 60    # tick « dans le futur » au-delà de cette marge → décalage trop grand
 OFFSET_STABLE_TOLERANCE_SEC = 120   # une baisse n'est acceptée que si la mesure brute est stable (≠ flux gelé)
 OFFSET_STABLE_MEASURES = 2          # ... sur ce nombre de mesures consécutives
-OFFSET_MAX_SYMBOLS = 12             # nombre de symboles visibles interrogés pour la mesure
+OFFSET_MAX_SYMBOLS = 12             # complément pris chez le broker (hors symboles du labo)
+OFFSET_MAX_LAB_SYMBOLS = 200        # symboles du labo interrogés en entier (univers borné)
 
 
 class _NoTick(Exception):
@@ -74,6 +75,11 @@ class MT5Adapter(BrokerAdapter):  # pragma: no cover - nécessite Windows + term
         self._last_raw_tick_ts: float = 0.0   # dernier tick de référence brut (heure serveur), pour server_time()
         self._pending_raw: Optional[float] = None   # mesure brute « en baisse » en attente de confirmation
         self._pending_count: int = 0
+        # Symboles explicitement retenus par le labo (symbol_select). La calibration du
+        # décalage serveur les interroge EN PREMIER : sans cela, l'échantillon se remplit
+        # des premiers symboles visibles du broker (forex gelé le week-end) et la mesure
+        # échoue, ce qui fait tomber en STALE des marchés pourtant ouverts (crypto).
+        self._selected: list[str] = []
 
     # ---------- connexion ----------
     def connect(self) -> bool:
@@ -134,7 +140,26 @@ class MT5Adapter(BrokerAdapter):  # pragma: no cover - nécessite Windows + term
             syms = mt5.symbols_get() or []
         except Exception:  # noqa: BLE001
             syms = []
-        names = [x.name for x in syms if getattr(x, "visible", True)][:OFFSET_MAX_SYMBOLS]
+        visibles = [x.name for x in syms if getattr(x, "visible", True)]
+        # Les symboles du labo sont interrogés EN ENTIER, pas seulement les OFFSET_MAX_SYMBOLS
+        # premiers : l'univers commence par le forex, gelé le week-end, et la crypto — seul marché
+        # ouvert — se trouve en fin de liste. La borne ne s'applique qu'au complément pris chez le
+        # broker, qui peut compter des milliers de symboles.
+        names: list[str] = []
+        vus: set[str] = set()
+        for n in self._selected[:OFFSET_MAX_LAB_SYMBOLS]:
+            if n not in vus:
+                vus.add(n)
+                names.append(n)
+        complement = 0
+        for n in visibles:
+            if complement >= OFFSET_MAX_SYMBOLS:
+                break
+            if n in vus:
+                continue
+            vus.add(n)
+            names.append(n)
+            complement += 1
         best: Optional[float] = None
         for n in names:
             try:
@@ -240,7 +265,16 @@ class MT5Adapter(BrokerAdapter):  # pragma: no cover - nécessite Windows + term
         return [s.name for s in syms] if syms else []
 
     def symbol_select(self, symbol: str) -> bool:
-        return bool(mt5.symbol_select(symbol, True))
+        ok = bool(mt5.symbol_select(symbol, True))
+        if ok and symbol not in self._selected:
+            self._selected.append(symbol)
+            if self._server_offset_sec is None:
+                # Un symbole de plus peut fournir la référence qui manquait (marché ouvert alors que
+                # les symboles déjà visibles sont gelés). Sans cette remise à zéro, OFFSET_RECALIBRATE_SEC
+                # interdit toute nouvelle tentative pendant 10 min : au démarrage, l'univers est
+                # sélectionné APRÈS la connexion, donc tout resterait STALE pendant ce délai.
+                self._offset_measured_at = 0.0
+        return ok
 
     def symbol_info(self, symbol: str) -> Optional[SymbolSpec]:
         """Contrat `Optional[SymbolSpec]` : None si le symbole est indisponible, jamais d'exception
@@ -320,11 +354,13 @@ class MT5Adapter(BrokerAdapter):  # pragma: no cover - nécessite Windows + term
         out = []
         for d in ds:
             entry = {0: "IN", 1: "OUT", 2: "INOUT", 3: "OUT_BY"}.get(d.entry, "UNKNOWN")
+            # DEAL_TYPE : 0/1 achat/vente, 2 opération de solde (dépôt/retrait), 3 crédit, au-delà frais/corrections
+            kind = "TRADE" if d.type in (0, 1) else "BALANCE" if d.type == 2 else "CREDIT" if d.type == 3 else "OTHER"
             out.append(Deal(ticket=d.ticket, order=d.order, position_id=d.position_id, symbol=d.symbol,
                             side=Side.BUY if d.type == 0 else Side.SELL, volume=d.volume, price=d.price,
                             profit=d.profit, commission=d.commission, swap=d.swap,
                             time=self._to_utc(d.time), magic=d.magic, entry=entry,
-                            comment=d.comment))
+                            comment=d.comment, kind=kind))
         return out
 
     # ---------- ordres ----------

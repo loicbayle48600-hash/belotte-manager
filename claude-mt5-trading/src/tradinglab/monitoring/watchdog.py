@@ -28,6 +28,10 @@ from ..mt5.mock_adapter import make_broker
 from ..mt5.symbols import resolve_symbols
 
 
+#: contrôles consécutifs (intervalle 3 s) sans connexion avant de demander SAFE_MODE
+DISCONNECT_CHECKS = 2
+
+
 @dataclass
 class WatchdogReport:
     ts: str = ""
@@ -59,9 +63,15 @@ class Watchdog:
         self.store = store
         self.journal = journal
         self.interval = interval
+        # alertes dédupliquées (2026-09-25, plan pro point 7) : la même alerte « DD jour ≥ 1 % » était journalisée
+        # (et poussée sur Telegram) toutes les 3 s — 1 491 fois en deux heures
+        self._alert_key: Optional[str] = None
+        self._alert_ts: float = 0.0
         self.magic = settings.magic
         self.ref_symbol = reference_symbol
         self._ref_resolved: Optional[str] = None  # symbole broker réel (suffixe résolu), calculé une fois connecté
+        self._ancrage_fait = False                # symboles sélectionnés pour calibrer l'heure serveur
+        self._surveilles: list[str] = []          # symboles réels servant au contrôle de fraîcheur
         self.report_path = settings.state_dir / "watchdog.json"
         self.hard_daily = float(settings.prop.get("max_daily_loss_hard_percent", 4.0))
         self.hard_overall = float(settings.prop.get("max_overall_loss_hard_percent", 8.0))
@@ -69,6 +79,7 @@ class Watchdog:
         self.max_hb_age = float(settings.system.get("heartbeat_max_age_sec", 45))
         self.max_tick_age = float(settings.system.get("data_max_age_sec", 30))
         self._running = True
+        self._disconnect_streak = 0               # contrôles consécutifs sans connexion (débounce SAFE_MODE)
 
     def stop(self) -> None:
         self._running = False
@@ -88,32 +99,79 @@ class Watchdog:
                 return None
         return self._ref_resolved or None
 
+    def _ancrer_horloge(self) -> None:
+        """Sélectionne des symboles d'un marché ouvert pour que l'heure serveur soit calibrable.
+
+        Sans cela, la calibration n'interroge que les symboles déjà visibles chez le broker.
+        Le week-end ils sont tous gelés : `server_time()` reste figé sur le dernier tick de
+        vendredi, et **un flux mort paraît frais** — mesuré le 2026-09-20, le watchdog voyait
+        un tick « vieux d'une seconde » sur un flux arrêté depuis 38 h. Le contrôle de
+        fraîcheur, dont c'est toute la raison d'être, ne pouvait alors jamais se déclencher.
+
+        La crypto sert d'ancre : c'est le seul marché ouvert en continu.
+        """
+        if self._ancrage_fait:
+            return
+        symboles: list[str] = []
+        if self.ref_symbol:
+            symboles.append(self.ref_symbol)
+        symboles += [str(x) for x in (self.s.markets.get("crypto") or [])][:6]
+        try:
+            reels = resolve_symbols(symboles, self.broker.symbols())
+        except Exception:  # noqa: BLE001 - broker indisponible : on réessaiera au prochain cycle
+            return
+        for reel in reels.values():
+            if reel:
+                try:
+                    self.broker.symbol_select(reel)
+                except Exception:  # noqa: BLE001 - un symbole refusé ne doit pas arrêter le watchdog
+                    continue
+                if reel not in self._surveilles:
+                    self._surveilles.append(reel)
+        self._ancrage_fait = True
+
     def check_once(self) -> WatchdogReport:
         rep = WatchdogReport(ts=utcnow().isoformat(), heartbeat=utcnow().isoformat())
         state = self.store.reload()
+        self._ancrer_horloge()
         # 1. connexion
         if not self.broker.is_connected():
             ok = self.broker.connect()
             if not ok:
-                rep.reasons.append(f"MT5 déconnecté: {self.broker.last_error()}")
+                # Débounce (2026-09-23) : « Authorization failed (-6) » / « IPC timeout (-10005) » durent
+                # 1 à 3 contrôles (≤ 10 s) et provoquaient une demande de SAFE_MODE immédiate — mesuré
+                # 6 bascules AUTO→SAFE→AUTO en 4 jours pour des coupures IPC sans conséquence. Une
+                # coupure n'est signalée qu'après DISCONNECT_CHECKS contrôles consécutifs (≈ 6 s) ;
+                # `mt5_connected` reste vrai à chaque contrôle (le gate 01_health, lui, lit l'état réel).
+                self._disconnect_streak += 1
+                if self._disconnect_streak >= DISCONNECT_CHECKS:
+                    rep.reasons.append(f"MT5 déconnecté: {self.broker.last_error()}")
+                else:
+                    self.journal.event("watchdog_notice", message="connexion MT5 en échec, nouvel essai au prochain contrôle",
+                                       error=self.broker.last_error(), streak=self._disconnect_streak)
+        if self.broker.is_connected():
+            self._disconnect_streak = 0
         rep.mt5_connected = self.broker.is_connected()
         if rep.mt5_connected:
             acc = self.broker.account_info()
             rep.account_ok = acc is not None and acc.equity > 0
             if acc:
                 rep.trade_mode = acc.trade_mode.value
+                # `starting_equity` / `overall_peak_equity` / `reference_equity` sont nets des retraits
+                # simulés (unités du labo) : on compare à une equity nette, pas à l'equity brute du broker.
+                equity = acc.equity - state.simulated_withdrawn_total()
                 if state.daily.starting_equity:
-                    rep.daily_dd_percent = max(0.0, 100 * (state.daily.starting_equity - acc.equity) / state.daily.starting_equity)
+                    rep.daily_dd_percent = max(0.0, 100 * (state.daily.starting_equity - equity) / state.daily.starting_equity)
                 if state.overall_peak_equity:
-                    rep.overall_dd_percent = max(0.0, 100 * (state.overall_peak_equity - acc.equity) / state.overall_peak_equity)
+                    rep.overall_dd_percent = max(0.0, 100 * (state.overall_peak_equity - equity) / state.overall_peak_equity)
                 # bases prop : plancher du jour assis sur max(solde, equity) au reset, perte totale
                 # statique sur le solde initial — jamais sur un pic d'equity.
                 base = state.initial_balance or acc.balance or acc.equity
                 ref = state.daily.reference_equity or max(state.daily.starting_equity, state.daily.starting_balance)
                 if base > 0:
                     if ref > 0:
-                        rep.prop_daily_loss_percent = max(0.0, 100 * (ref - acc.equity) / base)
-                    rep.prop_overall_loss_percent = max(0.0, 100 * (base - acc.equity) / base)
+                        rep.prop_daily_loss_percent = max(0.0, 100 * (ref - equity) / base)
+                    rep.prop_overall_loss_percent = max(0.0, 100 * (base - equity) / base)
                 if rep.daily_dd_percent >= self.internal_daily:
                     rep.reasons.append(f"DD jour {rep.daily_dd_percent:.2f}% >= limite interne {self.internal_daily}%")
                 if (rep.prop_daily_loss_percent >= self.hard_daily * 0.75
@@ -139,15 +197,28 @@ class Watchdog:
                         rep.actions.append(f"ticket {p.ticket}: fermé (SL impossible) → {'ok' if res.ok else res.comment}")
                     rep.reasons.append(f"position {p.ticket} sans SL")
             # 3. fraîcheur des données
-            sym = self._reference_symbol() or (positions[0].symbol if positions else None)
-            if sym:
-                t = self.broker.tick(sym)
-                age = t.age_seconds(self.broker.server_time()) if t else float("inf")
-                rep.data_fresh = age <= self.max_tick_age
+            # Le flux n'est pas mort parce qu'UN marché est fermé : le week-end, le forex est
+            # gelé alors que la crypto cote. On exige donc qu'AUCUN symbole suivi ne cote avant
+            # de conclure au flux figé — sinon le watchdog demanderait SAFE_MODE tous les
+            # week-ends et empêcherait le trading crypto qu'il est censé protéger.
+            surveilles = list(self._surveilles)
+            ref = self._reference_symbol()
+            if ref and ref not in surveilles:
+                surveilles.append(ref)
+            if not surveilles and positions:
+                surveilles = [positions[0].symbol]
+            if surveilles:
+                ages: dict[str, float] = {}
+                for sym in surveilles:
+                    t = self.broker.tick(sym)
+                    ages[sym] = t.age_seconds(self.broker.server_time()) if t else float("inf")
+                plus_frais = min(ages.values())
+                rep.data_fresh = plus_frais <= self.max_tick_age
                 if rep.data_fresh is False:
-                    # Flux figé / tick indisponible : donnée périmée → SAFE_MODE demandé (jamais silencieux).
-                    rep.reasons.append(f"données périmées ({sym}: tick vieux de {age:.0f}s > {self.max_tick_age:.0f}s)"
-                                       if age != float("inf") else f"données périmées ({sym}: tick indisponible)")
+                    # Aucun marché suivi ne cote : flux réellement figé → SAFE_MODE demandé.
+                    detail = ", ".join(f"{s}: {a:.0f}s" if a != float("inf") else f"{s}: indisponible"
+                                       for s, a in sorted(ages.items(), key=lambda kv: kv[1]))
+                    rep.reasons.append(f"données périmées — aucun marché suivi ne cote ({detail})")
         # 4. heartbeat orchestrateur
         age = self.store.heartbeat_age("orchestrator")
         rep.orchestrator_heartbeat_age = age if age != float("inf") else -1
@@ -156,9 +227,32 @@ class Watchdog:
             rep.reasons.append(f"orchestrateur silencieux depuis {age:.0f}s avec positions ouvertes")
         rep.safe_mode_request = bool(rep.reasons)
         self._write(rep)
-        if rep.reasons or rep.actions:
-            self.journal.event("watchdog_alert", level="WARNING", reasons=rep.reasons, actions=rep.actions)
+        self._emit_alert(rep)
         return rep
+
+    #: rappel d'une alerte inchangée qui persiste
+    ALERT_REMINDER_SEC = 900.0
+
+    @staticmethod
+    def _alert_signature(reasons: list) -> str:
+        """Nature de l'alerte sans ses chiffres : « DD jour 1.13% » et « DD jour 1.14% » sont la même alerte."""
+        import re
+        return "|".join(sorted(re.sub(r"[-+]?\d+(?:[.,]\d+)?", "#", str(r)) for r in reasons))
+
+    def _emit_alert(self, rep, now: Optional[float] = None) -> None:
+        """Journalise une alerte quand elle apparaît, quand sa nature change, toutes les 15 min si elle persiste, et
+        toujours quand le watchdog a AGI. Le retour à la normale est journalisé une fois (`watchdog_ok`)."""
+        now = time.monotonic() if now is None else now
+        if not rep.reasons and not rep.actions:
+            if self._alert_key is not None:
+                self.journal.event("watchdog_ok", message="plus aucune alerte")
+                self._alert_key = None
+            return
+        key = self._alert_signature(rep.reasons)
+        if rep.actions or key != self._alert_key or now - self._alert_ts >= self.ALERT_REMINDER_SEC:
+            self.journal.event("watchdog_alert", level="WARNING", reasons=rep.reasons, actions=rep.actions,
+                               **({"rappel": True} if key == self._alert_key and not rep.actions else {}))
+            self._alert_key, self._alert_ts = key, now
 
     def _write(self, rep: WatchdogReport) -> None:
         tmp = self.report_path.with_suffix(".tmp")

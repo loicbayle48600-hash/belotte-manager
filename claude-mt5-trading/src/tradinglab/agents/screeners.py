@@ -579,6 +579,7 @@ def _load_own_strategies() -> None:
         from . import strategies  # noqa: F401 - l'import enregistre les stratégies via @register
     except ImportError:
         pass
+    from . import news_strategies  # noqa: F401 - stratégies d'annonces (famille K, 2026-09-24)
 
 
 def resolve_screener(spec: AgentSpec):

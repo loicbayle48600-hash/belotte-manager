@@ -49,9 +49,10 @@ def asset_class_of(symbol: str, rules: dict[str, str] | None = None) -> str:
         return "metals"
     if any(k in r for k in ("OIL", "XTI", "XBR", "BRENT", "WTI", "NGAS")):
         return "energies"
-    if any(k in r for k in ("BTC", "ETH", "LTC", "XRP", "SOL", "ADA", "DOGE")):
+    if any(k in r for k in ("BTC", "ETH", "LTC", "XRP", "SOL", "ADA", "DOGE", "DOG", "BCH", "BNB", "DOT", "XLM",
+                              "XTZ", "UNI", "LNK", "AVX", "KSM", "POL", "DATA")):
         return "crypto"
-    if any(k in r for k in ("US500", "US30", "NAS100", "GER40", "UK100", "JP225", "SPX", "DJI", "NDX", "DAX", "FTSE", "NIKKEI", "AUS200", "FRA40", "EU50", "HK50")):
+    if any(k in r for k in ("US500", "US30", "NAS100", "GER40", "USTEC", "DE40", "UK100", "JP225", "SPX", "DJI", "NDX", "DAX", "FTSE", "NIKKEI", "AUS200", "FRA40", "EU50", "HK50")):
         return "indices"
     if len(r) == 6 and r[:3].isalpha() and r[3:].isalpha():
         return "forex"

@@ -36,10 +36,31 @@ log = logging.getLogger("tradinglab.news")
 
 IMPORTANCE_RANK = {"LOW": 0, "MEDIUM": 1, "HIGH": 2}
 
+#: motifs (minuscules) identifiant un événement de banque centrale dans le titre du calendrier.
+#: Couvre les libellés ForexFactory et FMP constatés : décisions de taux, statements, minutes,
+#: conférences de presse et discours des gouverneurs des banques principales.
+CENTRAL_BANK_PATTERNS = (
+    "interest rate", "rate decision", "rate statement", "monetary policy", "press conference",
+    "fomc", "federal funds", "ecb", "boe ", "boj", "snb", "rba", "boc ", "rbnz", "norges bank",
+    "riksbank", "central bank", "cash rate", "refinancing rate", "bank rate", "policy rate",
+    "fed chair", "lagarde", "powell", "bailey", "ueda",
+)
+
+
+def is_central_bank_event(title: str) -> bool:
+    """Heuristique déterministe sur le titre : jamais utilisée pour RÉDUIRE une fenêtre, seulement l'élargir."""
+    t = f" {str(title or '').lower()} "
+    return any(pat in t for pat in CENTRAL_BANK_PATTERNS)
+
 DEFAULT_CFG = {
     "max_age_minutes": 90,
     "block_minutes_before_high_impact": 30,
     "block_minutes_after_high_impact": 15,
+    # décisions de taux et conférences de banques centrales : fenêtres DOUBLÉES (décision
+    # utilisateur du 2026-09-21). Le mouvement se joue souvent dans la conférence qui suit
+    # l'annonce, bien au-delà des 15 min standard.
+    "block_minutes_before_central_bank": 60,
+    "block_minutes_after_central_bank": 30,
     "degraded_after_failures": 3,
     "shock_event_minutes": 15,
     "shock_news_minutes": 10,
@@ -633,16 +654,24 @@ class NewsHub:
         """
         now = _aware(now or utcnow())
         self._update_state()
-        if self.state.degraded or self.state.calendar_degraded:
+        # Deux flux indépendants : le calendrier (événements datés à l'avance) et les titres.
+        # Seul le calendrier permet d'évaluer la fenêtre de blocage ; sans lui on se replie.
+        if self.state.calendar_degraded:
             return NewsCheck(
                 ok=not news_sensitive_strategy,
                 state="DEGRADED",
-                reason="NEWS_DATA_DEGRADED: aucune source news/calendrier fiable disponible",
+                reason="NEWS_DATA_DEGRADED: calendrier économique indisponible",
                 events=[],
             )
-        start = now - self.block_after
-        end = now + self.block_before
-        hits = self._events_between(start, end, symbol_currencies, "HIGH")
+        # fenêtre standard, élargie pour les événements de banque centrale (jamais réduite)
+        cb_before = timedelta(minutes=float(self.cfg["block_minutes_before_central_bank"]))
+        cb_after = timedelta(minutes=float(self.cfg["block_minutes_after_central_bank"]))
+        wide = self._events_between(now - max(self.block_after, cb_after), now + max(self.block_before, cb_before),
+                                    symbol_currencies, "HIGH")
+        hits = [ev for ev in wide
+                if (now - (cb_after if is_central_bank_event(ev.title) else self.block_after)
+                    <= ev.timestamp
+                    <= now + (cb_before if is_central_bank_event(ev.title) else self.block_before))]
         if hits:
             upcoming = [ev for ev in hits if ev.timestamp > now]
             past = [ev for ev in hits if ev.timestamp <= now]
@@ -652,7 +681,9 @@ class NewsHub:
                 return NewsCheck(
                     ok=False,
                     state="BLOCKED_PRE_NEWS",
-                    reason=f"{ev.currency} {ev.title} dans {mins} min (fenêtre {self.cfg['block_minutes_before_high_impact']} min)",
+                    reason=f"{ev.currency} {ev.title} dans {mins} min (fenêtre "
+                           f"{self.cfg['block_minutes_before_central_bank'] if is_central_bank_event(ev.title) else self.cfg['block_minutes_before_high_impact']} min"
+                           f"{', banque centrale' if is_central_bank_event(ev.title) else ''})",
                     events=[e.to_dict() for e in hits],
                 )
             ev = past[-1]
@@ -660,8 +691,24 @@ class NewsHub:
             return NewsCheck(
                 ok=False,
                 state="BLOCKED_POST_NEWS",
-                reason=f"{ev.currency} {ev.title} il y a {mins} min (fenêtre {self.cfg['block_minutes_after_high_impact']} min)",
+                reason=f"{ev.currency} {ev.title} il y a {mins} min (fenêtre "
+                       f"{self.cfg['block_minutes_after_central_bank'] if is_central_bank_event(ev.title) else self.cfg['block_minutes_after_high_impact']} min"
+                       f"{', banque centrale' if is_central_bank_event(ev.title) else ''})",
                 events=[e.to_dict() for e in hits],
+            )
+        # Titres indisponibles : on se replie SEULEMENT ici, une fois la fenêtre calendrier évaluée.
+        # Le 2026-09-21 le flux de titres était dégradé (plan FMP gratuit) alors que le calendrier
+        # ForexFactory répondait parfaitement (`CALENDAR.degraded: false`, événements en provenance FACT).
+        # Comme le repli sortait en première ligne sur `degraded OR calendar_degraded`, la fenêtre de
+        # blocage 30 min avant / 15 min après un événement HIGH n'était jamais évaluée : le bot pouvait
+        # ouvrir une position en pleine BCE ou en plein NFP. Une panne des titres ne doit pas désarmer
+        # la protection calendrier, qui est la plus stricte des deux.
+        if self.state.degraded:
+            return NewsCheck(
+                ok=not news_sensitive_strategy,
+                state="DEGRADED",
+                reason="NEWS_DATA_DEGRADED: titres indisponibles (calendrier vérifié, hors fenêtre HIGH)",
+                events=[],
             )
         if self.news_shock(symbol_currencies, now):
             shock_events = self.recent_events(now, symbol_currencies, int(self.cfg["shock_event_minutes"]), "HIGH")

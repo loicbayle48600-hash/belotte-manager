@@ -1,27 +1,82 @@
-# Univers de marchés. Les noms sont des racines : le résolveur de suffixes broker
-# trouve le symbole réel (EURUSD.m, EURUSD-, EURUSDmicro…) dans MT5.
 markets:
   forex_majors: [EURUSD, GBPUSD, USDJPY, USDCHF, AUDUSD, USDCAD, NZDUSD]
-  forex_minors: [EURGBP, EURJPY, GBPJPY, EURAUD, EURCHF, AUDJPY, CADJPY, GBPAUD, AUDNZD, EURCAD]
-  metals: [XAUUSD, XAGUSD]
-  indices: [US500, US30, NAS100, GER40, UK100, JP225]
-  energies: [USOIL, UKOIL, XTIUSD, XBRUSD]
-  crypto: [BTCUSD, ETHUSD]
+  # paires exotiques retirées le 2026-09-25 (demande utilisateur : « je ne veux plus, j'ai trop de pertes ») :
+  # AUDSGD, CHFSGD, EURDKK, EURHKD, EURNOK, EURPLN, EURSEK, EURSGD, EURTRY, EURZAR, GBPDKK, GBPNOK, GBPSEK, GBPSGD, GBPTRY, NOKJPY, NOKSEK, SEKJPY, SGDJPY, USDCNH, USDCZK, USDDKK, USDHKD, USDHUF, USDMXN, USDNOK, USDPLN, USDSEK, USDSGD, USDTHB, USDTRY, USDZAR
+  forex_minors: [AUDCAD, AUDCHF, AUDJPY, AUDNZD, CADCHF, CADJPY, CHFJPY, EURAUD, EURCAD, EURCHF,
+                 EURGBP, EURJPY, EURNZD, GBPAUD, GBPCAD, GBPCHF, GBPJPY, GBPNZD, NZDCAD, NZDCHF,
+                 NZDJPY]
+  # Un seul couple par métal : XAUEUR, XAUJPY, XAUAUD, XAUCHF, XAUGBP, XAGEUR et XAGAUD
+  # ont été RETIRÉS le 2026-09-21. Ce sont les mêmes deux métaux cotés dans une autre
+  # devise : aucune diversification, seulement le même pari répété. Le bot avait ouvert
+  # XAGUSD + XAGEUR + XAGAUD en 10 minutes et perdu 1 946 $ sur un seul mouvement.
+  metals: [XAUUSD, XAGUSD, XPTUSD, XPDUSD]
+  # USTEC = Nasdaq 100 et DE40 = DAX chez IC Markets (NAS100 / GER40 ailleurs)
+  indices: [US500, US30, USTEC, DE40, UK100, JP225, AUS200, STOXX50,
+            F40, CHINA50, ES35, HK50, IT40, US2000, CA60, NETH25,
+            SE30, SWI20, CHINAH, SA40, NOR25, TecDE30, MidDE60, MidDE50]
+  # spot uniquement : les contrats datés (WTI_X6, BRENT_M6, GCZ26_CFD…) expirent et
+  # aucun agent ne gère le roulement — une position ouverte à l'échéance serait liquidée.
+  energies: [XTIUSD, XBRUSD, XNGUSD]
+  # 18 paires disponibles chez IC Markets (relevé 2026-09-20). Spreads relatifs de 0,02 %
+  # (XRP) à 11 % (KSM) : max_spread_atr_ratio écarte les inexploitables.
+  crypto: [BTCUSD, ETHUSD, XRPUSD, SOLUSD, BNBUSD, BCHUSD, LTCUSD, ADAUSD,
+           DOGUSD, DOTUSD, XLMUSD, XTZUSD, UNIUSD, LNKUSD, AVXUSD, KSMUSD,
+           POLUSD, DATAUSD]
 sessions:   # heures UTC
   ASIA:   {start: "00:00", end: "08:00"}
   LONDON: {start: "07:00", end: "16:00"}
   NEWYORK: {start: "12:00", end: "21:00"}
 asset_class_rules:
-  XAU: metals
-  XAG: metals
+  # ORDRE IMPORTANT : la correspondance se fait par sous-chaîne et la première règle gagne.
+  # Les indices passent avant la crypto, sinon NETH25 (indice néerlandais) contiendrait
+  # « ETH » et serait classé crypto.
   US500: indices
   US30: indices
-  NAS100: indices
-  GER40: indices
+  USTEC: indices
+  DE40: indices
   UK100: indices
   JP225: indices
+  AUS200: indices
+  STOXX50: indices
+  F40: indices
+  CHINA50: indices
+  ES35: indices
+  HK50: indices
+  IT40: indices
+  US2000: indices
+  CA60: indices
+  NETH25: indices
+  SE30: indices
+  SWI20: indices
+  CHINAH: indices
+  SA40: indices
+  NOR25: indices
+  TecDE30: indices
+  MidDE60: indices
+  MidDE50: indices
+  XAU: metals
+  XAG: metals
+  XPT: metals
+  XPD: metals
   OIL: energies
   XTI: energies
   XBR: energies
+  XNG: energies
   BTC: crypto
   ETH: crypto
+  XRP: crypto
+  SOL: crypto
+  BNB: crypto
+  BCH: crypto
+  LTC: crypto
+  ADA: crypto
+  DOG: crypto
+  DOT: crypto
+  XLM: crypto
+  XTZ: crypto
+  UNI: crypto
+  LNK: crypto
+  AVX: crypto
+  KSM: crypto
+  POL: crypto
+  DATA: crypto

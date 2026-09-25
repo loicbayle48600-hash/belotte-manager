@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import json
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -17,8 +18,25 @@ from ..models.client import LLMClient
 SYSTEM_COMMON = (
     "Tu es un analyste de trading rigoureux. Tu ne connais que les données fournies. "
     "N'invente aucune donnée : si une information manque, écris UNKNOWN. "
-    "Un score interne n'est jamais une probabilité de gain. Réponds UNIQUEMENT en JSON."
+    "Un score interne n'est jamais une probabilité de gain. "
+    "Le dimensionnement du risque, la corrélation avec les positions ouvertes, les plafonds d'exposition et le "
+    "spread sont vérifiés APRÈS toi par un Risk Gate déterministe : ne les juge pas, juge la logique du setup "
+    "(structure, régime, niveaux, invalidation, contexte). Un historique court (sample_size faible) signifie "
+    "agent récent : statistiques non significatives, à ne pas lire comme un edge négatif. "
+    "Réponds UNIQUEMENT en JSON compact, sans bloc de code ni prose autour : au plus 4 éléments par liste, "
+    "chaque élément ≤ 25 mots."
 )
+# Mesuré le 2026-09-21 (Opus 5, réflexion désactivée, consigne compacte) : thèses 220-500 tokens de sortie,
+# ~5-9 s chacune. Sans la consigne, 500 tokens ne suffisaient pas et le JSON tronqué était illisible.
+THESIS_MAX_TOKENS = 700
+# 400 tronquait 2 appels sur 12 le 2026-09-21 au soir (rationales plus riches depuis le prompt setup-only)
+ARBITER_MAX_TOKENS = 600
+# champs du candidat régénérés à chaque cycle : exclus du prompt pour que deux cycles sur la même barre
+# produisent le même prompt (lisibilité du journal) — l'identité de cache est `_cache_key`
+_VOLATILE_FIELDS = ("id", "created_at", "review", "verdict")
+# champs jamais renseignés au moment de la revue (calculés ensuite par le risk manager / le gate) : les laisser à
+# 0.0 / UNKNOWN faisait rejeter les candidats pour « risk_percent=0.0 incohérent » (constaté le 2026-09-21 18:13)
+_DOWNSTREAM_FIELDS = ("risk_percent", "correlation_impact")
 
 
 @dataclass
@@ -76,11 +94,20 @@ class AdversarialReview:
         return ReviewResult(v, "deterministic", rationale="; ".join(reasons))
 
     # ---------- LLM ----------
-    def _ask(self, role: str, instruction: str, c: TradeCandidate, importance: str = "normal") -> tuple[dict, float]:
+    @staticmethod
+    def _cache_key(c: TradeCandidate) -> str:
+        """Même symbole, même sens, même agent, même barre → mêmes thèses (TTL du client en garde-fou).
+        L'ancienne clé `c.id` changeait à chaque cycle : aucune réutilisation, 4 appels payés par cycle et par candidat."""
+        return f"{c.symbol}|{c.side.value}|{c.agent_id}|{c.bar_time}"
+
+    def _ask(self, role: str, instruction: str, c: TradeCandidate, importance: str = "normal",
+             max_tokens: int = THESIS_MAX_TOKENS) -> tuple[dict, float]:
         if self.llm is None:
             return {}, 0.0
-        user = instruction + "\n\nCANDIDAT:\n" + json.dumps(c.to_dict(), ensure_ascii=False, default=str)[:6000]
-        resp = self.llm.complete(role, SYSTEM_COMMON, user, max_tokens=500, financial_importance=importance, cache_key_extra=c.id)
+        payload = {k: v for k, v in c.to_dict().items() if k not in _VOLATILE_FIELDS + _DOWNSTREAM_FIELDS}
+        user = instruction + "\n\nCANDIDAT:\n" + json.dumps(payload, ensure_ascii=False, default=str)[:6000]
+        resp = self.llm.complete(role, SYSTEM_COMMON, user, max_tokens=max_tokens, financial_importance=importance,
+                                 cache_key=self._cache_key(c))
         if resp is None:
             return {}, 0.0
         data = resp.json()
@@ -98,13 +125,19 @@ class AdversarialReview:
             c.review = det.to_dict()
             return det
         det.llm_consulted = True
-        bull, c1 = self._ask("bull_thesis", 'Construis la meilleure thèse HAUSSIÈRE/pour ce trade. JSON: {"arguments": [...], "conviction_0_100": n, "unknowns": [...]}', c)
-        bear, c2 = self._ask("bear_thesis", 'Construis la meilleure thèse CONTRE ce trade. JSON: {"arguments": [...], "conviction_0_100": n, "unknowns": [...]}', c)
-        devil, c3 = self._ask("devil_advocate", 'Cherche les failles : faux breakout, surapprentissage, corrélation, qualité des données, exécution. JSON: {"flaws": [...], "severity_0_100": n}', c)
+        # les trois thèses sont indépendantes : en parallèle (≈ 9 s au lieu de ≈ 27 s, boucle live à 15 s)
+        theses = (
+            ("bull_thesis", 'Construis la meilleure thèse HAUSSIÈRE/pour ce trade. JSON: {"arguments": [...], "conviction_0_100": n, "unknowns": [...]}'),
+            ("bear_thesis", 'Construis la meilleure thèse CONTRE ce trade. JSON: {"arguments": [...], "conviction_0_100": n, "unknowns": [...]}'),
+            ("devil_advocate", 'Cherche les failles : faux breakout, surapprentissage, corrélation, qualité des données, exécution. JSON: {"flaws": [...], "severity_0_100": n}'),
+        )
+        with ThreadPoolExecutor(max_workers=len(theses), thread_name_prefix="review") as ex:
+            (bull, c1), (bear, c2), (devil, c3) = list(ex.map(lambda t: self._ask(t[0], t[1], c), theses))
         arb, c4 = self._ask("trade_arbiter",
                             "Tu es l'arbitre. Décide APPROVE / WAIT / REJECT / NO_TRADE en pesant bull, bear et devil ci-dessous. "
-                            "Le Risk Gate déterministe aura le dernier mot. JSON: {\"verdict\": \"...\", \"rationale\": \"...\"}\n"
-                            + json.dumps({"bull": bull, "bear": bear, "devil": devil}, ensure_ascii=False)[:4000], c, importance="high")
+                            "Le Risk Gate déterministe aura le dernier mot. JSON: {\"verdict\": \"...\", \"rationale\": \"...\"} — rationale en une phrase, 50 mots max.\n"
+                            + json.dumps({"bull": bull, "bear": bear, "devil": devil}, ensure_ascii=False)[:4000], c,
+                            importance="high", max_tokens=ARBITER_MAX_TOKENS)
         total = c1 + c2 + c3 + c4
         if not arb or str(arb.get("verdict", "")).upper() not in Verdict.__members__:
             det.bull, det.bear, det.devil, det.cost_usd = bull, bear, devil, total

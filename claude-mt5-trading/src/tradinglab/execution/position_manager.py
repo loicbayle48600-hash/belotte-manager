@@ -57,6 +57,7 @@ class MarketContext:
     last_swing_high: Optional[float] = None
     structure_ok: bool = True                 # structure favorable confirmée (pour BE)
     invalidated: bool = False                 # règle d'invalidation de l'agent déclenchée
+    invalidation_reason: str = ""             # règle lue (texte) pour le journal / le post-trade
 
 
 def r_multiple(plan: BotPositionPlan, price: float) -> float:
@@ -139,6 +140,7 @@ class PositionManager:
 
         # 0. SL toujours présent
         if not pos.has_sl:
+            plan.sl_missing_seen = True
             target = plan.last_sl or plan.initial_sl
             res = self.broker.modify_position(pos.ticket, target, pos.tp)
             actions.append(f"SL manquant → remis {target} ({'ok' if res.ok else res.comment})")
@@ -148,11 +150,23 @@ class PositionManager:
                 actions.append(f"fermeture (SL impossible): {res2.ok}")
                 return actions
 
+        # 0b. SL broker plus large que le dernier SL connu du plan → constat pour le post-trade (le SL n'est
+        # jamais élargi par le bot ; un élargissement vient du terminal ou d'un tiers). On ne le resserre pas
+        # d'office ici : le watchdog et le contrôle `never_widen_stop` couvrent l'action.
+        known = plan.last_sl or plan.initial_sl
+        tol = max(spec.tick_size, 0.0) * 1.5   # tolérance d'un tick : arrondis broker, jamais un vrai recul
+        widened = (known - pos.sl > tol) if side is Side.BUY else (pos.sl - known > tol)
+        if pos.has_sl and known and widened:
+            if not plan.sl_widened_seen:
+                self.journal.warn("SL broker plus large que le plan", ticket=pos.ticket, sl_broker=pos.sl, sl_plan=known)
+            plan.sl_widened_seen = True
+
         # 1. sortie anticipée sur invalidation
         if cfg.allow_early_exit_on_invalidation and ctx.invalidated:
             res = self.broker.close_position(pos.ticket, comment="TLAB invalidation")
             actions.append(f"invalidation → fermeture ({res.ok})")
-            self.journal.event("early_exit", ticket=pos.ticket, reason="invalidation", r=r, result=res.to_dict())
+            self.journal.event("early_exit", ticket=pos.ticket, symbol=pos.symbol, reason="invalidation",
+                               rule=ctx.invalidation_reason, r=r, result=res.to_dict())
             return actions
 
         # 2. TP partiels
@@ -163,7 +177,14 @@ class PositionManager:
                 if res.ok:
                     plan.tp1_done = True
                     actions.append(f"TP1 {cfg.tp1_r}R: fermé {vol}")
-                    self.journal.event("partial_tp", ticket=pos.ticket, level="TP1", r=r, volume=vol)
+                    # `gain_estime` est CALCULÉ (R x risque initial x part fermée), pas lu chez le
+                    # broker : `OrderResult` ne porte pas le résultat réalisé. Le montant exact
+                    # arrive à la clôture complète, via `post_trade_review`.
+                    part = vol / plan.initial_volume if plan.initial_volume else 0.0
+                    self.journal.event("partial_tp", ticket=pos.ticket, symbol=pos.symbol, level="TP1",
+                                       r=round(r, 3), volume=vol, volume_restant=round(pos.volume - vol, 4),
+                                       gain_estime=round(r * plan.initial_risk_money * part, 2),
+                                       provenance="CALCULATED")
             else:
                 plan.tp1_done = True  # volume trop petit pour un partiel : on passe
         if plan.tp1_done and not plan.tp2_done and r >= cfg.tp2_r:
@@ -173,7 +194,14 @@ class PositionManager:
                 if res.ok:
                     plan.tp2_done = True
                     actions.append(f"TP2 {cfg.tp2_r}R: fermé {vol}")
-                    self.journal.event("partial_tp", ticket=pos.ticket, level="TP2", r=r, volume=vol)
+                    # `gain_estime` est CALCULÉ (R x risque initial x part fermée), pas lu chez le
+                    # broker : `OrderResult` ne porte pas le résultat réalisé. Le montant exact
+                    # arrive à la clôture complète, via `post_trade_review`.
+                    part = vol / plan.initial_volume if plan.initial_volume else 0.0
+                    self.journal.event("partial_tp", ticket=pos.ticket, symbol=pos.symbol, level="TP2",
+                                       r=round(r, 3), volume=vol, volume_restant=round(pos.volume - vol, 4),
+                                       gain_estime=round(r * plan.initial_risk_money * part, 2),
+                                       provenance="CALCULATED")
             else:
                 plan.tp2_done = True
 
@@ -181,22 +209,37 @@ class PositionManager:
         #    un BE refusé par le broker ou trop proche du prix est retenté au cycle suivant)
         new_sl: Optional[float] = None
         be_pending = False
-        if cfg.break_even_enabled and not plan.break_even_done and r >= cfg.break_even_r:
-            if not cfg.break_even_requires_structure or ctx.structure_ok:
-                dist = abs(plan.entry - plan.initial_sl)
-                be = plan.entry + side.sign * dist * cfg.break_even_offset_r
+        # `plan.max_r` et non `r` : le seuil doit être jugé sur le MEILLEUR point atteint depuis l'ouverture,
+        # pas sur l'instant présent. Sinon un pic survenu entre deux cycles — ou avant un redémarrage, ou
+        # avant un changement de réglage — n'arme jamais le stop, et le trade revient au stop plein malgré
+        # un profit qui a bel et bien existé. Constaté deux fois : CADCHF (+1,11 R → -1,17 R, -586 $) et
+        # NETH25 (+1,05 R → -1,03 R, -521 $). Le niveau reste borné par `is_tighter_or_equal` plus bas :
+        # si le prix est déjà repassé sous le break-even, le broker refuse et rien ne s'élargit jamais.
+        if cfg.break_even_enabled and not plan.break_even_done and max(r, plan.max_r) >= cfg.break_even_r:
+            # `tp1_done` lève l'exigence de structure : une fois un profit partiel encaissé,
+            # le break-even n'est plus négociable. TP1 ferme 30 % à 1,5R (+0,45R) et laisse
+            # 70 % au risque plein (-0,70R) : sans remontée du stop, un retour au stop initial
+            # garantit une perte NETTE de 0,25R malgré un gain déjà pris. Constaté sur XRPUSD
+            # le 2026-09-21 : TP1 +2,49 $ puis stop -3,78 $, net -1,29 $, structure jamais validée.
+            # Avant TP1 l'exigence garde son sens : elle évite de se faire sortir sur du bruit.
+            if plan.tp1_done or not cfg.break_even_requires_structure or ctx.structure_ok:
+                be = self._be_level(plan, side, spec)
                 new_sl = be
                 be_pending = True
                 actions.append(f"break-even {be}")
 
-        # 4. trailing (ATR + structure)
-        if cfg.trailing_enabled and r >= cfg.trailing_start_r and ctx.atr > 0:
+        # 4. trailing (ATR + structure). 2026-09-25, demande utilisateur : démarre à +1,05 R (au lieu de 2 R) et ne
+        #    descend jamais sous le break-even (plancher ci-dessous) : une fois +1,05 R atteint, le trade reste en
+        #    bénéfice et le stop suit le prix. `max_r` : un pic entre deux cycles arme aussi le suivi.
+        if cfg.trailing_enabled and max(r, plan.max_r) >= cfg.trailing_start_r and ctx.atr > 0:
             trail = price - side.sign * ctx.atr * cfg.trailing_atr_multiplier
             if cfg.trailing_use_market_structure:
                 sw = ctx.last_swing_low if side is Side.BUY else ctx.last_swing_high
                 if sw is not None:
                     # structure : sous le swing bas (BUY) / au-dessus du swing haut (SELL), on garde le plus protecteur mais pas au-delà du prix
                     trail = max(trail, sw - 0.1 * ctx.atr) if side is Side.BUY else min(trail, sw + 0.1 * ctx.atr)
+            be_floor = self._be_level(plan, side, spec)
+            trail = max(trail, be_floor) if side is Side.BUY else min(trail, be_floor)
             plan.trailing_active = True
             if new_sl is None or (side is Side.BUY and trail > new_sl) or (side is Side.SELL and trail < new_sl):
                 new_sl = trail
@@ -230,6 +273,24 @@ class PositionManager:
                         plan.break_even_done = True
         self.store.save()
         return actions
+
+    #: commission aller-retour par lot selon la classe d'actif (branchée par l'orchestrateur sur le profil prop)
+    commission_per_lot = None
+
+    def _be_level(self, plan: BotPositionPlan, side: Side, spec: Optional[SymbolSpec]) -> float:
+        """Niveau de break-even : entrée + offset (0,05 R) + commission ramenée en distance de prix.
+
+        2026-09-25, demande utilisateur (« rester toujours en bénéfice ») : avec un stop serré, la commission FOXX
+        (7 $/lot forex) dépassait les 0,05 R de l'offset — un trade sorti au break-even finissait en perte nette.
+        Commission par lot / (valeur d'un tick par lot / taille du tick) = distance de prix, indépendante du volume."""
+        dist = abs(plan.entry - plan.initial_sl)
+        com = 0.0
+        if self.commission_per_lot is not None and spec is not None and getattr(spec, "tick_value", 0) > 0:
+            try:
+                com = float(self.commission_per_lot(spec.asset_class)) * spec.tick_size / spec.tick_value
+            except Exception:  # noqa: BLE001 - commission inconnue : l'offset seul s'applique
+                com = 0.0
+        return plan.entry + side.sign * (dist * self.cfg.break_even_offset_r + com)
 
     # ---------- commandes toujours autorisées ----------
     def close(self, ticket: int, reason: str = "manual") -> bool:
@@ -266,7 +327,7 @@ class PositionManager:
                 self.journal.warn("break-even impossible : spécifications symbole indisponibles", ticket=ticket)
             return False
         side = Side(plan.side)
-        be = normalize_price(plan.entry + side.sign * abs(plan.entry - plan.initial_sl) * self.cfg.break_even_offset_r, spec)
+        be = normalize_price(self._be_level(plan, side, spec), spec)
         if not is_tighter_or_equal(side, be, pos.sl):
             return False
         # jamais au-delà du prix courant ni sous stops_level (même règle que manage())

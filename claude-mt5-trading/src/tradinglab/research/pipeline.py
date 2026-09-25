@@ -16,7 +16,8 @@ from typing import Callable, Optional
 import pandas as pd
 
 from ..agents.registry import AgentRegistry, AgentSpec
-from ..backtest.engine import BTCosts, monte_carlo, parameter_sensitivity, run_backtest, split_in_out_of_sample, walk_forward
+from ..backtest.engine import (BTCosts, compute_metrics, monte_carlo, parameter_sensitivity, run_backtest,
+                               split_in_out_of_sample, walk_forward)
 from ..core.types import AgentStatus, SymbolSpec, utcnow
 from ..learning.store import LearningStore
 from .adapters import make_signal_factory, make_signal_fn, required_bars
@@ -122,6 +123,49 @@ class ResearchPipeline:
                     return s
         return next(iter(self.specs), None)
 
+    def _symbols_for(self, spec: AgentSpec) -> list[str]:
+        """Jusqu'à `backtest.symbols_per_agent` symboles du marché de l'agent (2026-09-25).
+
+        Un seul symbole (EURUSD) sur ~3 000 barres donnait des échantillons de 2 à 6 trades pour les stratégies
+        sélectives : aucun agent ne pouvait atteindre les 20 trades exigés, quelle que soit sa qualité."""
+        k = max(1, int(self.bt_cfg.get("symbols_per_agent", 3)))
+        out: list[str] = []
+        cls = {"forex_majors": "forex", "forex_minors": "forex"}
+        for m in spec.markets:
+            for s_, ss in self.specs.items():
+                if s_ not in out and m in (ss.root, ss.asset_class, s_):
+                    out.append(s_)
+        for m in spec.markets:
+            for s_, ss in self.specs.items():
+                if s_ not in out and cls.get(m) == ss.asset_class:
+                    out.append(s_)
+        if not out:
+            first = self._symbol_for(spec)
+            out = [first] if first else []
+        return out[:k]
+
+    @staticmethod
+    def _rec_symbols(rec) -> list[str]:
+        m = rec.stages.get(Stage.BACKTEST.value, {}).get("metrics", {})
+        return list(m.get("symbols") or ([m["symbol"]] if m.get("symbol") else []))
+
+    def _trades(self, spec: AgentSpec, symbols: list[str], part: str) -> tuple[list, str, list[str]]:
+        """Trades cumulés sur plusieurs symboles, dans l'ordre du temps. part : "is" | "oos" | "all"."""
+        trades, tf, erreurs = [], self._entry_tf(spec), []
+        for sym in symbols:
+            ss = self.specs[sym]
+            df, tf = self._load(spec, sym)
+            df_is, df_oos = split_in_out_of_sample(df, 0.3)
+            data = {"is": df_is, "oos": df_oos, "all": df}[part]
+            if part == "is":
+                err = self._data_error(df_is, spec, tf)
+                if err:
+                    erreurs.append(f"{sym}: {err}")
+                    continue
+            trades += run_backtest(data, make_signal_fn(spec, ss, tf), self._costs(ss)).trades
+        trades.sort(key=lambda t: str(t.entry_time))
+        return trades, tf, erreurs
+
     def _costs(self, ss: SymbolSpec) -> BTCosts:
         return BTCosts(spread_points=int(self.bt_cfg.get("default_spread_points", ss.spread_points or 12)),
                        commission_per_lot=float(self.bt_cfg.get("commission_per_lot", 0.0)),
@@ -150,21 +194,18 @@ class ResearchPipeline:
     # ---------- étapes ----------
     def stage_backtest(self, spec: AgentSpec) -> ValidationRecord:
         rec = self.record(spec.agent_id)
-        sym = self._symbol_for(spec)
-        ss = self.specs[sym]
-        df, tf = self._load(spec, sym)
-        df_is, df_oos = split_in_out_of_sample(df, 0.3)
-        err = self._data_error(df_is, spec, tf)
-        if err:
-            self._set(rec, Stage.BACKTEST, False, {"symbol": sym, "entry_tf": tf, "error": err})
+        symbols = self._symbols_for(spec)
+        trades, tf, erreurs = self._trades(spec, symbols, "is")
+        if erreurs and len(erreurs) == len(symbols):
+            self._set(rec, Stage.BACKTEST, False, {"symbol": symbols[0] if symbols else None, "symbols": symbols,
+                                                   "entry_tf": tf, "error": "; ".join(erreurs)})
             return rec
-        fn = make_signal_fn(spec, ss, tf)
-        res = run_backtest(df_is, fn, self._costs(ss))
         n, pf, ex, dd = self._thresholds()
-        m = res.metrics
+        m = compute_metrics(trades)
         # en backtest on exige la moitié de l'échantillon minimal (le reste vient du shadow)
         passed = m.sample_size >= max(10, n // 2) and m.profit_factor >= pf and m.expectancy_r >= ex and m.max_drawdown_r <= dd
-        self._set(rec, Stage.BACKTEST, passed, {"symbol": sym, "entry_tf": tf, **m.to_dict(), **({"error": fn.data_error} if fn.data_error else {})})
+        self._set(rec, Stage.BACKTEST, passed, {"symbol": symbols[0], "symbols": symbols, "entry_tf": tf, **m.to_dict(),
+                                                **({"error": "; ".join(erreurs)} if erreurs else {})})
         if passed and spec.status == AgentStatus.RESEARCH.value:
             self.registry.set_status(spec.agent_id, AgentStatus.BACKTEST)
         return rec
@@ -174,13 +215,9 @@ class ResearchPipeline:
         if not rec.passed(Stage.BACKTEST):
             self._set(rec, Stage.OUT_OF_SAMPLE, False, {"error": "BACKTEST non validé"})
             return rec
-        sym = rec.stages[Stage.BACKTEST.value]["metrics"]["symbol"]
-        ss = self.specs[sym]
-        df, tf = self._load(spec, sym)
-        _, df_oos = split_in_out_of_sample(df, 0.3)
-        res = run_backtest(df_oos, make_signal_fn(spec, ss, tf), self._costs(ss))
+        trades, tf, _ = self._trades(spec, self._rec_symbols(rec), "oos")
         n, pf, ex, dd = self._thresholds()
-        m = res.metrics
+        m = compute_metrics(trades)
         passed = m.sample_size >= 5 and m.expectancy_r > 0 and m.profit_factor >= 1.0
         self._set(rec, Stage.OUT_OF_SAMPLE, passed, m.to_dict())
         return rec
@@ -190,20 +227,33 @@ class ResearchPipeline:
         if not rec.passed(Stage.OUT_OF_SAMPLE):
             self._set(rec, Stage.WALK_FORWARD, False, {"error": "OUT_OF_SAMPLE non validé"})
             return rec
-        sym = rec.stages[Stage.BACKTEST.value]["metrics"]["symbol"]
-        ss = self.specs[sym]
-        df, tf = self._load(spec, sym)
+        symbols = self._rec_symbols(rec)
         grid = [dict(spec.params)]
         jit = float(self.cfg.get("challenger_generation", {}).get("parameter_jitter_percent", 20)) / 100
         for k, v in spec.params.items():
             if isinstance(v, (int, float)) and not isinstance(v, bool):
                 grid.append({**spec.params, k: v * (1 + jit)})
                 grid.append({**spec.params, k: v * (1 - jit)})
-        wf = walk_forward(df, make_signal_factory(spec, ss, tf), grid, self._costs(ss), folds=int(self.bt_cfg.get("walk_forward_folds", 4)))
-        sens = parameter_sensitivity(df.iloc[: len(df) // 2], make_signal_factory(spec, ss, tf), spec.params, jit * 100, self._costs(ss))
-        passed = wf.robustness_ratio >= 0.5 and wf.oos_metrics.expectancy_r > 0 and bool(sens.get("stable", False))
-        self._set(rec, Stage.WALK_FORWARD, passed, {"robustness_ratio": wf.robustness_ratio, "oos": wf.oos_metrics.to_dict(),
-                                                    "sensitivity_stable": sens.get("stable"), "folds": len(wf.folds)})
+        oos_trades, ratios, folds, sens = [], [], 0, {}
+        for i, sym in enumerate(symbols):
+            ss = self.specs[sym]
+            df, tf = self._load(spec, sym)
+            wf = walk_forward(df, make_signal_factory(spec, ss, tf), grid, self._costs(ss),
+                              folds=int(self.bt_cfg.get("walk_forward_folds", 4)))
+            oos_trades += wf.oos_trades
+            if wf.folds:
+                ratios.append(wf.robustness_ratio)
+                folds += len(wf.folds)
+            if i == 0:   # sensibilité aux paramètres : sur le premier symbole (coût de calcul)
+                sens = parameter_sensitivity(df.iloc[: len(df) // 2], make_signal_factory(spec, ss, tf), spec.params,
+                                             jit * 100, self._costs(ss))
+        oos_trades.sort(key=lambda t: str(t.entry_time))
+        oos_m = compute_metrics(oos_trades)
+        robustesse = sum(ratios) / len(ratios) if ratios else 0.0
+        passed = robustesse >= 0.5 and oos_m.expectancy_r > 0 and bool(sens.get("stable", False))
+        self._set(rec, Stage.WALK_FORWARD, passed, {"robustness_ratio": robustesse, "oos": oos_m.to_dict(),
+                                                    "sensitivity_stable": sens.get("stable"), "folds": folds,
+                                                    "symbols": symbols})
         return rec
 
     def stage_monte_carlo(self, spec: AgentSpec) -> ValidationRecord:
@@ -211,11 +261,8 @@ class ResearchPipeline:
         if not rec.passed(Stage.WALK_FORWARD):
             self._set(rec, Stage.MONTE_CARLO, False, {"error": "WALK_FORWARD non validé"})
             return rec
-        sym = rec.stages[Stage.BACKTEST.value]["metrics"]["symbol"]
-        ss = self.specs[sym]
-        df, tf = self._load(spec, sym)
-        res = run_backtest(df, make_signal_fn(spec, ss, tf), self._costs(ss))
-        rs = [t.r_multiple for t in res.trades]
+        trades, _, _ = self._trades(spec, self._rec_symbols(rec), "all")
+        rs = [t.r_multiple for t in trades]
         mc = monte_carlo(rs, runs=int(self.bt_cfg.get("monte_carlo_runs", 500)))
         n, pf, ex, dd = self._thresholds()
         passed = bool(rs) and mc["p95_max_dd_r"] <= dd and mc["prob_negative"] < 0.35 and mc["p05_total_r"] > -dd
@@ -389,6 +436,15 @@ class DegradationManager:
                                         min_history=int(self.cfg.get("min_history", 60)),
                                         pf_drop_ratio=float(self.cfg.get("pf_drop_ratio", 0.6)),
                                         expectancy_drop_r=float(self.cfg.get("expectancy_drop_r", 0.15)))
+            # suspension RAPIDE (2026-09-24, décision utilisateur) : ≥ 10 trades et profit factor < 0,5 → SUSPENDED
+            fast_n = int(self.cfg.get("fast_suspend_min_trades", 0) or 0)
+            fast_pf = float(self.cfg.get("fast_suspend_max_profit_factor", 0.0) or 0.0)
+            if (fast_n and a.status == AgentStatus.LIVE.value and st.sample_size >= fast_n
+                    and st.losses > 0 and st.profit_factor < fast_pf):
+                self.registry.set_status(a.agent_id, AgentStatus.SUSPENDED)
+                changes.append({"agent_id": a.agent_id, "from": "LIVE", "to": "SUSPENDED", "score": st.degradation_score,
+                                "reason": f"suspension rapide : PF {st.profit_factor:.2f} < {fast_pf} sur {st.sample_size} trades"})
+                continue
             if st.sample_size < int(self.cfg.get("min_history", 60)):
                 continue
             if a.status == AgentStatus.LIVE.value and st.degradation_score >= 0.5:

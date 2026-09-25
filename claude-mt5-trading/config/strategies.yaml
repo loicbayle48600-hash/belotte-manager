@@ -1,6 +1,18 @@
 # Paramètres de validation / promotion des stratégies (champion/challenger)
 learning:
   enabled: true
+  # 2026-09-25, demande utilisateur (« mets les agents en avant ») : leurs candidats passent AVANT les autres (revue IA
+  # et entrée, une seule position par symbole). Le gate reste seul juge et le risque par trade est inchangé.
+  agents_prioritaires: [E05, F06, B02, C06, B04, E01, D06, D07, C08]
+  # agents avancés dans le pipeline de recherche à chaque passage (2 jusqu'au 2026-09-25 : toujours K01/K02, qui
+  # échouaient au backtest, aucun autre agent n'avançait) ; un échec n'est retenté qu'après `research_retry_hours`
+  research_agents_per_cycle: 5     # 5 agents x 3 symboles par passage (toutes les 30 min) : charge bornée
+  research_retry_hours: 24
+  # positions VIRTUELLES (aucun ordre) : 50 places ne suffisaient plus pour 115 agents SHADOW (2026-09-25)
+  shadow_max_open: 400
+  shadow_max_open_per_agent: 4
+  # verdict post-trade « spread élevé » aligné sur le gate 07b (2026-09-25)
+  max_spread_sl_ratio: 0.20
   champion_challenger: true
   live_self_mutation: false
   shadow_required: true
@@ -14,12 +26,24 @@ learning:
     pf_drop_ratio: 0.6          # PF récent < 60 % du PF long terme → dégradation
     expectancy_drop_r: 0.15
     auto_suspend_degraded: true
+    # 2026-09-24, décision utilisateur : un agent LIVE qui perd nettement est suspendu sans attendre 60 trades
+    fast_suspend_min_trades: 10  # réactivé le 2026-09-25 (demande utilisateur)
+    fast_suspend_max_profit_factor: 0.5
   challenger_generation:
     max_new_per_cycle: 3
     parameter_jitter_percent: 20
+# 2026-09-24 (point 1) : filtre d'extension MESURÉ seulement. Chaque candidat porte la distance entrée / EMA20 du
+# tf d'entrée en ATR ; le rapport hebdomadaire compare les trades qu'il aurait refusés aux autres. Aucun refus réel
+# tant que mode = measure.
+entry_extension_filter:
+  mode: measure
+  max_atr: 1.5
+
 backtest:
+  # 2026-09-25 : chaque agent est testé sur 3 symboles de son marché (1 seul donnait 2 à 6 trades)
+  symbols_per_agent: 3
   default_spread_points: 12
-  commission_per_lot: 0.0
+  commission_per_lot: 7.0          # IC Markets Raw Spread : ~3,5 USD par lot et par sens
   slippage_points: 3
   walk_forward_folds: 4
   monte_carlo_runs: 500

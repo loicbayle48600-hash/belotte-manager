@@ -287,14 +287,14 @@ def test_llm_client_timeout_prices_and_bounded_cache(settings, monkeypatch, home
     monkeypatch.setitem(sys.modules, "anthropic", types.SimpleNamespace(Anthropic=_Anthropic))
     monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
     router = ModelRouter(settings.models)
-    router.available_models = ["claude-opus-5", "claude-fable-5-1"]
+    router.available_models = ["claude-opus-5", "claude-fable-5"]
     st = SystemState()
     client = LLMClient(router, st, cache_ttl_sec=240, prices={"claude-opus-5": (5.0, 25.0)}, journal=Journal(home / "logs"))
     client._client()
     assert captured == {"timeout": 30.0, "max_retries": 1}       # avant : Anthropic() → 600 s × 3 tentatives
-    assert DEFAULT_PRICES["claude-fable-5-1"] == (10.0, 50.0) and DEFAULT_PRICES["claude-sonnet-5"] == (2.0, 10.0)
-    assert client.prices["claude-fable-5-1"] == (10.0, 50.0)     # la surcharge partielle garde les autres tarifs
-    assert client._cost("claude-fable-5-1", 1_000_000, 0) == pytest.approx(10.0)
+    assert DEFAULT_PRICES["claude-fable-5"] == (10.0, 50.0) and DEFAULT_PRICES["claude-sonnet-5"] == (2.0, 10.0)
+    assert client.prices["claude-fable-5"] == (10.0, 50.0)     # la surcharge partielle garde les autres tarifs
+    assert client._cost("claude-fable-5", 1_000_000, 0) == pytest.approx(10.0)
     # cache borné et purgé
     for i in range(700):
         client._cache[f"k{i}"] = (0.0, LLMResponse("x", "m", "TIER_C", 1, 1, 0.0))

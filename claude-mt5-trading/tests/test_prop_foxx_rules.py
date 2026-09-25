@@ -46,17 +46,21 @@ def test_config_reflete_les_regles_officielles():
     assert cfg["drawdown_type"] == "STATIC" and cfg["loss_reference_balance"] == "INITIAL_BALANCE"
     assert cfg["weekend_trading_allowed"] == "CRYPTO_ONLY" and cfg["stop_loss_mandatory"] is True
     assert cfg["rules_source_url"].startswith("https://www.foxx-funded.com") and cfg["rules_verified_at"]
-    # les deux verrous humains restent fermés : aucune exécution prop tant que l'utilisateur n'a pas tranché
-    assert cfg["user_explicitly_authorized_prop_automation"] is False and cfg["ea_approval_obtained"] is False
+    # les deux verrous humains ont été ouverts par l'utilisateur le 2026-09-21 (autorisation explicite + EA approuvé)
+    assert cfg["user_explicitly_authorized_prop_automation"] is True and cfg["ea_approval_obtained"] is True
 
 
 def test_profil_charge_les_regles_et_bloque_sans_approbation_ea(settings):
-    p = profile(settings)
+    p = profile(settings, ea_approval_obtained=False)
     assert not p.ambiguous and p.trade_idea_aggregation_minutes == 10 and p.max_risk_per_trade_idea_percent == 2.0
     assert p.ea_approval_missing
     pg = PropGuard(p, True, True, 1.0)
     assert not pg.prop_automation_allowed
     assert not pg.authorization(TradeMode.REAL).ok and pg.authorization(TradeMode.DEMO).ok
+    # profil réel du dépôt : tous les verrous ouverts → exécution prop autorisée sur compte REAL
+    pg_live = PropGuard(profile(settings), True, settings.autonomous_prop, 1.0)
+    assert pg_live.prop_automation_allowed and pg_live.blocking_reasons == []
+    assert pg_live.authorization(TradeMode.REAL).ok and pg_live.authorization(TradeMode.DEMO).ok
 
 
 # ---------------- journée de trading : reset 17:00 America/New_York ----------------
@@ -207,7 +211,9 @@ def test_gate_applique_le_plafond_par_idee(settings, broker):
     res, _req = gate.evaluate(ctx_for(broker, c, st, atr))
     names = [ch.name for ch in res.checks]
     assert {n for n in names if n.startswith("19_")} == {
-        "19_prop_hard_daily", "19_prop_hard_overall", "19_prop_trade_idea", "19_prop_weekend"}
+        "19_prop_hard_daily", "19_prop_hard_overall", "19_prop_trade_idea", "19_prop_weekend",
+        # relevés le 2026-09-23 : lots max par classe, cohérence 25 % en direct, hedging, inversion après perte
+        "19_prop_max_lots", "19_prop_consistency", "19_prop_no_hedge", "19_prop_no_reversal"}
     assert dict((ch.name, ch.ok) for ch in res.checks)["19_prop_trade_idea"] is True
     # idée déjà chargée à 1,9 % du solde initial : le gate refuse l'entrée supplémentaire
     st.register_trade_idea(c.symbol, c.side.value, 0.019 * st.prop_reference_balance(), ticket=99, now=FIXED_NOW)

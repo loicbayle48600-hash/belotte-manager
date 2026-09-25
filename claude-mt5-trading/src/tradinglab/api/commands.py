@@ -20,11 +20,13 @@ from ..learning import reports
 from ..learning.store import LearningStore
 from ..monitoring.watchdog import read_watchdog_report
 from ..mt5.mock_adapter import make_broker
+from ..risk.payout import simulate_payout
 from ..risk.prop_guard import PropGuard, PropProfile
 
 READ_COMMANDS = {"STATUS", "POSITIONS", "RISK", "TODAY", "PERFORMANCE", "AGENTS", "TOP_AGENTS", "DEGRADED_AGENTS", "NEWS", "CALENDAR",
-                 "WHY", "REPORT_DAY", "REPORT_WEEK", "RESEARCH_STATUS", "HELP"}
-ACTION_COMMANDS = {"PAUSE", "RESUME", "SAFE_MODE", "PANIC", "CLOSE", "CLOSE_ALL_BOT", "BREAK_EVEN"}
+                 "WHY", "REPORT_DAY", "REPORT_WEEK", "RESEARCH_STATUS", "PAYOUT", "HELP"}
+ACTION_COMMANDS = {"PAUSE", "RESUME", "SAFE_MODE", "PANIC", "CLOSE", "CLOSE_ALL_BOT", "BREAK_EVEN",
+                   "SIMULATE_WITHDRAWAL", "PAYOUT_DONE", "RESET_LOSSES", "CLOSE_WINNERS"}
 
 
 class CommandHandler:
@@ -54,7 +56,8 @@ class CommandHandler:
         wd = read_watchdog_report(self.s.state_dir) or {}
         return {"mode": st.mode, "mode_reasons": st.mode_reasons, "new_trades_locked": st.new_trades_locked, "lock_reasons": st.lock_reasons,
                 "mt5_connected": st.mt5_connected, "account": {"login": st.account_login, "server": st.account_server, "trade_mode": st.account_trade_mode, "currency": st.currency},
-                "equity": st.equity, "balance": st.balance, "daily_pnl": st.daily_pnl(), "daily_pnl_percent": round(st.daily_pnl_percent(), 3),
+                "equity": st.equity, "balance": st.balance,
+                "broker_balance": st.broker_balance, "simulated_withdrawn_total": st.simulated_withdrawn_total(), "daily_pnl": st.daily_pnl(), "daily_pnl_percent": round(st.daily_pnl_percent(), 3),
                 "daily_drawdown_percent": round(st.daily_drawdown_percent(), 3), "overall_drawdown_percent": round(st.overall_drawdown_percent(), 3),
                 "open_positions": len(st.bot_positions), "open_risk_percent": round(st.open_risk_percent(), 3),
                 "orchestrator_heartbeat_age_sec": self.store.heartbeat_age("orchestrator"), "watchdog": {k: wd.get(k) for k in ("heartbeat", "safe_mode_request", "reasons", "orchestrator_alive")},
@@ -67,6 +70,31 @@ class CommandHandler:
     def cmd_risk(self, st, arg) -> dict:
         pg = PropGuard(PropProfile.from_config(self.s.prop), self.s.autonomous_demo, self.s.autonomous_prop, float(self.s.risk.get("max_daily_loss_internal_percent", 1.0)))
         return {**reports.risk_report(st, self.s.risk), "prop": pg.compliance_report(st)}
+
+    def cmd_payout(self, st, arg) -> dict:
+        """Simulation d'un retrait : ``PAYOUT [montant][/rang]`` (rang 0 = premier paiement).
+
+        Lecture seule : aucune écriture d'état, aucun ordre, aucune limite modifiée.
+        Sans montant, le maximum retirable est simulé.
+        """
+        amount, index = None, 0
+        if arg:
+            part, _, rank = str(arg).partition("/")
+            try:
+                amount = float(part.replace(",", ".")) if part.strip() else None
+            except ValueError:
+                return {"ok": False, "error": f"montant illisible: {part!r}", "usage": "PAYOUT [montant][/rang]"}
+            if rank.strip():
+                try:
+                    index = int(rank)
+                except ValueError:
+                    return {"ok": False, "error": f"rang illisible: {rank!r}", "usage": "PAYOUT [montant][/rang]"}
+        profile = PropProfile.from_config(self.s.prop)
+        pg = PropGuard(profile, self.s.autonomous_demo, self.s.autonomous_prop,
+                       float(self.s.risk.get("max_daily_loss_internal_percent", 1.0)))
+        return {**simulate_payout(st, profile, amount=amount, payout_index=index),
+                "consistency": pg.consistency_status(st), "activity": pg.activity_status(st),
+                "cycle": pg.payout_cycle_status(st)}
 
     def cmd_today(self, st, arg) -> dict:
         return reports.daily_report(self.learning, st, self.journal)

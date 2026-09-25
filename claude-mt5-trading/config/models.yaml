@@ -9,18 +9,35 @@ models:
   economical_worker_for_bulk: true
   python_for_deterministic: true
   refresh_interval_sec: 3600
-  daily_budget_usd: 10.0                # MODEL_DAILY_BUDGET_USD
-  max_fable_calls_per_hour: 6           # MAX_FABLE_CALLS_PER_HOUR
-  max_opus_calls_per_hour: 30           # MAX_OPUS_CALLS_PER_HOUR
-  max_worker_calls_per_hour: 200        # MAX_WORKER_CALLS_PER_HOUR
+  # 2026-09-23 : backend « terminal Claude » (abonnement) — plus de facturation à l'appel. Le coût affiché
+  # est le tarif public calculé par le harnais, pas un prélèvement ; ce plafond ne borne plus que le VOLUME
+  # (le prompt système du harnais pèse ~22 500 tokens, soit ~0,17 $ annoncé par appel).
+  # 60 → 150 le 2026-09-23 : avec les quotas doublés ci-dessous (~210 appels/h servis, ~4,4 $/h annoncés),
+  # un plafond à 60 aurait coupé les revues en milieu de journée. Ce n'est pas de l'argent réel (abonnement) :
+  # ce chiffre ne sert qu'à borner le volume en cas d'emballement.
+  daily_budget_usd: 150.0               # MODEL_DAILY_BUDGET_USD
+  # Quotas horaires de l'abonnement (2026-09-23). Le quota hebdomadaire FABLE était à 67 % — mais il vient
+  # des conversations Claude Code de l'utilisateur, pas du bot : Fable reste donc hors du lab (TIER_A sur
+  # Opus), tandis que les quotas Opus/worker gardent le rythme qui tenait la boucle live.
+  max_fable_calls_per_hour: 2           # MAX_FABLE_CALLS_PER_HOUR — inutilisé : plus aucun tier ne route vers Fable
+  # 30 → 60 et 60 → 150 le 2026-09-23 (« monte le quota au besoin »). Mesuré : la demande réelle atteint
+  # ~500 appels/h en session active, dont ~400 étaient refusés faute de quota. Servir TOUTE la demande
+  # (12 000 appels/jour) épuiserait l'abonnement ; on double, ce qui porte le service de ~90 à ~210
+  # appels/h (~2,1x le poids hebdomadaire). À revoir sur /usage.
+  max_opus_calls_per_hour: 60           # MAX_OPUS_CALLS_PER_HOUR
+  max_worker_calls_per_hour: 150        # MAX_WORKER_CALLS_PER_HOUR
   cache_ttl_sec: 240                    # cache des analyses non périmées
   tiers:
     TIER_A:
-      candidates: ["claude-fable-5-1"]
+      # 2026-09-23 : Fable RETIRÉ du bot. Le quota hebdomadaire Fable de l'abonnement (67 % consommé) est
+      # celui qui sert aux conversations Claude Code de l'utilisateur : le bot ne doit pas le dépenser.
+      # Opus 5.5 assure ces rôles (analyse post-trade, synthèse macro) avec un quota distinct.
+      candidates: ["claude-opus-5-5", "claude-opus-5"]
       roles: [chief_orchestrator, deep_market_review, macro_synthesis, strategy_research, champion_adjudication, post_trade_root_cause, refactor]
       est_cost_per_call_usd: 0.25
     TIER_B:
-      candidates: ["claude-opus-5"]
+      # 2026-09-22, demande utilisateur : Opus 5.5 en tête (Opus 5 reste le repli si indisponible)
+      candidates: ["claude-opus-5-5", "claude-opus-5"]
       roles: [senior_strategy, bull_thesis, bear_thesis, devil_advocate, setup_validation, complex_news, second_opinion, adversarial_review, trade_arbiter]
       est_cost_per_call_usd: 0.08
     TIER_C:

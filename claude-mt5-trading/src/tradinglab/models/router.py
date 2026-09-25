@@ -89,7 +89,7 @@ class ModelRouter:
         now = utcnow()
         day, hour = now.strftime("%Y-%m-%d"), now.strftime("%Y-%m-%dT%H")
         if b.day != day:
-            b.day, b.spent_usd, b.calls_by_tier_day = day, 0.0, {}
+            b.day, b.spent_usd, b.calls_by_tier_day, b.cache_hits_day = day, 0.0, {}, 0
         if b.hour != hour:
             b.hour, b.calls_by_tier_hour = hour, {}
         return b
@@ -102,11 +102,20 @@ class ModelRouter:
         return int({"TIER_A": self.cfg.get("max_fable_calls_per_hour", 6), "TIER_B": self.cfg.get("max_opus_calls_per_hour", 30),
                     "TIER_C": self.cfg.get("max_worker_calls_per_hour", 200)}.get(tier, 10**9))
 
-    def record_call(self, state: SystemState, tier: str, cost_usd: float) -> None:
+    def reserve(self, state: SystemState, tier: str) -> None:
+        """Consomme le créneau AVANT l'appel API (sous le verrou du client) : sans réservation, N appels
+        parallèles passaient tous le contrôle de quota pendant les ~5-9 s de latence (constaté : TIER_C à
+        207/200 le 2026-09-21). Un appel qui échoue a consommé son créneau : prudence assumée."""
         b = self._budget(state)
-        b.spent_usd += cost_usd
         b.calls_by_tier_hour[tier] = b.calls_by_tier_hour.get(tier, 0) + 1
         b.calls_by_tier_day[tier] = b.calls_by_tier_day.get(tier, 0) + 1
+
+    def record_cost(self, state: SystemState, cost_usd: float) -> None:
+        self._budget(state).spent_usd += cost_usd
+
+    def record_call(self, state: SystemState, tier: str, cost_usd: float) -> None:
+        self.reserve(state, tier)
+        self.record_cost(state, cost_usd)
 
     # ---------- routage ----------
     def _first_available(self, tier: str) -> Optional[str]:

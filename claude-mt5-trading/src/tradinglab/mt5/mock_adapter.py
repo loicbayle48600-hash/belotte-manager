@@ -39,6 +39,13 @@ DEFAULT_SPECS: dict[str, dict] = {
     # spread du WTI ramené à 0,04 $ : à 0,30 $ il valait 80 % de l'ATR M15 simulé, une valeur que
     # l'on ne rencontre sur aucun broker et qui rendait l'instrument intradable pour les stratégies.
     "USOIL": dict(digits=2, point=0.01, tick_value=1.0, contract=100, price=80.50, vol=0.09, spread=4),
+    # Noms IC Markets des mêmes instruments (USTEC = Nasdaq 100, DE40 = DAX, XTIUSD = WTI,
+    # XBRUSD = Brent). Sans eux, les groupes `indices` et `energies` de markets.yaml n'auraient
+    # aucun symbole simulé et les stratégies dédiées ne seraient jamais exercées par les tests.
+    "USTEC": dict(digits=1, point=0.1, tick_value=1.0, contract=10, price=18200.0, vol=14.0, spread=15),
+    "DE40": dict(digits=1, point=0.1, tick_value=1.0, contract=10, price=18000.0, vol=11.0, spread=12),
+    "XTIUSD": dict(digits=2, point=0.01, tick_value=1.0, contract=100, price=80.50, vol=0.09, spread=4),
+    "XBRUSD": dict(digits=2, point=0.01, tick_value=1.0, contract=100, price=84.20, vol=0.09, spread=5),
     # cryptos : présentes dans config/markets.yaml, donc indispensables pour que les stratégies
     # dédiées (famille L) et la règle prop « week-end crypto uniquement » soient réellement testées.
     "BTCUSD": dict(digits=2, point=0.01, tick_value=1.0, contract=1, price=64000.0, vol=95.0, spread=400),
@@ -441,7 +448,9 @@ def make_broker(kind: str, settings=None, **kw) -> BrokerAdapter:
         from .mt5_adapter import MT5Adapter, MT5_AVAILABLE
         if not MT5_AVAILABLE:
             raise RuntimeError("MetaTrader5 indisponible sur cette plateforme : utiliser TRADINGLAB_BROKER=mock")
-        rules = settings.markets.get("asset_class_rules", {}) if settings else {}
+        # `settings.markets` ne contient que la section `markets:` : les regles sont un bloc
+        # racine de markets.yaml, a lire via section() (sinon elles restent vides).
+        rules = settings.section("asset_class_rules") if settings else {}
         return MT5Adapter(asset_rules=rules, deviation=int(settings.execution.get("slippage_deviation_points", 20)) if settings else 20)
     if settings is not None:
         # décalage serveur explicite (heures) pour l'alignement H4/D1/W1 de `clock.bar_open_time`

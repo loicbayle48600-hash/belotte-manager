@@ -226,6 +226,7 @@ class Deal:
     magic: int
     entry: str      # IN | OUT | INOUT
     comment: str = ""
+    kind: str = "TRADE"   # TRADE | BALANCE (dépôt/retrait) | CREDIT | OTHER — relevé de compte réel (2026-09-24)
 
 
 @dataclass
@@ -277,6 +278,14 @@ class GateResult:
     checks: list[CheckResult] = field(default_factory=list)
     reason: str = ""
     adjusted_volume: float = 0.0
+    # Sizing tel que le gate l'a calculé (sur le tick courant) : c'est CE risque qui accompagne l'ordre,
+    # l'orchestrateur ne le recalcule pas sur le prix du scan.
+    risk_money: float = 0.0
+    risk_percent: float = 0.0
+    sizing_price: float = 0.0
+    volume_wanted: float = 0.0
+    volume_capped: bool = False
+    cost_ratio: float = 0.0     # (spread + commission) / distance au stop, au moment du gate (2026-09-25)
 
     def failed(self) -> list[CheckResult]:
         return [c for c in self.checks if not c.ok]
@@ -286,6 +295,11 @@ class GateResult:
             "approved": self.approved,
             "reason": self.reason,
             "adjusted_volume": self.adjusted_volume,
+            "risk_money": self.risk_money,
+            "risk_percent": self.risk_percent,
+            "sizing_price": self.sizing_price,
+            "volume_wanted": self.volume_wanted,
+            "volume_capped": self.volume_capped,
             "checks": [asdict(c) for c in self.checks],
         }
 

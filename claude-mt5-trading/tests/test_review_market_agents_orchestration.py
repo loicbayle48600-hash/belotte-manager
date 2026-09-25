@@ -33,9 +33,13 @@ class FakeLLM:
         self.text = text
         self.calls = 0
         self.hook = hook
+        self.max_tokens_seen: list[int] = []
+        self._lock = threading.Lock()
 
-    def complete(self, role, system, user, max_tokens=800, financial_importance="normal", temperature=0.2, cache_key_extra=""):
-        self.calls += 1
+    def complete(self, role, system, user, max_tokens=800, financial_importance="normal", **kw):
+        with self._lock:   # la revue appelle bull/bear/devil depuis trois threads
+            self.calls += 1
+            self.max_tokens_seen.append(max_tokens)
         if self.hook:
             self.hook(self, role)
         return LLMResponse(self.text, "fake-model", "TIER_B", 10, 10, 0.001)

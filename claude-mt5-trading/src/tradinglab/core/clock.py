@@ -55,10 +55,25 @@ def is_new_bar(tf: str, last_seen: datetime | None, now: datetime | None = None)
     return False, cur
 
 
-def current_session(now: datetime | None = None) -> Session:
+def current_session(now: datetime | None = None, round_the_clock: bool = False) -> Session:
+    """Session de marché courante.
+
+    `round_the_clock=False` (défaut) : hypothèse forex. `OFF` le samedi et le dimanche, et
+    `OFF` entre 21:00 et 00:00 UTC. C'est le comportement de tout instrument qui ferme.
+
+    `round_the_clock=True` : marché réellement ouvert en continu (crypto). Deux règles sautent,
+    car `OFF` n'est listé dans les sessions d'aucun agent — `active_for()` y renvoie donc
+    toujours 0 agent, ce qui rend l'instrument intradable malgré des cotations vivantes :
+
+    - la règle de **jour** : plus de `OFF` le week-end (constaté 2026-09-20) ;
+    - le creux de **21:00-00:00 UTC**, rattaché à `ASIA` : la session asiatique s'ouvre
+      effectivement vers 21:00-22:00 UTC (Sydney), le creux n'existe que pour le forex.
+
+    Les plages ASIA / LONDON / NEWYORK / OVERLAP restent identiques dans les deux cas.
+    """
     now = now or utcnow()
     h = now.hour + now.minute / 60.0
-    if now.weekday() >= 5:
+    if now.weekday() >= 5 and not round_the_clock:
         return Session.OFF
     in_ldn = 7 <= h < 16
     in_ny = 12 <= h < 21
@@ -70,7 +85,7 @@ def current_session(now: datetime | None = None) -> Session:
         return Session.NEWYORK
     if 0 <= h < 8:
         return Session.ASIA
-    return Session.OFF
+    return Session.ASIA if round_the_clock else Session.OFF
 
 
 def forex_market_open(now: datetime | None = None) -> bool:

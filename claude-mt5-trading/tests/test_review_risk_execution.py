@@ -68,12 +68,12 @@ def test_giveback_ignores_tiny_peak_but_keeps_real_peak(settings):
     st.update_equity(99999, 99999)
     d = DailyGuard(settings.risk, settings.daily_profit).evaluate(st)
     assert d.entries_allowed and "GIVEBACK_FLOOR" not in st.lock_reasons
-    # un vrai pic (0.8 %) reste protégé
+    # un vrai pic (0.8 %) est signalé — config du dépôt ("off") : marqueur posé, aucune restriction
     st2 = make_state()
     st2.update_equity(100800, 100800)
     st2.update_equity(100500, 100500)
     d2 = DailyGuard(settings.risk, settings.daily_profit).evaluate(st2)
-    assert not d2.entries_allowed and "GIVEBACK_FLOOR" in st2.lock_reasons
+    assert d2.entries_allowed and "GIVEBACK_FLOOR" not in st2.lock_reasons and st2.daily.giveback_breached
 
 
 # ---------------- prop_guard : null / vide = règle non renseignée ----------------
@@ -103,7 +103,7 @@ def test_correlation_nan_or_missing_symbol_falls_back_to_currency_rule(settings)
     corr2 = pd.DataFrame([[1.0, 0.1], [0.1, 1.0]], index=["GBPUSD", "AUDUSD"], columns=["GBPUSD", "AUDUSD"])
     checks = {c.name: c.ok for c in cg.check(st, "GBPUSD", Side.BUY, 250.0, corr2)}
     assert not checks["correlated_cluster_risk"]
-    # corrélation connue et faible : pas de cluster (règle signée conservée)
+    # corrélation connue et faible : pas de cluster
     corr3 = pd.DataFrame([[1.0, 0.1], [0.1, 1.0]], index=["EURUSD", "GBPUSD"], columns=["EURUSD", "GBPUSD"])
     checks = {c.name: c.ok for c in cg.check(st, "GBPUSD", Side.BUY, 250.0, corr3)}
     assert checks["correlated_cluster_risk"]
@@ -216,7 +216,9 @@ def test_sync_ignores_positions_api_error(broker, tmp_path, monkeypatch):
 def test_sync_adopts_with_estimated_risk_counted_by_limits(settings, broker, tmp_path):
     pm, store = pm_for(broker, tmp_path)
     t = broker.tick("EURUSD")
-    r = broker.order_send(OrderRequest("EURUSD", Side.BUY, 1.0, t.ask - 0.0100, magic=51000))   # ~1000 EUR de risque
+    # ~1 % du compte par lot : autant de lots que le budget total en % → la position adoptée le sature à elle seule
+    lots = float(settings.risk["max_total_open_risk_percent"])
+    r = broker.order_send(OrderRequest("EURUSD", Side.BUY, lots, t.ask - 0.0100, magic=51000))
     pm.sync()
     plan = store.state.bot_positions[str(r.ticket)]
     pos = broker.position(r.ticket)
@@ -225,7 +227,7 @@ def test_sync_adopts_with_estimated_risk_counted_by_limits(settings, broker, tmp
     assert plan.risk_percent == pytest.approx(100.0 * expected / 100000)
     rm = RiskManager(RiskLimits.from_config(settings.risk))
     checks = {c.name: c.ok for c in rm.check_limits(store.state, "GBPUSD", Side.BUY, 250.0, 0, 1)}
-    assert not checks["max_total_open_risk"]      # 1 % + 0.25 % > 1 %
+    assert not checks["max_total_open_risk"]      # budget déjà plein + 0,25 % > budget
 
 
 # ---------------- position_manager : break-even retenté, close() tracé, BE défensif ----------------

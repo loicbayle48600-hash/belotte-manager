@@ -18,10 +18,10 @@ Les limites internes du laboratoire restent plus strictes ; le prop guard n'asso
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
-from ..core.state import SystemState
+from ..core.state import SystemState, _parse_ts
 from ..core.trading_day import TradingDayCalendar
 from ..core.types import CheckResult, TradeMode
 
@@ -55,6 +55,12 @@ class PropProfile:
     max_risk_per_trade_idea_percent: float = 2.0
     trade_idea_aggregation_minutes: float = 10.0
     consistency_max_share_percent: float = 25.0
+    consistency_enforced: bool = False              # appliquer en direct (sizing + fermeture au plafond)
+    consistency_enforce_from_profit_percent: float = 1.0   # ... dès que le profit net >= x % du solde initial
+    max_lots_by_account_size: dict = field(default_factory=dict)   # {taille: {classe: lots max}}
+    hedging_allowed: bool = False
+    reversal_after_loss_cooldown_minutes: float = 0.0    # 0 = contrôle désactivé
+    commissions_per_lot: dict = field(default_factory=dict)
     min_trading_days: int = 0
     stop_loss_mandatory: bool = True
     ea_requires_approval: bool = True
@@ -209,7 +215,148 @@ class PropGuard:
         else:
             out.append(CheckResult("prop_trade_idea_risk", True, "idée de trade non évaluable (symbole/sens absents)"))
         out.append(self.weekend_check(asset_class, now))
+        if symbol and side:
+            out.append(self.hedge_check(state, symbol, side))
+            out.append(self.reversal_check(state, symbol, side, now))
         return out
+
+    # ---------- pratiques interdites (page « Ce qu'on n'autorise pas », 2026-09-23) ----------
+    def hedge_check(self, state: SystemState, symbol: str, side: str) -> CheckResult:
+        """Hedging interdit : aucune position du bot dans l'autre sens sur le même instrument."""
+        if self.profile.hedging_allowed:
+            return CheckResult("prop_no_hedge", True, "hedging autorisé par le profil")
+        opposes = [p.ticket for p in state.bot_positions.values() if p.symbol == symbol and p.side != side]
+        return CheckResult("prop_no_hedge", not opposes,
+                           "aucune position opposée" if not opposes else f"position opposée ouverte sur {symbol} : {opposes}")
+
+    def reversal_check(self, state: SystemState, symbol: str, side: str, now: Optional[datetime] = None) -> CheckResult:
+        """Pas d'inversion immédiate après une perte (politique de jeu FOXX) : après une idée PERDANTE sur ce
+        symbole, l'autre sens attend `reversal_after_loss_cooldown_minutes`."""
+        cd = float(self.profile.reversal_after_loss_cooldown_minutes or 0.0)
+        if cd <= 0:
+            return CheckResult("prop_no_reversal", True, "contrôle désactivé")
+        now = now or datetime.now(timezone.utc)
+        for idea in state.trade_ideas.values():
+            if idea.symbol != symbol or idea.side == side or idea.open_tickets or idea.realized_pnl >= 0:
+                continue
+            ts = _parse_ts(idea.last_activity_at)
+            if ts is None:
+                continue
+            age_min = (now - ts).total_seconds() / 60.0
+            if age_min < cd:
+                return CheckResult("prop_no_reversal", False,
+                                   f"perte {idea.side} sur {symbol} il y a {age_min:.0f} min : inversion refusée avant {cd:g} min")
+        return CheckResult("prop_no_reversal", True, "aucune perte récente dans l'autre sens")
+
+    # ---------- taille de lots (FAQ FOXX « Restrictions sur la taille des lots », 2026-09-23) ----------
+    #: classes d'actifs du laboratoire → colonnes de la table FOXX
+    LOT_CLASS = {"forex": "forex", "metals": "commodities", "energy": "commodities", "commodities": "commodities",
+                 "indices": "indices", "index": "indices", "crypto": "crypto"}
+
+    def max_lots(self, asset_class: str) -> Optional[float]:
+        """Lots maximum pour cette classe d'actifs et la taille du compte du profil ; None si la table est absente.
+        Ligne = plus grande taille <= account_size ; classe inconnue = colonne la plus stricte."""
+        table = self.profile.max_lots_by_account_size or {}
+        if not table:
+            return None
+        tailles = sorted(float(k) for k in table)
+        eligibles = [t for t in tailles if t <= float(self.profile.account_size or 0.0)]
+        row = table.get(int(eligibles[-1] if eligibles else tailles[0]))
+        if row is None:
+            row = table.get(str(int(eligibles[-1] if eligibles else tailles[0]))) or table.get(eligibles[-1] if eligibles else tailles[0])
+        if not isinstance(row, dict) or not row:
+            return None
+        col = self.LOT_CLASS.get(str(asset_class or "").lower())
+        if col is not None and col in row:
+            return float(row[col])
+        return float(min(float(v) for v in row.values()))
+
+    def commission_per_lot(self, asset_class: str) -> float:
+        """Commission aller-retour par lot (USD) de la prop firm pour cette classe ; 0 si non renseignée."""
+        table = self.profile.commissions_per_lot or {}
+        if not table:
+            return 0.0
+        col = self.LOT_CLASS.get(str(asset_class or "").lower())
+        if col is not None and col in table:
+            return float(table[col])
+        return float(max(float(v) for v in table.values()))   # classe inconnue : la plus chère
+
+    @staticmethod
+    def open_idea_lots(state: SystemState, symbol: str, side: str) -> float:
+        """Lots déjà ouverts par le bot sur la même idée (même symbole, même sens) — volume initial, borne haute."""
+        return float(sum(float(p.initial_volume) for p in state.bot_positions.values()
+                         if p.symbol == symbol and p.side == side))
+
+    # ---------- cohérence 25 % appliquée en direct (décision utilisateur 2026-09-23) ----------
+    def consistency_total_profit(self, state: SystemState) -> float:
+        """Profit NET réalisé des idées du CYCLE DE PAIEMENT courant (gains et pertes) : le dénominateur de la
+        règle — FOXX la contrôle au paiement, sur le profit du cycle."""
+        return float(sum(i.realized_pnl for i in state.cycle_trade_ideas()))
+
+    def payout_cycle_status(self, state: SystemState, now: Optional[datetime] = None) -> dict:
+        """Où en est le cycle de paiement : jours de trading faits / requis, profit du cycle, cohérence du cycle,
+        conditions FOXX (solde > initial, aucune position ouverte, pas de violation) → `eligible` / `ready`."""
+        from .payout import PayoutRules
+
+        rules = PayoutRules.from_profile(self.profile)
+        index = len(state.payouts)
+        required = rules.trading_days_required(index)
+        days = state.cycle_trading_days()
+        initial = self.reference_balance(state)
+        profit = float(state.balance) - float(initial)
+        cap = initial * rules.max_withdrawal_percent_per_cycle / 100.0
+        share = 0.0
+        gains = [i.realized_pnl for i in state.cycle_trade_ideas() if i.realized_pnl > 0]
+        total = self.consistency_total_profit(state)
+        if total > 0 and gains:
+            share = 100.0 * max(gains) / total
+        cons_ok = share <= self.profile.consistency_max_share_percent
+        violation = self.overall_loss_percent(state) >= self.profile.max_overall_loss_hard_percent
+        raw = self.profile.raw or {}
+        auto = bool(raw.get("payout_auto_cycle", False))
+        blocking = []
+        if len(days) < required:
+            blocking.append(f"{len(days)} jour(s) de trading sur {required} requis")
+        if profit <= 0:
+            blocking.append("solde ≤ solde initial : aucun profit à retirer")
+        if not cons_ok:
+            blocking.append(f"cohérence : meilleure idée = {share:.1f} % du profit du cycle (> {self.profile.consistency_max_share_percent:g} %) — continuer à trader")
+        if violation:
+            blocking.append("perte totale au-delà de la limite dure")
+        eligible = not blocking
+        amount = max(0.0, min(profit, cap)) if eligible else 0.0
+        return {"auto_cycle": auto, "payout_index": index, "trading_days_done": len(days), "trading_days_required": required,
+                "days_remaining": max(0, required - len(days)), "cycle_started_at": state.payout_cycle_started_at or "origine",
+                "cycle_profit": round(profit, 2), "withdrawal_cap": round(cap, 2), "withdrawable": round(amount, 2),
+                "consistency_share_percent": round(share, 2), "consistency_ok": cons_ok,
+                "open_positions": len(state.bot_positions), "eligible": eligible,
+                "ready": eligible and not state.bot_positions, "blocking_reasons": blocking,
+                "window_open": bool(state.payout_window_since), "payouts_done": index,
+                "last_payout": state.payouts[-1] if state.payouts else None,
+                "profit_split_percent": rules.split_percent(index),
+                "demo_as_funded": bool(raw.get("payout_demo_as_funded", False))}
+
+    def consistency_gain_cap(self, state: SystemState, symbol: str, side: str,
+                             now: Optional[datetime] = None) -> Optional[float]:
+        """Gain maximal que l'idée (symbol, side) peut encore réaliser sans dépasser sa part autorisée.
+
+        None = règle non appliquée (désactivée, ou profit net du cycle sous le seuil d'application : tant que
+        le compte n'a pas 1 % de profit, la première idée gagnante pèse mécaniquement 100 % et FOXX demande
+        simplement de continuer à trader). Sinon : part × (profit des autres idées) / (1 − part), soit
+        « autres / 3 » à 25 % — ce que l'idée peut gagner pour rester à 25 % du total qui l'inclut.
+        """
+        if not self.profile.consistency_enforced:
+            return None
+        base = self.reference_balance(state)
+        total = self.consistency_total_profit(state)
+        if base <= 0 or total < base * self.profile.consistency_enforce_from_profit_percent / 100.0:
+            return None
+        idea = state.active_trade_idea(symbol, side, now, self.profile.trade_idea_aggregation_minutes)
+        autres = total - (idea.realized_pnl if idea else 0.0)
+        part = self.profile.consistency_max_share_percent / 100.0
+        if autres <= 0 or part >= 1.0:
+            return 0.0
+        return autres * part / (1.0 - part)
 
     def consistency_status(self, state: SystemState) -> dict:
         """Règle de cohérence : part du profit total détenue par la meilleure idée.
@@ -252,6 +399,7 @@ class PropGuard:
             "trade_idea_aggregation_minutes": self.profile.trade_idea_aggregation_minutes,
             "consistency": self.consistency_status(state),
             "activity": self.activity_status(state),
+            "payout_cycle": self.payout_cycle_status(state),
             "weekend_trading_allowed": self.profile.raw.get("weekend_trading_allowed"),
             "news_window_minutes": self.profile.raw.get("news_trading_window_minutes"),
             "news_trading_allowed_on_funded": self.profile.raw.get("news_trading_allowed_on_funded"),

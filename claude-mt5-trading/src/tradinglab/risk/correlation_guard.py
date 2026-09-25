@@ -3,7 +3,11 @@
 Trois plafonds (en % de l'equity) :
 - MAX_CURRENCY_FACTOR_RISK_PERCENT : exposition nette sur une devise (USD commun à EURUSD BUY + GBPUSD BUY + USDCHF SELL…) ;
 - MAX_ASSET_CLASS_RISK_PERCENT     : concentration par classe d'actif ;
-- MAX_CORRELATED_CLUSTER_RISK_PERCENT : positions dont la corrélation glissante des rendements > seuil (signée par direction).
+- MAX_CORRELATED_CLUSTER_RISK_PERCENT : positions dont la corrélation glissante des rendements dépasse le seuil
+  en VALEUR ABSOLUE. Jusqu'au 2026-09-21 la corrélation était signée par direction : un long USTEC et un short
+  US30 (corrélation +0,9) ne formaient pas de cluster, alors que les deux SL peuvent être touchés le même jour
+  (divergence sectorielle) et que le plafond de cluster exprime une concentration par thème, pas une direction.
+  La couverture reste possible dans la limite du plafond ; l'exposition nette par devise, elle, reste signée.
 """
 from __future__ import annotations
 
@@ -85,18 +89,18 @@ class CorrelationGuard:
         out.append(CheckResult("asset_class_risk", pct_cls <= L.max_asset_class_risk_percent + 1e-9,
                                f"{new.asset_class} {pct_cls:.3f}% / {L.max_asset_class_risk_percent}%"))
 
-        # cluster corrélé : positions existantes dont la corrélation signée avec le nouveau pari dépasse le seuil.
-        # Ligne par ligne : corrélation inconnue (matrice absente, symbole manquant, NaN) → repli prudent par
-        # devise commune dans le même sens de facteur (donnée inconnue = prudence, jamais « non corrélé »).
+        # cluster corrélé : positions existantes dont la corrélation ABSOLUE avec le nouveau pari dépasse le
+        # seuil, quel que soit le sens (voir l'en-tête du module). Ligne par ligne : corrélation inconnue
+        # (matrice absente, symbole manquant, NaN) → repli prudent par devise commune dans le même sens de
+        # facteur (donnée inconnue = prudence, jamais « non corrélé »).
         cluster = risk_money
         members = []
         for ln in lines:
             c = self._corr_value(correlations, symbol, ln.symbol)
             if c is not None:
-                signed = c * side.sign * ln.side.sign
-                if signed >= L.correlation_threshold:
+                if abs(c) >= L.correlation_threshold:
                     cluster += ln.risk_money
-                    members.append(f"{ln.symbol}({c:.2f})")
+                    members.append(f"{ln.symbol}({c:+.2f})")
                 continue
             shared = ({new.base, new.quote} & {ln.base, ln.quote})
             if shared:

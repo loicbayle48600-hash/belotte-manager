@@ -92,7 +92,8 @@ def test_risk_max_never_exceeded(broker):
 # ---------------- limites ----------------
 def test_daily_loss_locks_new_trades(settings):
     st = make_state()
-    st.update_equity(98900, 98900)   # -1.1 %
+    lim = float(settings.risk["max_daily_loss_internal_percent"])
+    st.update_equity(100000 * (1 - (lim + 0.1) / 100), 100000 * (1 - (lim + 0.1) / 100))   # limite + 0,1 %
     d = DailyGuard(settings.risk, settings.daily_profit).evaluate(st)
     assert not d.entries_allowed and "DAILY_LOSS_LIMIT" in st.lock_reasons
 
@@ -107,19 +108,50 @@ def test_profit_scaling_and_giveback(settings):
     st = make_state()
     st.update_equity(100800, 100800)
     d = DailyGuard(settings.risk, settings.daily_profit).evaluate(st)
-    assert d.entries_allowed and d.risk_percent == 0.15 and d.setup_score_bonus == 5
+    base = float(settings.risk["risk_per_trade_percent"])
+    assert d.entries_allowed and d.risk_percent == min(settings.daily_profit["level_1_new_risk_percent"], base)
+    assert d.setup_score_bonus == 5
+    assert d.risk_percent <= base, "un palier après profit ne peut jamais AUGMENTER le risque (2026-09-25)"
     st.update_equity(100500, 100500)   # rendu > 25 % du pic (+800 → floor +600)
     d = DailyGuard(settings.risk, settings.daily_profit).evaluate(st)
-    assert not d.entries_allowed and "GIVEBACK_FLOOR" in st.lock_reasons
+    # config du dépôt (2026-09-22, décision utilisateur « continue normalement ») : giveback "off" — signalé,
+    # aucune restriction ; seul le barème de profit du jour module le risque
+    assert settings.daily_profit["giveback_action"] == "off"
+    assert d.entries_allowed and "GIVEBACK_FLOOR" not in st.lock_reasons
+    assert d.risk_percent == settings.risk["risk_per_trade_percent"] and st.daily.giveback_breached
+    assert any("aucune restriction" in r for r in d.reasons)
+    # mode "reduce_risk" : on continue mais à risque minimal, et le marqueur est COLLANT (un rebond
+    # au-dessus du plancher ne réarme pas le plein risque)
+    st.update_equity(100750, 100750)
+    d = DailyGuard(settings.risk, dict(settings.daily_profit, giveback_action="reduce_risk")).evaluate(st)
+    assert d.entries_allowed and d.risk_percent == settings.daily_profit["giveback_risk_percent"]
+    # mode "lock" historique (celui du futur mode prop réel) : mêmes conditions → entrées gelées
+    st2 = make_state()
+    st2.update_equity(100800, 100800)
+    st2.update_equity(100500, 100500)
+    d2 = DailyGuard(settings.risk, dict(settings.daily_profit, giveback_action="lock")).evaluate(st2)
+    assert not d2.entries_allowed and "GIVEBACK_FLOOR" in st2.lock_reasons
+    # bascule lock → off : le verrou hérité est levé, plus aucune restriction
+    d3 = DailyGuard(settings.risk, settings.daily_profit).evaluate(st2)
+    assert d3.entries_allowed and "GIVEBACK_FLOOR" not in st2.lock_reasons
 
 
 def test_total_open_risk_and_max_positions(settings):
-    rm = RiskManager(RiskLimits.from_config(settings.risk))
+    """Les deux plafonds se déclenchent quand l'inventaire atteint la limite configurée.
+
+    Les valeurs viennent de `config/risk.yaml` : figer un nombre de positions en dur ferait
+    échouer ce test au moindre ajustement du budget de risque, sans qu'aucune règle soit cassée.
+    """
+    limites = RiskLimits.from_config(settings.risk)
+    rm = RiskManager(limites)
     st = make_state()
-    for i in range(3):
-        st.bot_positions[str(i)] = BotPositionPlan(i, f"S{i}", "BUY", "a", "c", 1.0, 0.99, 0.1, 300.0, 0.3)
-    checks = {c.name: c.ok for c in rm.check_limits(st, "EURUSD", Side.BUY, 250.0, 0, 3)}
-    assert not checks["max_open_positions"] and not checks["max_total_open_risk"]
+    n = int(settings.risk["max_open_positions"])
+    part = float(settings.risk["max_total_open_risk_percent"]) / n        # sature pile le budget
+    for i in range(n):
+        st.bot_positions[str(i)] = BotPositionPlan(i, f"S{i}", "BUY", "a", "c", 1.0, 0.99, 0.1, 300.0, part)
+    checks = {c.name: c.ok for c in rm.check_limits(st, "EURUSD", Side.BUY, 250.0, 0, n)}
+    assert not checks["max_open_positions"], "le nombre de positions doit être plafonné"
+    assert not checks["max_total_open_risk"], "le budget de risque total doit être plafonné"
 
 
 def test_duplicate_symbol_position_refused(settings):
@@ -132,10 +164,13 @@ def test_duplicate_symbol_position_refused(settings):
 
 # ---------------- prop ----------------
 def test_non_demo_account_blocks_execution(settings):
-    pg = PropGuard(PropProfile.from_config(settings.prop), True, settings.autonomous_prop, 1.0)
+    # sans le drapeau AUTONOMOUS_TRADING_PROP, un compte REAL reste bloqué quel que soit le profil
+    pg = PropGuard(PropProfile.from_config(settings.prop), True, False, 1.0)
     assert pg.authorization(TradeMode.DEMO).ok
     assert not pg.authorization(TradeMode.REAL).ok
     assert not pg.authorization(TradeMode.UNKNOWN).ok
+    # trade_mode UNKNOWN : refus même avec tous les verrous ouverts
+    assert not PropGuard(PropProfile.from_config(settings.prop), True, settings.autonomous_prop, 1.0).authorization(TradeMode.UNKNOWN).ok
 
 
 def test_prop_unknown_rules_block_even_with_flags(settings):
@@ -144,7 +179,7 @@ def test_prop_unknown_rules_block_even_with_flags(settings):
     pg = PropGuard(PropProfile.from_config(dict(base, ea_allowed="UNKNOWN", daily_loss_basis=None)), True, True, 1.0)
     assert not pg.prop_automation_allowed and pg.profile.ambiguous
     # règles relevées mais approbation de l'EA par la prop firm non obtenue → toujours bloqué
-    pg2 = PropGuard(PropProfile.from_config(base), True, True, 1.0)
+    pg2 = PropGuard(PropProfile.from_config(dict(base, ea_approval_obtained=False)), True, True, 1.0)
     assert not pg2.profile.ambiguous and not pg2.prop_automation_allowed
     assert any("EA_APPROVAL_OBTAINED" in r for r in pg2.blocking_reasons)
     # approbation obtenue + drapeaux + autorisation explicite → seul cas autorisé
@@ -153,19 +188,33 @@ def test_prop_unknown_rules_block_even_with_flags(settings):
 
 
 def test_settings_autonomous_prop_requires_all_flags(settings):
+    # dépôt du 2026-09-21 : drapeau + règles vérifiées + autorisation explicite → vrai ; chaque drapeau manquant → faux
+    assert settings.autonomous_prop is True
+    for flag in ("prop_rules_verified", "user_explicitly_authorized_prop_automation"):
+        saved = settings.prop[flag]
+        settings.prop[flag] = False
+        assert settings.autonomous_prop is False, flag
+        settings.prop[flag] = saved
+    settings.system["autonomous_prop"] = False
     assert settings.autonomous_prop is False
 
 
 # ---------------- corrélation ----------------
 def test_currency_factor_guard(settings):
+    """Les montants dérivent du plafond configuré : figer 300 $ casserait ce test au moindre
+    ajustement du budget de risque, sans qu'aucune règle ne soit violée."""
     cg = CorrelationGuard(CorrelationLimits.from_config(settings.correlation))
     st = make_state()
-    st.bot_positions["1"] = BotPositionPlan(1, "EURUSD", "BUY", "a", "c", 1.0, 0.99, 0.1, 300.0, 0.3)
-    st.bot_positions["2"] = BotPositionPlan(2, "GBPUSD", "BUY", "a", "c", 1.0, 0.99, 0.1, 300.0, 0.3)
-    checks = {c.name: c.ok for c in cg.check(st, "AUDUSD", Side.BUY, 300.0)}
-    assert not checks["currency_factor_risk"]        # USD net 0.9 % > 0.6 %
-    checks2 = {c.name: c.ok for c in cg.check(st, "USDCHF", Side.BUY, 100.0)}
-    assert checks2["currency_factor_risk"]          # réduit l'exposition USD
+    plafond = st.equity * settings.correlation["max_currency_factor_risk_percent"] / 100.0
+    part = plafond * 0.4                              # deux positions = 0,8 x plafond : sous la limite
+    st.bot_positions["1"] = BotPositionPlan(1, "EURUSD", "BUY", "a", "c", 1.0, 0.99, 0.1, part, 0.1)
+    st.bot_positions["2"] = BotPositionPlan(2, "GBPUSD", "BUY", "a", "c", 1.0, 0.99, 0.1, part, 0.1)
+    # une troisième position short USD dépasse le plafond
+    checks = {c.name: c.ok for c in cg.check(st, "AUDUSD", Side.BUY, part)}
+    assert not checks["currency_factor_risk"]
+    # une position long USD réduit l'exposition nette : elle doit passer
+    checks2 = {c.name: c.ok for c in cg.check(st, "USDCHF", Side.BUY, part)}
+    assert checks2["currency_factor_risk"]
 
 
 def test_correlation_matrix_cluster(settings):
@@ -175,8 +224,18 @@ def test_correlation_matrix_cluster(settings):
     corr = pd.DataFrame([[1.0, 0.9], [0.9, 1.0]], index=["EURUSD", "GBPUSD"], columns=["EURUSD", "GBPUSD"])
     checks = {c.name: c.ok for c in cg.check(st, "GBPUSD", Side.BUY, 250.0, corr)}
     assert not checks["correlated_cluster_risk"]
+    # sens opposé sur un instrument corrélé à 0,9 : cluster quand même (corrélation en valeur absolue depuis
+    # le 2026-09-21 : long USTEC + short US30 restent deux paris sur le même thème)
     checks = {c.name: c.ok for c in cg.check(st, "GBPUSD", Side.SELL, 250.0, corr)}
+    assert not checks["correlated_cluster_risk"]
+    # corrélation faible : pas de cluster, quel que soit le sens
+    corr_faible = pd.DataFrame([[1.0, 0.2], [0.2, 1.0]], index=["EURUSD", "GBPUSD"], columns=["EURUSD", "GBPUSD"])
+    checks = {c.name: c.ok for c in cg.check(st, "GBPUSD", Side.SELL, 250.0, corr_faible)}
     assert checks["correlated_cluster_risk"]
+    # corrélation fortement négative, même sens (EURUSD BUY + USDCHF BUY = couverture) : cluster aussi
+    corr_neg = pd.DataFrame([[1.0, -0.9], [-0.9, 1.0]], index=["EURUSD", "USDCHF"], columns=["EURUSD", "USDCHF"])
+    checks = {c.name: c.ok for c in cg.check(st, "USDCHF", Side.BUY, 250.0, corr_neg)}
+    assert not checks["correlated_cluster_risk"]
 
 
 # ---------------- gate ----------------
@@ -335,3 +394,20 @@ def test_close_always_allowed_even_when_locked(settings, broker, tmp_path):
     store.state.set_mode(SystemMode.SAFE_MODE, "x")
     pm = PositionManager(broker, store, Journal(tmp_path / "logs", component="t"), PMConfig(), 51000)
     assert pm.close(r.ticket, "manual") and not broker.positions()
+
+
+
+def test_controle_desactive_ne_refuse_plus_mais_reste_journalise(settings, broker):
+    """2026-09-25, retour au 19/09 : un contrôle listé dans `disabled_checks` passe, avec la raison qu'il aurait donnée."""
+    import dataclasses
+    import pandas as pd
+    gate, _ = gate_for(settings, broker)
+    c, atr = make_candidate(broker, "EURUSD", Side.BUY)
+    tick, spec = broker.tick("EURUSD"), broker.symbol_info("EURUSD")
+    dist = tick.spread_points(spec) * spec.point * 1.5            # coût d'entrée = 67 % du risque
+    c.sl, c.tp_plan = c.entry - dist, [c.entry + 3 * dist]
+    ctx = dataclasses.replace(ctx_for(broker, c, make_state(), atr, correlations=pd.DataFrame()),
+                              disabled_checks=("07b_spread_vs_sl",))
+    res, _ = gate.evaluate(ctx)
+    ch = {x.name: x for x in res.checks}["07b_spread_vs_sl"]
+    assert ch.ok is True and "aurait refusé" in ch.detail and "% du risque" in ch.detail

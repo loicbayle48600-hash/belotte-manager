@@ -6,15 +6,16 @@ fichiers `config/*.yaml` : ne rien supposer qui n'y figure pas.
 ## 1. Mission et périmètre
 
 - Laboratoire de trading algorithmique **multi-agents autonome** relié à **MetaTrader 5**, sur **compte DEMO d'abord**
-  (`config/system.yaml` → `account_expected` : login `5056182608`, serveur `MetaQuotes-Demo`, `trade_mode: DEMO`, `EUR`, hedging).
+  (`config/system.yaml` → `account_expected` : login `53060800`, serveur `ICMarketsEU-Demo` (IC Markets), `trade_mode: DEMO`, `USD`, hedging).
 - Package Python `tradinglab` (`src/tradinglab`, Python ≥ 3.11, `pyproject.toml`), processus séparés : orchestrateur,
   watchdog, dashboard (lecture seule), serveur MCP (stdio), CLI.
 - Deux brokers : `TRADINGLAB_BROKER=mt5` (package `MetaTrader5`, **Windows x64 uniquement**) et `TRADINGLAB_BROKER=mock`
   (broker simulé déterministe, Linux/tests).
-- **État réel du projet** : construit et testé dans un conteneur Linux avec le broker `mock` (`python -m pytest` : 101 tests).
-  `src/tradinglab/mt5/mt5_adapter.py` n'a **jamais été exécuté** ici (le package `MetaTrader5` n'existe pas sous Linux).
-  Les étapes Windows (audit, installation, connexion MT5, smoke test DEMO réel, lancement SAFE puis AUTO) restent à faire
-  sur le PC de l'utilisateur (section 17).
+- **État réel du projet (2026-09-21)** : déployé sur le PC Windows de l'utilisateur, relié au terminal MT5 réel
+  (`TRADINGLAB_BROKER=mt5`, venv `.venv`), tourne en **AUTO sur le compte DEMO IC Markets 53060800** avec le watchdog.
+  Suite de tests : `TRADINGLAB_BROKER=mock .venv\Scripts\python.exe -m pytest` (≈ 1 060 tests, broker `mock`).
+  Règles de session : **ne jamais passer en AUTO ni modifier `.env` sans accord explicite de l'utilisateur** ;
+  demander avant toute modification d'un seuil de risque ou du gate.
 - Aucune promesse de rentabilité. Un `setup_score` est un score interne 0-100, **pas une probabilité de gain**.
 
 ## 2. Principes non négociables (10)
@@ -63,10 +64,11 @@ Claude Code / agents LLM (TIER_A/B/C)  ──lecture, propositions──┐
 
 | Chemin | Rôle |
 |---|---|
-| `config/system.yaml` | flags `autonomous_demo/prop`, `safe_mode_on_startup`, magic `51000`, cadences scheduler, seuils d'exécution, `account_expected` |
+| `config/system.yaml` | flags `autonomous_demo/prop`, `safe_mode_on_startup`, magic `51000`, cadences scheduler, seuils d'exécution, `account_expected` ; `data_max_age_sec: 60` et `break_even_r: 1.0` approuvés par l'utilisateur le 2026-09-22 |
 | `config/risk.yaml` | risque par trade, limites, corrélation, `profit_management` (ADAPTIVE_R_MANAGEMENT), `daily_profit` |
 | `config/models.yaml` | tiers TIER_A/B/C/D, budget et quotas LLM |
-| `config/markets.yaml`, `prop_firms.yaml`, `strategies.yaml`, `news_sources.yaml` | univers, profil prop (règles relevées, cf. `docs/prop/foxx_funded_regles.md`), champion/challenger + backtest, providers news |
+| `config/markets.yaml`, `prop_firms.yaml`, `strategies.yaml`, `news_sources.yaml` | univers, profil prop (règles relevées, cf. `docs/prop/foxx_funded_regles.md`), champion/challenger + backtest, providers news (fenêtres 30/15 min, doublées à 60/30 pour les banques centrales — `CENTRAL_BANK_PATTERNS` du hub, décision utilisateur 2026-09-21) |
+| `macro/cot.py` | positionnement COT (CFTC Socrata, sans clé, cache `data/cot_cache.json`, cadence 6 h) : ajoute un `argument_against` quand un trade suit un positionnement spéculatif déjà extrême (index min-max 3 ans >= 90 ou <= 10) ; marché non couvert ou flux en panne → aucune annotation, jamais de neutre inventé |
 | `src/tradinglab/core/types.py` | enums (`Side`, `TradeMode`, `Regime`, `AgentStatus`, `SystemMode`, `Provenance`, `Verdict`), dataclasses (`TradeCandidate`, `OrderRequest`, `GateResult`…) |
 | `core/config.py` | `load_settings()` fusionne les 7 YAML ; secrets **uniquement** via l'environnement (`.env` chargé par `load_dotenv`) |
 | `core/state.py` | `SystemState` + `StateStore` (JSON atomique), file `state/commands.jsonl`, heartbeat |
@@ -83,9 +85,10 @@ Claude Code / agents LLM (TIER_A/B/C)  ──lecture, propositions──┐
 | `risk/correlation_guard.py`, `portfolio/exposure.py` | facteurs devise, classes d'actifs, clusters corrélés |
 | `execution/gate.py` | `ExecutionGate.evaluate()` : 20 contrôles → `GateResult` + `OrderRequest` |
 | `execution/executor.py` | **seul** appel `order_send` du runtime, vérification post-fill, `BotPositionPlan` |
-| `execution/position_manager.py` | TP partiels, break-even, trailing, `NEVER_WIDEN_STOP`, adoption après restart |
+| `execution/position_manager.py` | TP partiels, break-even, trailing, `NEVER_WIDEN_STOP`, adoption après restart, constats SL manquant/élargi |
+| `execution/invalidation.py` | lecture déterministe des règles d'invalidation en texte libre (niveau / zone / timeframe) |
 | `market_data/indicators.py`, `regime.py`, `feed.py` | indicateurs purs, régime déterministe, snapshots multi-TF avec cache par barre |
-| `agents/registry.py` | 105 `AgentSpec` (familles A..M), statuts persistés dans `data/agent_status.json` |
+| `agents/registry.py` | 113 `AgentSpec` (familles A..O ; N = saisonnalité, O = cycle long H4/D1, toutes deux seedées SHADOW), statuts persistés dans `data/agent_status.json` |
 | `agents/screeners.py` | 18 screeners Python (`@register`) → `TradeCandidate` |
 | `agents/review.py` | revue Bull/Bear/Devil + Trade Arbiter (LLM optionnel, repli déterministe) |
 | `models/router.py`, `models/client.py` | routage par rôle/tier, budget, quotas, cache, coût mesuré |
@@ -100,9 +103,9 @@ Claude Code / agents LLM (TIER_A/B/C)  ──lecture, propositions──┐
 | `monitoring/watchdog.py` | processus indépendant, `state/watchdog.json`, action directe sur SL manquant |
 | `api/commands.py`, `api/cli.py` | commandes lecture/action, `python -m tradinglab.api.cli <CMD>` |
 | `mcp/server.py` | outils MCP (lecture + commandes de sécurité + `propose_trade`) |
-| `dashboards/server.py` | HTTP lecture seule `127.0.0.1:8765` |
+| `dashboards/server.py` | dashboard HTTPS authentifié (`0.0.0.0:8765`, cookie, `DASHBOARD_AUTH_*`/`DASHBOARD_TLS`) : lecture (`/api/state`, `/api/stats`) + panneau de contrôle (`/api/command` whitelist, `/api/restart`, `/api/copy/follower`) — jamais d'`order_send` |
 | `scripts/*.ps1`, `scripts/smoke_test_demo.py` | audit/installation/démarrage/arrêt/autostart Windows, smoke test DEMO |
-| `tests/` | 101 tests pytest (mock) : risque/gate, market data, news, backtest, dashboard |
+| `tests/` | ≈ 990 tests pytest (mock) : risque/gate, prop FOXX, market data, news, backtest, orchestrateur, watchdog, audits datés |
 
 ## 4. Règles de sécurité — interdiction absolue de contourner l'Execution Gate
 
@@ -129,6 +132,10 @@ Claude Code / agents LLM (TIER_A/B/C)  ──lecture, propositions──┐
   `refresh_interval_sec: 3600`). Modèle absent → suivant de la liste → tier inférieur → déterministe.
 - Budget : `daily_budget_usd: 10.0` ; quotas horaires `max_fable_calls_per_hour: 6`, `max_opus_calls_per_hour: 30`,
   `max_worker_calls_per_hour: 200` ; cache des réponses `cache_ttl_sec: 240`. Compteurs dans `SystemState.model_budget`.
+- Appels (`models/client.py`) : `thinking={"type": "disabled"}` **obligatoire** — les modèles Claude 5 réfléchissent par défaut et,
+  constaté en prod le 2026-09-21, 500 tokens partaient intégralement dans la réflexion (texte vide, `stop_reason=max_tokens`).
+  `stop_reason` journalisé dans `llm_call`, réponse tronquée → warning. Cache par identité déclarée (`cache_key`) : la revue
+  utilise `symbole|sens|agent|barre` (l'ancienne clé `c.id` changeait à chaque cycle → aucune réutilisation). Client thread-safe, quota horaire réservé au routage (jamais dépassé même en parallèle).
 - Budget atteint → `TIER_D` sauf `financial_importance="high"` (arbitre). **Sans `ANTHROPIC_API_KEY` : mode déterministe complet**
   (`llm_skipped` journalisé, revue déterministe). Risk Guard / Watchdog ne dépendent jamais du routeur.
 - Toute sortie LLM est marquée `MODEL_INTERPRETATION` ; le prompt commun impose « n'invente aucune donnée, UNKNOWN sinon, JSON uniquement ».
@@ -147,7 +154,10 @@ Claude Code / agents LLM (TIER_A/B/C)  ──lecture, propositions──┐
 - Le Market Router n'active que les agents compatibles régime/session/marché (`active_for()`), ignore les symboles `data_quality != OK`
   ou en `NEWS_SHOCK`, dédoublonne par (symbole, sens) (+2 points par agent concordant, max +8 ; −10 si signaux opposés).
 - Revue adversariale (`agents/review.py`) : déterministe d'abord (data_quality, news, RR ≥ 1.5, expectancy historique, seuil de score) ;
-  si LLM disponible et pas de REJECT déterministe : `bull_thesis`, `bear_thesis`, `devil_advocate`, puis `trade_arbiter` (importance high).
+  si LLM disponible et pas de REJECT déterministe : `bull_thesis`, `bear_thesis`, `devil_advocate` **en parallèle** (threads), puis
+  `trade_arbiter` (importance high). Consigne « JSON compact, ≤ 4 éléments, ≤ 25 mots » ; `THESIS_MAX_TOKENS=700`, `ARBITER_MAX_TOKENS=400`.
+  Dans l'orchestrateur les `MAX_LLM_REVIEWS_PER_CYCLE=3` revues tournent aussi en parallèle (séquentiel : cycle de 100 s mesuré,
+  positions non gérées pendant ce temps) ; un rejet déterministe ne consomme pas de créneau.
   L'arbitre LLM ne peut pas outrepasser un rejet déterministe ni approuver sous `score − 10`. Le gate a toujours le dernier mot.
 
 ## 7. Boucle (`orchestration/orchestrator.py`)
@@ -167,14 +177,26 @@ prochaine clôture de barre, ≥ 1 s, ≤ 15 s).
 
 ## 8. Risk (`config/risk.yaml`)
 
-- `risk_per_trade_percent: 0.25`, `max_risk_per_trade_percent: 0.35`, `max_daily_loss_internal_percent: 1.0`,
-  `max_total_open_risk_percent: 1.0`, `max_open_positions: 3`, `max_positions_per_symbol: 1`, `max_consecutive_losses: 3`.
-- Corrélation : cluster 0.5 %, facteur devise 0.6 %, classe d'actif 0.75 %, seuil 0.7, lookback 200 barres H1.
+- `risk_per_trade_percent: 0.125`, `max_risk_per_trade_percent: 0.35`, `max_daily_loss_internal_percent: 1.0`,
+  `max_total_open_risk_percent: 1.0`, `max_open_positions: 30` (le vrai plafond est le budget de risque, pas les emplacements),
+  `max_positions_per_symbol: 1`, `max_consecutive_losses: 3`, `min_effective_risk_ratio: 0.2` (contrôle `11b_risque_utile` :
+  un trade dont le volume minimum broker ne pèse pas au moins 20 % du risque cible est refusé).
+- Budget jour **pire cas** (`14_daily_budget_incl_open_risk`, 2026-09-21) : refus si
+  `(equity de départ − (solde − risque ouvert restant − nouveau risque)) / equity de départ ≥ max_daily_loss_internal_percent`.
+  Le risque restant d'une position suit `last_sl` (0 au break-even) ; on part du **solde** pour ne pas compter deux fois la
+  perte flottante déjà dans l'equity (`SystemState.remaining_risk_money / worst_case_daily_drawdown_percent`).
+- Corrélation (2026-09-21, divisée par deux avec le risque unitaire — le rapport plafond / risque par trade doit rester constant) :
+  cluster 0.25 %, facteur devise 0.3 %, classe d'actif 0.5 % (porté de 0.375 % le 2026-09-21 soir sur accord utilisateur : forex et indices saturaient à 3 positions), seuil 0.7, lookback 200 barres H1. Le cluster compte la
+  corrélation en **valeur absolue** (long USTEC + short US30 = même thème) ; l'exposition nette par devise reste signée.
 - Daily profit : paliers 0.75 % → risque 0.15 % (+5 score requis), 1.00 % → 0.10 % (+10), 1.50 % → 0.075 % (+15) ;
   `max_giveback_percent: 25` (verrou `GIVEBACK_FLOOR` maintenu jusqu'au lendemain).
-- Exécution (`system.yaml`) : spread ≤ 40 pts (XAU 60, indices 100) et ≤ 0.15 ATR ; SL entre 0.25 et 4.0 ATR ; RR ≥ 1.5 ;
-  `required_setup_score: 65` ; déviation 20 pts ; tick ≤ 30 s ; ≥ 250 barres.
+- Exécution (`system.yaml`) : spread ≤ 40 pts (XAU 60, indices 100, crypto 6000) et ≤ 0.15 ATR ; SL entre 0.25 et 4.0 ATR ; RR ≥ 1.5
+  au prix du scan **et** au tick courant (`06b_rr_live` : le TP structurel est conservé, l'entrée est refusée si la dérive du
+  prix ramène le RR réel sous `min_rr_required`) ; `required_setup_score: 65` ; déviation 20 pts ; tick ≤ 30 s ; ≥ 250 barres.
 - Sizing : volume = risque monétaire / perte par lot, arrondi **vers le bas** ; volume minimum broker refusé s'il dépasse 0.35 %.
+  Le gate dimensionne sur le **tick courant** (pas sur le prix du scan) et le `GateResult` porte `risk_money / risk_percent /
+  sizing_price / volume_wanted / volume_capped` : c'est ce risque qui accompagne l'ordre, l'orchestrateur ne le recalcule pas.
+  Après le fill, `Executor._preserver_rr_cible` replace le TP broker au multiple de R approuvé si la dérive l'a rapproché.
 
 ## 9. Prop guard (`risk/prop_guard.py`, `config/prop_firms.yaml`, `core/trading_day.py`)
 
@@ -182,6 +204,10 @@ prochaine clôture de barre, ≥ 1 s, ≤ 15 s).
   https://www.foxx-funded.com/fr/faqs et transcrites dans `docs/prop/foxx_funded_regles.md` : objectif 7 %,
   perte jour 4 %, perte totale 8 %, 2 % par idée de trade, cohérence 25 %, 5 jours de trading minimum.
 - `CRITICAL_RULES = ea_allowed, news_trading_window_minutes, trading_day_definition, daily_loss_basis` ; toute valeur `UNKNOWN` rend le profil ambigu.
+- État au 2026-09-21 : les quatre verrous prop sont OUVERTS (`autonomous_prop: true`, autorisation explicite de
+  l'utilisateur, EA approuvé confirmé par lui). Sans effet sur le compte DEMO actuel (l'autorisation DEMO passe par
+  `autonomous_demo`) ; deviendra effectif sur un compte REAL/CONTEST une fois ses identifiants MT5 (.env, par
+  l'utilisateur) et `account_expected` mis à jour.
 - `AUTONOMOUS_TRADING_PROP` n'est effectif que si `system.autonomous_prop` **et** `prop_rules_verified` **et**
   `user_explicitly_authorized_prop_automation` **et** `ea_approval_obtained` sont vrais **et** aucune règle critique
   `UNKNOWN` (`Settings.autonomous_prop`, `PropGuard.prop_automation_allowed`, `PropGuard.blocking_reasons`).
@@ -202,6 +228,16 @@ prochaine clôture de barre, ≥ 1 s, ≤ 15 s).
   avec marge 25 % (3 % / 6 % / 1.5 % par idée), risque à ajouter inclus.
 - Non bloquants mais suivis dans `compliance_report` : cohérence 25 % (`consistency_status`, contrôlée au paiement
   chez FOXX, jamais disqualifiante) et activité minimale (`activity_status` : 5 jours de trading, ≥ 1 trade/semaine).
+- **Règles relevées le 2026-09-23** (FAQ + « Ce qu'on n'autorise pas », `docs/prop/foxx_funded_regles.md` § complément,
+  tests `test_prop_foxx_lots_coherence_2026_09_23.py`) : `19_prop_max_lots` (table `max_lots_by_account_size`, 500 k : forex 10,
+  matières premières 3, indices 6, crypto 3, par idée, volume raboté au reste) ; `19_prop_consistency` (cohérence 25 %
+  **appliquée en direct dès 1 % de profit net** : gain visé ≤ autres idées / 3 via réduction du risque, idée ouverte fermée au
+  plafond → `consistency_cap_close`) ; `19_prop_no_hedge` ; `19_prop_no_reversal` (30 min après une perte avant l'autre sens) ;
+  `MIN_HOLD_SEC = 60` (aucune sortie anticipée avant 1 min). Commission prop ajoutée au spread dans `07b_spread_vs_sl`.
+- **Cycle de paiement automatique** (`payout_auto_cycle`, `Orchestrator._maybe_payout`, `PropGuard.payout_cycle_status`,
+  `SystemState.payouts / payout_cycle_started_at / payout_window_since`) : 14 jours de trading puis 7 ; éligible → verrou
+  `PAYOUT_WINDOW`, positions fermées, retrait de tout le profit (max 15 %) ; DEMO = retrait simulé ; compte financé =
+  `payout_ready` + commande `PAYOUT_DONE <montant>`. La cohérence 25 % (gate et dashboard) porte sur le cycle courant.
 - Fenêtre news interne (30 min avant / 15 après) **plus large** que l'exigence prop (5 min) : on ne l'assouplit jamais.
 - Le watchdog signale « drawdown proche des hard limits » à 75 % des hard limits.
 - Windows : `tzdata` est requis (`requirements.txt`) ; sans base de fuseaux, `TradingDayCalendar.degraded` passe à vrai
@@ -210,7 +246,11 @@ prochaine clôture de barre, ≥ 1 s, ≤ 15 s).
 ## 10. Profit management (`ADAPTIVE_R_MANAGEMENT`, `execution/position_manager.py`)
 
 1R = distance entrée → SL initial. TP1 à 1.5R (30 %), TP2 à 2.5R (40 %), runner 30 % ; break-even à 1.2R (+0.05R, structure requise) ;
-trailing dès 2.0R à 1.5 × ATR avec structure de marché (swing) ; sortie anticipée sur invalidation (`allow_early_exit_on_invalidation`) ;
+trailing dès 2.0R à 1.5 × ATR avec structure de marché (swing) ; sortie anticipée sur invalidation (`allow_early_exit_on_invalidation`,
+tant que `max_r < 0.5`, jamais en `NEWS_SHOCK`) : `execution/invalidation.py` lit la règle en texte libre de l'agent (timeframe cité
+sinon tf d'entrée ; un niveau = seuil, deux niveaux = zone ; nombres hors ±15 % de l'entrée ou suivis de %/ATR/barres ignorés),
+repli EMA50 si le texte le cite, rien sinon ; la règle lue est journalisée (`early_exit.rule`). `BotPositionPlan.sl_missing_seen /
+sl_widened_seen` sont des constats du position manager repris tels quels dans `rule_compliance` du post-trade ;
 `regime_overrides` : `RANGING` (TP1 1.0R/50 %, TP2 1.8R/35 %, runner 15 %), `NEWS_SHOCK` (`block_new_entries`). Le SL n'est jamais élargi,
 jamais retiré, jamais placé au-delà du prix courant/`stops_level`.
 
@@ -270,10 +310,11 @@ jamais retiré, jamais placé au-delà du prix courant/`stops_level`.
 ## 15. Tests
 
 `TRADINGLAB_BROKER=mock python -m pytest` (config dans `pyproject.toml` : `testpaths=["tests"]`, `pythonpath=["src"]`, `-q`).
-807 tests : `test_risk_and_gate.py` (SL, sizing, verrous, prop, corrélation, 20 contrôles, exécution, ré-entrée, fermeture toujours
+≈ 990 tests : `test_risk_and_gate.py` (SL, sizing, verrous, prop, corrélation, 20 contrôles, exécution, ré-entrée, fermeture toujours
 autorisée), `test_prop_foxx_rules.py` (règles FOXX relevées : journée 17:00 New York, planchers, drawdown statique, idée de trade,
 week-end, cohérence, activité), `test_market_data.py`, `test_news.py`, `test_backtest.py` (déterminisme, anti-lookahead),
-`test_strategies_distinct.py`, `test_dashboard.py`.
+`test_strategies_distinct.py`, `test_dashboard.py`, plus des fichiers d'audit datés (`test_audit_orchestrateur_2026_09_21.py`,
+`test_ameliorations_2026_09_21.py`, `test_verdict_erreur_execution.py`…) dont le docstring décrit le défaut corrigé.
 `conftest.py` fixe `FIXED_NOW = 2026-01-20 10:00 UTC` (session LONDON) et supprime `ANTHROPIC_API_KEY`/`FMP_API_KEY`.
 
 ## 16. Dépannage

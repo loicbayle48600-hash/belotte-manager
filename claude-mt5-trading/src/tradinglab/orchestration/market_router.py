@@ -50,12 +50,17 @@ class MarketRouter:
             if snap.data_quality != "OK":
                 rep.skipped[sym] = snap.data_quality
                 continue
-            if snap.regime.regime.value == "NEWS_SHOCK":
+            shock = snap.regime.regime.value == "NEWS_SHOCK"
+            live = AgentStatus.LIVE.value in (statuses or self.statuses)
+            if shock and live:
+                # jamais de trade RÉEL en choc de news ; en routage SHADOW seuls les agents d'annonces tournent
                 rep.skipped[sym] = "NEWS_SHOCK"
                 continue
             root = snap.spec.root or root_of(sym)
             agents = self.registry.active_for(snap.regime.regime.value, snap.session.value, snap.spec.asset_class, root,
                                               self.group_of.get(root), statuses or self.statuses)
+            if shock:
+                agents = [a for a in agents if a.news_sensitive]
             rep.agents_activated[sym] = [a.agent_id for a in agents]
             for a in agents:
                 c = run_screener(a, snap)

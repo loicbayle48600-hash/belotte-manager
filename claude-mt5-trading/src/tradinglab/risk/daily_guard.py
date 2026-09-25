@@ -31,6 +31,13 @@ class DailyGuard:
         # quelques euros de flottant ne doit pas verrouiller la journée ; défaut = premier palier de profit
         self.giveback_min_peak_pct = float(daily_cfg.get("giveback_min_peak_percent",
                                                          self.levels[0][0] if self.levels else 0.5))
+        # "lock" (historique, à remettre pour le mode prop réel) : plancher touché → entrées gelées jusqu'au lendemain.
+        # "reduce_risk" : on continue à trader à risque minimal (giveback_risk_percent).
+        # "off" (décision utilisateur 2026-09-22 « continue normalement » — phase DEMO de collecte d'échantillons) :
+        # le franchissement du plancher est journalisé mais ne restreint rien ; les réductions progressives
+        # après bonne journée (section 3) restent seules à moduler le risque.
+        self.giveback_action = str(daily_cfg.get("giveback_action", "lock")).strip().lower()
+        self.giveback_risk = float(daily_cfg.get("giveback_risk_percent", 0.05))
 
     def evaluate(self, state: SystemState) -> DailyDecision:
         """Met à jour les verrous de l'état et renvoie le risque autorisé pour une nouvelle entrée."""
@@ -46,16 +53,28 @@ class DailyGuard:
             allowed = False
 
         # 2. pertes consécutives
+        # Le verrou suit le compteur dans les deux sens : une clôture gagnante remet
+        # `consecutive_losses` à 0 (orchestrateur, `_on_position_closed`), la série est donc finie et
+        # le verrou n'a plus d'objet. Sans cette levée il ne tombait qu'au reset 17:00 New York, et la
+        # remise à zéro du compteur devenait du code mort — le 2026-09-21 le bot est resté verrouillé
+        # après un gain de +2,18 R sur USTEC, sans aucun moyen de sortir du verrou avant le reset.
+        # Le verrou perte-jour (1.) n'est volontairement PAS symétrique : `daily_drawdown_percent()`
+        # se calcule sur l'equity courante, il repasserait donc sous le seuil au moindre rebond du
+        # flottant et le coupe-circuit se réarmerait en boucle autour de la limite.
         if state.consecutive_losses >= self.max_consecutive:
             state.lock_entries("MAX_CONSECUTIVE_LOSSES")
             reasons.append(f"{state.consecutive_losses} pertes consécutives")
             allowed = False
+        else:
+            state.unlock_entries("MAX_CONSECUTIVE_LOSSES")
 
         # 3. réduction progressive après bonne journée (on continue à trader, plus petit)
         pnl_pct = state.daily_pnl_percent()
         for lvl_pct, new_risk, sc_bonus in self.levels:
             if pnl_pct >= lvl_pct:
-                risk, bonus = new_risk, sc_bonus
+                # un palier « après bonne journée » ne peut que RÉDUIRE le risque (2026-09-25 : palier 1 à 0,15 % au-dessus
+                # d'un risque de base de 0,125 % → il l'aurait augmenté après une journée à +0,75 %)
+                risk, bonus = min(new_risk, self.base_risk), sc_bonus
         if risk != self.base_risk:
             reasons.append(f"profit jour {pnl_pct:.2f}% → risque réduit à {risk}% (+{bonus} score requis)")
 
@@ -66,6 +85,17 @@ class DailyGuard:
         if peak > 0 and peak_pct >= self.giveback_min_peak_pct:
             floor = peak * (1 - self.max_giveback_pct / 100.0)
             if state.daily_pnl() <= floor:
+                state.daily.giveback_breached = True
+            if self.giveback_action in ("reduce_risk", "off"):
+                # migration : un verrou posé sous l'ancien mode ne doit pas survivre au changement de politique
+                state.unlock_entries("GIVEBACK_FLOOR")
+                if state.daily.giveback_breached:
+                    if self.giveback_action == "reduce_risk":
+                        risk = min(risk, self.giveback_risk)
+                        reasons.append(f"giveback : plancher {floor:.2f} touché (pic {peak:.2f}) → risque minimal {risk}% jusqu'à la prochaine journée")
+                    else:
+                        reasons.append(f"giveback : plancher {floor:.2f} touché (pic {peak:.2f}) — signalé, aucune restriction (giveback_action: off)")
+            elif state.daily_pnl() <= floor:
                 state.lock_entries("GIVEBACK_FLOOR")
                 reasons.append(f"giveback : P&L {state.daily_pnl():.2f} <= plancher {floor:.2f} (pic {peak:.2f})")
                 allowed = False

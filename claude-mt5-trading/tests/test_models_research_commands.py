@@ -32,7 +32,8 @@ def test_model_router_degrades_tier_and_budget(settings):
     st = SystemState()
     d = r.route("chief_orchestrator", st)
     assert d.tier == "TIER_C" and d.model == "claude-sonnet-5"
-    r.record_call(st, "TIER_C", 100.0)                      # budget dépassé
+    # dépasse le plafond quel qu'il soit : le test porte sur la mécanique, pas sur la valeur du jour
+    r.record_call(st, "TIER_C", float(settings.models["daily_budget_usd"]) + 1.0)
     assert r.budget_exhausted(st) and not r.route("worker", st).use_llm
     assert r.route("trade_arbiter", st, financial_importance="high").use_llm   # décision financière importante autorisée
 

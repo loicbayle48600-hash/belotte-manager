@@ -74,6 +74,14 @@ class BotPositionPlan:
     last_sl: float = 0.0
     invalidation: str = ""
     notes: list[str] = field(default_factory=list)
+    # constats de conformité OBSERVÉS pendant la vie de la position (jamais déduits) : jusqu'au 2026-09-21
+    # le post-trade écrivait `sl_present: True, sl_never_widened: True` en dur, donc n'observait rien.
+    sl_missing_seen: bool = False     # le broker a montré la position sans SL au moins une fois
+    sl_widened_seen: bool = False     # le SL broker a été vu plus large que le dernier SL connu du plan
+    # candidat d'entrée (revue, session, snapshot_id) persisté AVEC le plan (2026-09-23) : jusque-là il ne
+    # vivait qu'en mémoire (`candidates_cache`) et 32 trades sur 69, fermés après un redémarrage, n'avaient
+    # ni verdict de revue ni contexte d'entrée dans `learning.db`.
+    candidate: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -89,6 +97,9 @@ class DailyStats:
     trades_closed: int = 0
     wins: int = 0
     losses: int = 0
+    # plancher Giveback touché aujourd'hui : marqueur COLLANT (un rebond du flottant au-dessus du plancher
+    # ne réarme pas le plein risque) ; remis à zéro par la création du DailyStats du lendemain
+    giveback_breached: bool = False
 
 
 @dataclass
@@ -119,6 +130,7 @@ class ModelBudget:
     hour: str = ""
     calls_by_tier_hour: dict = field(default_factory=dict)
     calls_by_tier_day: dict = field(default_factory=dict)
+    cache_hits_day: int = 0          # réponses servies depuis le cache (0 $) : mesure l'économie réelle du cache
 
 
 @dataclass
@@ -139,11 +151,22 @@ class SystemState:
     consecutive_losses: int = 0
     overall_peak_equity: float = 0.0
     initial_balance: float = 0.0        # solde de référence du compte (base des % prop, drawdown statique)
+    broker_balance: float = 0.0         # solde brut lu chez le broker, avant retraits simulés (diagnostic)
+    broker_equity: float = 0.0
+    # Retraits simulés : MT5 ne permet aucune opération de solde sur un compte démo. Le labo
+    # retranche donc le montant de l'equity et du solde qu'il utilise, pour observer le
+    # comportement du bot après un paiement. Compte DEMO uniquement.
+    simulated_withdrawals: list[dict] = field(default_factory=list)
     daily: DailyStats = field(default_factory=DailyStats)
     bot_positions: dict[str, BotPositionPlan] = field(default_factory=dict)  # ticket(str) -> plan
     executed_keys: dict[str, str] = field(default_factory=dict)              # idempotency key -> ts
     trade_ideas: dict[str, TradeIdea] = field(default_factory=dict)          # idea_id -> idée agrégée
     trading_days: list[str] = field(default_factory=list)                    # journées prop avec au moins une entrée
+    last_weekly_report: str = ""                                             # semaine ISO du dernier rapport envoyé
+    last_daily_report: str = ""                                              # journée FOXX du dernier rapport de 17 h
+    payouts: list[dict] = field(default_factory=list)                        # paiements effectués (cycle de paiement prop)
+    payout_cycle_started_at: str = ""                                        # début du cycle courant (ISO) ; "" = depuis l'origine
+    payout_window_since: str = ""                                            # fenêtre de paiement ouverte (positions en cours de fermeture)
     last_trade_at: str = ""                                                  # dernière entrée (règle d'activité minimale)
     model_budget: ModelBudget = field(default_factory=ModelBudget)
     orchestrator_heartbeat: str = ""
@@ -216,6 +239,40 @@ class SystemState:
             return 0.0
         return 100.0 * self.open_risk_money() / self.equity
 
+    @staticmethod
+    def remaining_risk_money(plan: BotPositionPlan) -> float:
+        """Perte encore possible sur la position si son SL COURANT est touché, mesurée depuis l'entrée.
+
+        `initial_risk_money` ne bouge jamais : après un break-even ou un SL suiveur au-delà de l'entrée,
+        la position ne peut plus perdre, elle est pourtant toujours comptée à plein dans `open_risk_money()`.
+        Le SL courant est ramené à une fraction de la distance initiale (signée par le sens) ; les prises
+        partielles ne sont pas déduites — on surestime, jamais l'inverse.
+        """
+        dist = abs(plan.entry - plan.initial_sl)
+        if dist <= 0 or plan.initial_risk_money <= 0:
+            return max(0.0, plan.initial_risk_money)
+        sl = plan.last_sl or plan.initial_sl
+        sign = 1.0 if plan.side == "BUY" else -1.0
+        fraction = sign * (plan.entry - sl) / dist
+        return plan.initial_risk_money * min(1.0, max(0.0, fraction))
+
+    def remaining_open_risk_money(self) -> float:
+        return sum(self.remaining_risk_money(p) for p in self.bot_positions.values())
+
+    def worst_case_daily_drawdown_percent(self, extra_risk_money: float = 0.0) -> float:
+        """Drawdown de la journée si toutes les positions ouvertes (plus `extra_risk_money`) sont stoppées.
+
+        Point de départ : le SOLDE (réalisé), pas l'equity — la perte latente des positions est déjà
+        comprise dans la distance entrée → SL, l'additionner à l'equity la compterait deux fois.
+        Le 2026-09-21 à 15:52 : DD jour 0,73 %, risque ouvert 0,67 %, plafond interne 1 % — aucun
+        contrôle ne rapprochait les deux, le verrou jour pouvait être dépassé de 0,4 % sans nouvelle entrée.
+        """
+        if not self.daily.starting_equity:
+            return 0.0
+        base = self.balance if self.balance else self.equity
+        worst = base - self.remaining_open_risk_money() - max(0.0, extra_risk_money)
+        return max(0.0, 100.0 * (self.daily.starting_equity - worst) / self.daily.starting_equity)
+
     def has_executed(self, key: str) -> bool:
         return key in self.executed_keys
 
@@ -239,6 +296,14 @@ class SystemState:
         if now is None:
             now = utcnow()
         d = (cal.day(now) if isinstance(now, datetime) else now).isoformat()
+        # Les références du jour vivent dans les unités du labo (nettes des retraits simulés), comme
+        # `self.equity` posé par `update_equity`. Les appelants passent l'equity BROKER (brute) : sans ce
+        # décalage, le lendemain d'un retrait `starting_equity` repartait brute face à une equity nette,
+        # et le jour s'ouvrait avec une « perte » égale au montant retiré (Daily Guard, plancher prop).
+        withdrawn = self.simulated_withdrawn_total()
+        if withdrawn > 0:
+            equity = max(equity - withdrawn, 0.0)
+            balance = max(balance - withdrawn, 0.0)
         reference = max(equity, balance)
         if self.daily.day == d:
             # journée déjà ouverte avec une equity nulle (compte pas encore synchronisé) : on fixe la
@@ -264,19 +329,54 @@ class SystemState:
         return True
 
     def update_equity(self, equity: float, balance: float) -> None:
-        self.equity = equity
-        self.balance = balance
+        self.broker_equity, self.broker_balance = equity, balance
         if self.initial_balance <= 0 and balance > 0:
             # solde de référence : figé à la première synchronisation du compte, jamais réévalué ensuite
             # (le drawdown total prop est STATIQUE, calculé sur le solde initial et non sur un pic).
+            # Figé sur le solde BROKER, avant tout retrait simulé.
             self.initial_balance = balance
-        if equity > self.daily.peak_equity:
-            self.daily.peak_equity = equity
+        withdrawn = self.simulated_withdrawn_total()
+        self.equity = equity - withdrawn
+        self.balance = balance - withdrawn
+        if self.equity > self.daily.peak_equity:
+            self.daily.peak_equity = self.equity
         pnl = self.daily_pnl()
         if pnl > self.daily.peak_daily_pnl:
             self.daily.peak_daily_pnl = pnl
-        if equity > self.overall_peak_equity:
-            self.overall_peak_equity = equity
+        if self.equity > self.overall_peak_equity:
+            self.overall_peak_equity = self.equity
+
+    # ---------- retraits simulés (compte DEMO) ----------
+    def simulated_withdrawn_total(self) -> float:
+        return round(sum(float(w.get("amount", 0.0) or 0.0) for w in self.simulated_withdrawals), 2)
+
+    def register_simulated_withdrawal(self, amount: float, now: Optional[datetime] = None) -> dict:
+        """Enregistre un retrait simulé et décale immédiatement les références du jour.
+
+        Un paiement n'est pas une perte de trading : sans ce décalage, le Daily Guard
+        verrait le montant retiré comme un drawdown et verrouillerait les entrées.
+        Le solde initial (base des % prop) n'est jamais touché : le drawdown reste statique.
+        """
+        amt = round(float(amount), 2)
+        if amt <= 0:
+            raise ValueError("montant de retrait simulé nul ou négatif")
+        rec = {"ts": (now or utcnow()).isoformat(), "amount": amt}
+        self.simulated_withdrawals.append(rec)
+        self.equity = max(self.equity - amt, 0.0)
+        self.balance = max(self.balance - amt, 0.0)
+        self.daily.starting_equity = max(self.daily.starting_equity - amt, 0.0)
+        self.daily.starting_balance = max(self.daily.starting_balance - amt, 0.0)
+        if self.daily.reference_equity:
+            self.daily.reference_equity = max(self.daily.reference_equity - amt, 0.0)
+        self.daily.peak_equity = max(self.daily.peak_equity - amt, 0.0)
+        self.overall_peak_equity = max(self.overall_peak_equity - amt, 0.0)
+        return rec
+
+    def clear_simulated_withdrawals(self) -> int:
+        """Annule tous les retraits simulés. Les références du jour se réalignent au prochain reset."""
+        n = len(self.simulated_withdrawals)
+        self.simulated_withdrawals = []
+        return n
 
     # ---------- bases de calcul imposées par la prop firm ----------
     def prop_reference_balance(self, account_size: float = 0.0) -> float:
@@ -368,6 +468,36 @@ class SystemState:
                 return idea
         return None
 
+    # ---------- cycle de paiement (prop) ----------
+    def cycle_trading_days(self) -> list[str]:
+        """Journées de trading du cycle de paiement courant (postérieures au dernier paiement)."""
+        start = self.payout_cycle_started_at[:10] if self.payout_cycle_started_at else ""
+        return [d for d in self.trading_days if not start or d > start]
+
+    def cycle_trade_ideas(self) -> list["TradeIdea"]:
+        """Idées de trade du cycle courant : encore ouvertes, ou actives après le début du cycle."""
+        start = _parse_ts(self.payout_cycle_started_at) if self.payout_cycle_started_at else None
+        out = []
+        for idea in self.trade_ideas.values():
+            if idea.open_tickets or start is None:
+                out.append(idea)
+                continue
+            ts = _parse_ts(idea.last_activity_at) or _parse_ts(idea.opened_at)
+            if ts is not None and ts >= start:
+                out.append(idea)
+        return out
+
+    def record_payout(self, amount: float, now: Optional[datetime] = None, simulated: bool = True,
+                      trading_days: int = 0) -> dict:
+        """Enregistre un paiement et ouvre le cycle suivant (les jours de trading et la cohérence repartent)."""
+        now = now or utcnow()
+        rec = {"ts": now.isoformat(), "amount": round(float(amount), 2), "index": len(self.payouts),
+               "simulated": bool(simulated), "trading_days": int(trading_days)}
+        self.payouts.append(rec)
+        self.payout_cycle_started_at = now.isoformat()
+        self.payout_window_since = ""
+        return rec
+
     def record_trading_day(self, now: Optional[datetime] = None) -> None:
         """Compte la journée prop en cours comme journée de trading effective (minimum imposé par la
         prop firm) et note la dernière entrée (règle d'au moins une transaction par semaine)."""
@@ -387,11 +517,14 @@ class SystemState:
     def consistency_share_percent(self) -> float:
         """Part du profit total détenue par la meilleure idée (règle de cohérence prop, 25 % chez FOXX).
 
-        0 % si aucune idée gagnante : la règle ne s'applique qu'à un profit existant.
+        Dénominateur = profit NET du cycle de paiement courant (gains ET pertes des idées du cycle), ce que
+        FOXX contrôle au paiement — jusqu'au 2026-09-23 la somme des seuls gains bruts servait de base et
+        l'accueil affichait 6,6 % là où le cycle de paiement en montrait 45,6 %. 0 % sans profit net.
         """
-        gains = [i.realized_pnl for i in self.trade_ideas.values() if i.realized_pnl > 0]
-        total = sum(gains)
-        if total <= 0:
+        ideas = self.cycle_trade_ideas()
+        gains = [i.realized_pnl for i in ideas if i.realized_pnl > 0]
+        total = sum(i.realized_pnl for i in ideas)
+        if total <= 0 or not gains:
             return 0.0
         return 100.0 * max(gains) / total
 
@@ -423,17 +556,19 @@ class SystemState:
         d["prop_daily_loss_percent"] = self.prop_daily_loss_percent()
         d["prop_overall_loss_percent"] = self.prop_overall_loss_percent()
         d["consistency_share_percent"] = self.consistency_share_percent()
+        d["simulated_withdrawn_total"] = self.simulated_withdrawn_total()
         return d
 
 
 class StateStore:
     """Lecture/écriture atomique de SystemState (thread-safe dans un processus, sûr entre processus via rename)."""
 
-    def __init__(self, state_dir: Path, filename: str = "system_state.json"):
+    def __init__(self, state_dir: Path, filename: str = "system_state.json", readonly: bool = False):
         self.dir = Path(state_dir)
         self.dir.mkdir(parents=True, exist_ok=True)
         self.path = self.dir / filename
         self._lock = threading.RLock()
+        self.readonly = bool(readonly)      # lecteur concurrent : ne renomme jamais un fichier illisible
         self.state: SystemState = self.load()
 
     @staticmethod
@@ -494,6 +629,10 @@ class StateStore:
             try:
                 return self._from_dict(json.loads(text))
             except (json.JSONDecodeError, TypeError, ValueError, AttributeError, KeyError):
+                if getattr(self, "readonly", False):
+                    # lecteur concurrent (dashboard, CLI) : une lecture déchirée pendant l'écriture atomique de
+                    # l'orchestrateur ne doit JAMAIS mettre l'état de côté — on garde le dernier état connu
+                    return getattr(self, "state", None) or SystemState()
                 backup = self.path.with_suffix(".corrupt.json")
                 try:
                     os.replace(self.path, backup)

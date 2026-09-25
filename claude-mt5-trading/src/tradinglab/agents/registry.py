@@ -172,6 +172,19 @@ def default_agents() -> list[AgentSpec]:  # noqa: C901 - registre déclaratif
     for i, (nm, st, p) in enumerate(K, 1):
         A.append(_a(f"K{i:02d}", "I", nm, st, ALL_CLASSES, ALL_SESSIONS, tf("M15", "H1"), ALL_REGIMES, p, news_sensitive=True,
                     model_tier_role="complex_news", status=AgentStatus.SHADOW.value))
+    # 2026-09-24, demande utilisateur (« mets plusieurs agents dessus au lieu de 2 ») : vraies stratégies d'annonces,
+    # déclenchées par l'annonce réelle du calendrier (agents/news_strategies.py). SHADOW uniquement, et seules à
+    # pouvoir tourner sur un symbole en NEWS_SHOCK (routeur) : on mesure avant toute décision d'activation.
+    KN = [("news_follow", "news_follow", tf("M5", "H1"), {"min_after": 2, "max_after": 15, "impulse_atr": 1.0, "rr": 2.0}),
+          ("news_fade", "news_fade", tf("M5", "H1"), {"min_after": 10, "max_after": 60, "spike_atr": 2.5, "rr": 1.5}),
+          ("news_range_break", "news_range_break", tf("M5", "H1"), {"min_after": 5, "max_after": 45, "range_bars": 12, "rr": 2.0}),
+          ("news_trend_resume", "news_trend_resume", tf("M15", "H1"), {"min_after": 30, "max_after": 120, "sl_atr": 1.5, "rr": 2.0}),
+          ("central_bank_drift", "central_bank_drift", tf("M15", "H1"), {"min_after": 60, "max_after": 360, "drift_atr": 1.5,
+                                                                            "sl_atr": 2.0, "rr": 2.5})]
+    for i, (nm, st, tfs, p) in enumerate(KN, len(K) + 1):
+        A.append(_a(f"K{i:02d}", "I", nm, st, ALL_CLASSES, ALL_SESSIONS, tfs, ALL_REGIMES + [Regime.NEWS_SHOCK.value], p,
+                    news_sensitive=True, model_tier_role="complex_news", status=AgentStatus.SHADOW.value,
+                    description="Trading d'annonce (SHADOW) : mesuré sur positions virtuelles, jamais d'ordre"))
     # ---------------- L. Variantes par classe d'actif (métaux / indices / crypto) ----------------
     L = [("gold_london_pullback", "mtf_trend_pullback", ["metals"], ["LONDON", "OVERLAP_LDN_NY"], {"rsi_lo": 38, "rsi_hi": 62, "sl_atr": 1.5, "rr": 2.0}),
          ("gold_mean_reversion_asia", "bollinger_mr", ["metals"], ["ASIA"], {"rsi_lo": 30, "rsi_hi": 70, "sl_atr": 0.8, "rr": 1.5}),
@@ -206,6 +219,31 @@ def default_agents() -> list[AgentSpec]:  # noqa: C901 - registre déclaratif
          ("usoil_ny_momentum", "atr_expansion", ["USOIL", "XTIUSD"], ["NEWYORK", "OVERLAP_LDN_NY"], {"atr_ratio": 1.3, "sl_atr": 1.5, "rr": 2.0}, BREAKOUT_REGIMES)]
     for i, (nm, st, mk, ss, p, rg) in enumerate(M, 1):
         A.append(_a(f"M{i:02d}", "M", nm, st, mk, ss, tf("M15", "H1"), rg, p, model_tier_role="technical_analysis"))
+    # ---------------- N. SAISONNALITÉ (SHADOW : hypothèses à valider par le pipeline, décision utilisateur 2026-09-21) ----------------
+    N = [("weekday_seasonality", ["forex", "metals"], {"t_min": 2.0, "min_days": 150, "min_per_day": 25, "sl_atr": 1.2, "rr": 2.0}),
+         ("month_turn_indices", ["indices"], {"first_days": 3, "last_cal_days": 2, "min_days": 150, "min_window_days": 15, "sl_atr": 1.2, "rr": 1.8})]
+    for i, (nm, mk, p) in enumerate(N, 1):
+        A.append(_a(f"N{i:02d}", "N", nm, f"N{i:02d}", mk, ALL_SESSIONS, tf("M15", "D1"), ALL_REGIMES, p,
+                    model_tier_role="technical_analysis", status=AgentStatus.SHADOW.value,
+                    entry_rules="biais calendaire mesuré sur l'historique D1 du symbole + confirmation M15, jamais contre la tendance D1",
+                    invalidation_rules="clôture M15 au-delà du SL structurel (swing d'appui rendu)",
+                    description="Saisonnalité (SHADOW) : biais du jour de semaine / retournement de mois, validés par le pipeline"))
+    # ---------------- O. CYCLE LONG (SHADOW, décision utilisateur 2026-09-22 : « on peut mettre des cycles longs ») ----------------
+    # Constat des 2 premiers jours : les entrées M15 concentrent les pertes (-9,3 R sur 20 trades) quand H1/M5
+    # tiennent l'équilibre. Ces agents rejouent les screeners génériques éprouvés sur entrée H4 / tendance D1 :
+    # trades rares, tenus, filtres identiques. SHADOW d'abord : promotion uniquement par le pipeline.
+    O = [("h4_trend_d1", "ema_trend", ALL_CLASSES, {"adx_min": 22, "sl_atr": 1.8, "rr": 2.5}, TREND_REGIMES),
+         ("h4_pullback_d1", "mtf_trend_pullback", ALL_CLASSES, {"rsi_lo": 35, "rsi_hi": 62, "sl_atr": 1.5, "rr": 2.5}, TREND_REGIMES),
+         ("h4_structure_d1", "structure_bos", ALL_CLASSES, {"sl_atr": 1.5, "rr": 2.5}, TREND_REGIMES + [Regime.UNCERTAIN.value]),
+         ("h4_ema_pullback", "ema_pullback", ALL_CLASSES, {"ema": "ema20", "sl_atr": 1.3, "rr": 2.0}, TREND_REGIMES),
+         ("h4_range_mr", "bollinger_mr", ALL_CLASSES, {"rsi_lo": 30, "rsi_hi": 70, "sl_atr": 0.9, "rr": 1.5}, RANGE_REGIMES),
+         ("h4_macd_momentum", "macd_momentum", ALL_CLASSES, {"sl_atr": 1.8, "rr": 2.5}, TREND_REGIMES)]
+    for i, (nm, st, mk, p, rg) in enumerate(O, 1):
+        A.append(_a(f"O{i:02d}", "O", nm, st, mk, ALL_SESSIONS, tf("H4", "D1"), rg, p,
+                    model_tier_role="technical_analysis", status=AgentStatus.SHADOW.value,
+                    entry_rules="mêmes règles que le screener générique, sur entrée H4 / tendance D1",
+                    invalidation_rules="clôture H4 au-delà du niveau d'invalidation du screener",
+                    description="Cycle long (SHADOW) : screener éprouvé rejoué en H4/D1 — moins de bruit, trades tenus"))
     # Chaque agent générateur possède SA PROPRE stratégie (clé = agent_id, module agents/strategies/*) ;
     # le screener générique historique reste en repli (base_strategy) tant que la stratégie propre n'existe pas.
     for a in A:
