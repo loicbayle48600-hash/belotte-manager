@@ -352,17 +352,53 @@ function setLastAutoBackupDate(d) { localStorage.setItem('haccp-drive-last', d |
 /** Sauvegarde complète. { withDocData: false } (envois cloud) remplace le
  *  contenu des documents importés par leurs seules métadonnées : quelques PDF
  *  de 8 Mo feraient sinon dépasser la limite de 50 Mo d'Apps Script et
- *  échouer la sauvegarde quotidienne pour toujours. L'export local (fichier)
- *  conserve tout. */
+ *  échouer la sauvegarde quotidienne pour toujours.
+ *  { photosJours: 60 } (cloud aussi) : seules les photos d'étiquettes des
+ *  60 derniers jours partent, dans la limite d'un budget de ~24 Mo — au-delà,
+ *  des mois de photos accumulées faisaient exploser la mémoire de la tablette
+ *  (Android TUAIT l'application ~10 s après l'ouverture, à chaque fois) et
+ *  dépasseraient la limite Apps Script. Les photos plus anciennes sont déjà
+ *  déposées en fichiers images sur le Drive et restent dans l'application et
+ *  dans l'export local, qui lui conserve tout. */
 async function buildBackup(opts) {
   const withDocData = !opts || opts.withDocData !== false;
+  const photosJours = (opts && opts.photosJours) || 0;
   let records = await DB.getAllRecords();
   if (!withDocData) {
     records = records.map(r => (r.type === 'document' && r.data)
       ? Object.assign({}, r, { data: '', dataOmise: true })
       : r);
   }
+  if (photosJours) {
+    const limite = UI.addDays(UI.todayISO(), -photosJours);
+    let budget = 24 * 1024 * 1024;
+    const garder = new Set();
+    // les plus récentes d'abord, jusqu'à épuisement du budget
+    records.filter(r => r.type === 'etiquette' && r.photo)
+      .sort((a, b) => String((b.destineLe || b.date || '')).localeCompare(String(a.destineLe || a.date || '')))
+      .forEach(r => {
+        const jour = r.destineLe || r.date || '';
+        const taille = String(r.photo).length;
+        if (jour >= limite && budget - taille >= 0) { budget -= taille; garder.add(r.id); }
+      });
+    records = records.map(r => (r.type === 'etiquette' && r.photo && !garder.has(r.id))
+      ? Object.assign({}, r, { photo: '', photoOmise: true })
+      : r);
+  }
   return { app: 'haccp-cuisine', version: 1, exportedAt: new Date().toISOString(), etablissement: SETTINGS.etablissement, settings: SETTINGS, records };
+}
+
+/** Export local : le JSON est assemblé enregistrement par enregistrement en
+ *  morceaux de Blob — jamais une seule chaîne géante (avec des centaines de
+ *  photos, c'est elle qui faisait manquer la mémoire). */
+async function buildBackupBlob(opts) {
+  const b = await buildBackup(opts);
+  const records = b.records;
+  const entete = JSON.stringify(Object.assign({}, b, { records: undefined }));
+  const parts = [entete.slice(0, -1) + ',"records":['];
+  for (let i = 0; i < records.length; i++) parts.push((i ? ',' : '') + JSON.stringify(records[i]));
+  parts.push(']}');
+  return new Blob(parts, { type: 'application/json' });
 }
 
 /** Google Drive (script Apps Script). Un POST text/plain est une « simple
@@ -462,7 +498,9 @@ async function sendBackupAll() {
   const targets = backupTargets();
   if (!targets.length) return { ok: false, results: [], message: 'Aucune destination de sauvegarde configurée' };
   if (!navigator.onLine) return { ok: false, results: [], message: 'Pas de connexion Internet' };
-  const payload = JSON.stringify(await buildBackup({ withDocData: false }));
+  // Blob assemblé par morceaux + photos limitées aux 60 derniers jours (24 Mo
+  // max) : jamais de chaîne géante en mémoire, voir buildBackup.
+  const payload = await buildBackupBlob({ withDocData: false, photosJours: 60 });
   const results = [];
   for (const t of targets) {
     const r = await t.send(payload);
@@ -3903,7 +3941,7 @@ VIEWS.parametres = async function (el) {
   })));
 
   el.querySelector('#s-backup').addEventListener('click', async () => {
-    const blob = new Blob([JSON.stringify(await buildBackup())], { type: 'application/json' });
+    const blob = await buildBackupBlob(); // complet (photos + documents), assemblé par morceaux
     // UI.saveFile gère l'APK (écriture + partage natif) ET le navigateur —
     // un simple lien blob ne fonctionne pas dans une WebView Capacitor.
     const ok = await UI.saveFile('sauvegarde-haccp-' + UI.todayISO() + '.json', 'application/json', blob);
