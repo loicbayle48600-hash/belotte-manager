@@ -214,6 +214,10 @@ n'utilise PAS Fable (retiré de TIER_A le 2026-09-23) : le quota Fable est rése
 - **Appels IA sur l'abonnement** (vérifié le 25/09) : `TRADINGLAB_LLM_BACKEND=claude_code` dans `.env`, clé API retirée
   de l'environnement du terminal Claude à chaque appel. La clé API encore présente dans `.env` n'est pas utilisée.
 
+- **Cycles de 87 et 168 s (25/09, 19 h 36-19 h 47 UTC)** : la suite de tests (12-15 min de calcul) tournait sur le même
+  PC et ralentissait la boucle. L'orchestrateur et le watchdog démarrent désormais en priorité haute (`start_all`),
+  appliquée aussi aux processus en cours. Les suites de tests sont lancées en priorité basse.
+
 ## À FAIRE (lundi, avec Fable)
 
 - **Plus tard, à la demande de l'utilisateur (25/09 : « laisse pour le moment, pourquoi pas plus tard ») :** retirer

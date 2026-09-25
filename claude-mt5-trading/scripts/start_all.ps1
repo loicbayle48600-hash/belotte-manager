@@ -183,6 +183,11 @@ function Start-Component {
     $alive = $null -ne (Get-Process -Id $proc.Id -ErrorAction SilentlyContinue)
     if ($alive) {
         Write-TlLog ("{0} démarré (PID {1}) : python {2}" -f $Name, $proc.Id, ($ModuleArgs -join ' ')) 'OK'
+        # 2026-09-25 : la suite de tests (12-15 min de calcul) ralentissait la boucle au-delà de la tolérance du
+        # watchdog (cycles de 87 et 168 s). La boucle de trading et son watchdog passent devant le reste du PC.
+        if ($Name -in @('orchestrator', 'watchdog')) {
+            try { $proc.PriorityClass = 'AboveNormal'; Write-TlLog "$Name : priorité haute" 'OK' } catch { Write-TlLog "$Name : priorité inchangée ($($_.Exception.Message))" 'WARN' }
+        }
     } else {
         Write-TlLog ("{0} s'est arrêté immédiatement (code {1}). Voir {2}" -f $Name, $proc.ExitCode, $errLog) 'ERREUR'
         try { Get-Content -LiteralPath $errLog -Tail 15 -ErrorAction Stop | ForEach-Object { Write-Host "    $_" -ForegroundColor DarkRed } } catch { }
