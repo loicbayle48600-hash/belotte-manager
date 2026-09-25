@@ -218,6 +218,13 @@ n'utilise PAS Fable (retiré de TIER_A le 2026-09-23) : le quota Fable est rése
   PC et ralentissait la boucle. L'orchestrateur et le watchdog démarrent désormais en priorité haute (`start_all`),
   appliquée aussi aux processus en cours. Les suites de tests sont lancées en priorité basse.
 
+- **Validation des 68 agents LIVE qui tradent (25/09, plan pro point 3)** : aucun ne passe les 4 étapes, ni sur 3 000 barres
+  (~1 mois M15) ni sur 10 000 (~3,5 mois, `reports/validation_live_10000.json`). Sur 10 000 barres : 6 passent le
+  backtest (C09, E02, L03, B10, L07, C01) puis échouent hors échantillon ; sur 41 agents avec ≥ 20 trades, 7 ont un
+  PF > 1, PF médian 0,7. Les 9 agents mis en avant ont tous un PF < 1 (E05 : 0,61 sur 109 trades). Limites : le backtest
+  sort au SL/TP fixe (sans break-even, partiels ni stop suiveur), sans revue IA ni gate ; coûts par défaut. Aucun noyau
+  « validé » ne peut être choisi sur cette base : décision laissée à l'utilisateur (gel en cours).
+
 ## À FAIRE (lundi, avec Fable)
 
 - **Plus tard, à la demande de l'utilisateur (25/09 : « laisse pour le moment, pourquoi pas plus tard ») :** retirer

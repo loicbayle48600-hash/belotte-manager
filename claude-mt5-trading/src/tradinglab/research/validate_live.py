@@ -71,6 +71,8 @@ def main(argv: Optional[list[str]] = None) -> int:  # pragma: no cover - outil e
     ap = argparse.ArgumentParser(description="Validation des agents LIVE (lecture seule)")
     ap.add_argument("--agents", default="", help="liste d'agents séparés par des virgules (défaut : tous les LIVE)")
     ap.add_argument("--limite", type=int, default=0)
+    ap.add_argument("--barres", type=int, default=3000, help="historique par symbole sur le tf d'entrée (3000 ≈ 1 mois en M15)")
+    ap.add_argument("--sortie", default="validation_live", help="nom du dossier de résultats et du rapport")
     args = ap.parse_args(argv)
     s = load_settings()
     load_dotenv(s.home / ".env")
@@ -91,12 +93,13 @@ def main(argv: Optional[list[str]] = None) -> int:  # pragma: no cover - outil e
     specs = {sym: broker.symbol_info(sym) for sym in symbols}
     specs = {k: v for k, v in specs.items() if v}
     pipe = ResearchPipeline(reg, _NullStore(), s.learning, s.backtest, lambda sym, tf, n: broker.rates(sym, tf, n),
-                            specs, s.data_dir / "validation_live")
+                            specs, s.data_dir / args.sortie, bars=args.barres)
     res = validate(pipe, agents)
     rapport = {"date": datetime.now(timezone.utc).isoformat(), "agents": res,
                "valides": [r["agent_id"] for r in res if r["valide"]]}
     (s.home / "reports").mkdir(exist_ok=True)
-    (s.home / "reports" / "validation_live.json").write_text(json.dumps(rapport, ensure_ascii=False, indent=1), encoding="utf-8")
+    rapport["barres"] = args.barres
+    (s.home / "reports" / f"{args.sortie}.json").write_text(json.dumps(rapport, ensure_ascii=False, indent=1), encoding="utf-8")
     print(f"{len(rapport['valides'])} agents LIVE valident les 4 étapes sur {len(res)}")
     return 0
 

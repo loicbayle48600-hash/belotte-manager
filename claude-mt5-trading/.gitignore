@@ -48,3 +48,4 @@ data/agent_stats.json
 data/cot_cache.json
 data/research/
 data/validation_live/
+data/validation_live_*/
