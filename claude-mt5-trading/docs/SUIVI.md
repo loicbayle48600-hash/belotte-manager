@@ -255,6 +255,13 @@ n'utilise PAS Fable (retiré de TIER_A le 2026-09-23) : le quota Fable est rése
   jugeait « incohérente » une session Londres/New York un samedi) ; au-delà des 3 créneaux IA, un APPROVE sur le seul
   score devient WAIT (jamais d'entrée sans l'avis de l'IA).
 
+- **Backtest informatif de la famille P (26/09, ~4 mois H1/H4, 3 cryptos par agent)** : P01-P11 (screeners
+  génériques) : seul P05 (retour à la moyenne en range) passe 2 étapes (PF 1,27) ; les autres ont un PF de 0,55 à 1,06.
+  Stratégies de la recherche : P13 Donchian 55 H4 — 2 étapes, 95 trades, PF 1,24, +0,17 R/trade (échoue au
+  walk-forward) ; P15 fenêtre du week-end — PF 1,56, +0,35 R sur 26 trades (échoue hors échantillon) ; P12 Donchian 20
+  — PF 1,20 sur 153 trades ; P14 RSI(2) BTC/ETH — PF 0,75 (perdant). Tous restent LIVE (décision utilisateur).
+  Premiers candidats P en attente : l'IA hésite sur des agents sans historique (sample_size = 0) et sur les spreads.
+
 ## À FAIRE (lundi, avec Fable)
 
 - **Plus tard, à la demande de l'utilisateur (25/09 : « laisse pour le moment, pourquoi pas plus tard ») :** retirer
