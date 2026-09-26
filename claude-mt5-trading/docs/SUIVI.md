@@ -276,6 +276,10 @@ n'utilise PAS Fable (retiré de TIER_A le 2026-09-23) : le quota Fable est rése
   sur un lot BTC) : `crypto_commission_percent_of_notional`, `tests/test_commission_crypto_2026_09_26.py`.
   Restent bloquées par leur SPREAD seul (> 20 % du risque sur des stops H1) : ADA, DOT, POL, KSM, souvent LNK et AVX.
 
+- **Crypto multi-unités de temps (26/09, demande utilisateur)** : P16-P31, 4 approches (Donchian, retour à la moyenne
+  en range, repli dans la tendance, expansion de volatilité) en M5, M15, H4 et D1, en LIVE. M5/M15 limités à BTC, ETH,
+  XRP, SOL (spread faible) ; D1 avec stop 0,75 ATR D1 (maximum du gate : 4 ATR H1) ; Donchian H4 à 30 barres (P12 = 20).
+
 ## À FAIRE (lundi, avec Fable)
 
 - **Plus tard, à la demande de l'utilisateur (25/09 : « laisse pour le moment, pourquoi pas plus tard ») :** retirer

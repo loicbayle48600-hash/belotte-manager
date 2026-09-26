@@ -292,6 +292,26 @@ def default_agents() -> list[AgentSpec]:  # noqa: C901 - registre déclaratif
         A.append(_a(f"P{i:02d}", "P", nm, st, mk, ALL_SESSIONS, tfs, ALL_REGIMES, prm, model_tier_role="technical_analysis",
                     status=AgentStatus.SHADOW.value if nm in PR_SHADOW else AgentStatus.LIVE.value,
                     description="Crypto 7 j/7, stratégie issue de la recherche"))
+    # crypto multi-unités de temps (2026-09-26, demande utilisateur « fais M5, M15, H4, D1 ») : les 4 approches qui
+    # tiennent le mieux en backtest (Donchian, retour à la moyenne en range, repli dans la tendance, expansion de
+    # volatilité). M5/M15 limités aux cryptos à spread faible (BTC, ETH, XRP, SOL) : ailleurs le spread dépasse 20 %
+    # d'un stop court et le gate refuserait tout. D1 : stop 0,75 ATR D1, sous le maximum du gate (4 ATR H1).
+    liquides = ["BTCUSD", "ETHUSD", "XRPUSD", "SOLUSD"]
+    MT = [("m5", tf("M5", "M15"), liquides, 1.5), ("m15", tf("M15", "H1"), liquides, 1.5),
+          ("h4", tf("H4", "D1"), ["crypto"], 1.5), ("d1", tf("D1", "D1"), ["crypto"], 0.75)]
+    MS = [("donchian", "donchian_breakout", {"lookback": 20, "rr": 2.5}, ALL_REGIMES),
+          ("range_mr", "bollinger_mr", {"rsi_lo": 30, "rsi_hi": 70, "rr": 1.6}, RANGE_REGIMES),
+          ("trend_pullback", "mtf_trend_pullback", {"rsi_lo": 38, "rsi_hi": 62, "rr": 2.0}, TREND_REGIMES),
+          ("atr_expansion", "atr_expansion", {"atr_ratio": 1.3, "rr": 2.0}, BREAKOUT_REGIMES)]
+    n0 = len(P) + len(PR)
+    k = 0
+    for ut, tfs, mk, sl in MT:
+        for nom, st, prm, rg in MS:
+            k += 1
+            prm_ut = {**prm, "sl_atr": sl, **({"lookback": 30} if (ut, nom) == ("h4", "donchian") else {})}  # P12 = 20 H4
+            A.append(_a(f"P{n0 + k:02d}", "P", f"crypto_{ut}_{nom}", st, mk, ALL_SESSIONS, tfs, rg, prm_ut,
+                        model_tier_role="technical_analysis",
+                        description=f"Crypto 7 j/7, {nom} en {ut.upper()} (LIVE à la demande de l'utilisateur)"))
     # Chaque agent générateur possède SA PROPRE stratégie (clé = agent_id, module agents/strategies/*) ;
     # le screener générique historique reste en repli (base_strategy) tant que la stratégie propre n'existe pas.
     for a in A:

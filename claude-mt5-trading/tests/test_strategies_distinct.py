@@ -64,7 +64,7 @@ def test_tous_les_modules_de_strategies_se_chargent():
 REPLI_GENERIQUE_ASSUME = {"O01", "O02", "O03", "O04", "O05", "O06"}
 #: famille P (crypto 7 j/7, 2026-09-26) : screeners génériques ou de recherche (`agents/crypto_strategies.py`), mis
 #: en LIVE sans stratégie propre par DÉCISION EXPLICITE de l'utilisateur (« tous en LIVE directement »)
-REPLI_LIVE_DECISION_UTILISATEUR = {f"P{i:02d}" for i in range(1, 16)} | {f"K{i:02d}" for i in range(8, 13)}
+REPLI_LIVE_DECISION_UTILISATEUR = {f"P{i:02d}" for i in range(1, 32)} | {f"K{i:02d}" for i in range(8, 13)}
 
 
 def test_chaque_agent_generateur_a_sa_propre_strategie(generators, own_functions):
@@ -151,4 +151,4 @@ def test_famille_crypto_p_resolvable_et_limitee_a_la_crypto(generators):
     assert len(fam) == len(REPLI_LIVE_DECISION_UTILISATEUR)
     for a in fam:
         assert sc.resolve_screener(a) is not None, a.agent_id
-        assert set(a.markets) <= {"crypto", "BTCUSD", "ETHUSD"}, a.agent_id   # K08-K12 : annonces crypto
+        assert set(a.markets) <= {"crypto", "BTCUSD", "ETHUSD", "XRPUSD", "SOLUSD"}, a.agent_id
