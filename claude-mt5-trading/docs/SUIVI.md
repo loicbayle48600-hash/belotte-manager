@@ -280,6 +280,11 @@ n'utilise PAS Fable (retiré de TIER_A le 2026-09-23) : le quota Fable est rése
   en range, repli dans la tendance, expansion de volatilité) en M5, M15, H4 et D1, en LIVE. M5/M15 limités à BTC, ETH,
   XRP, SOL (spread faible) ; D1 avec stop 0,75 ATR D1 (maximum du gate : 4 ATR H1) ; Donchian H4 à 30 barres (P12 = 20).
 
+- **Backtest P16-P31 (26/09, 3 000 barres : ~10 jours en M5, ~1 mois en M15, ~1,4 an en H4, ~8 ans en D1)** : meilleurs
+  P28 Donchian D1 (240 trades, PF 1,49, +0,31 R, 2 étapes), P31 expansion D1 (PF 1,70, 2 étapes), P27 expansion H4
+  (PF 1,40, 2 étapes) ; M5 prometteurs mais sur ~10 jours seulement (P18 PF 2,59, P19 PF 1,71). Perdants (PF < 0,8) :
+  P17, P20, P22, P23, P26, P30 — mise en SHADOW proposée à l'utilisateur.
+
 ## À FAIRE (lundi, avec Fable)
 
 - **Plus tard, à la demande de l'utilisateur (25/09 : « laisse pour le moment, pourquoi pas plus tard ») :** retirer
