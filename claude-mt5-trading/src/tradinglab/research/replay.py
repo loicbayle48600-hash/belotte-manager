@@ -104,6 +104,10 @@ def decide(c: ReplayCandidate, reglages: dict) -> bool:
     refus réel (news, perte du jour, corrélation…) reste un refus."""
     if c.agent_id in set(reglages.get("agents_exclus") or []):
         return False
+    # distance minimale du stop en ATR H1 (contrôle 10 du gate) : un seuil plus haut écarte les stops « dans le bruit »
+    min_sl = reglages.get("min_sl_atr_ratio")
+    if min_sl is not None and c.atr > 0 and abs(c.entry - c.sl) / c.atr < float(min_sl):
+        return False
     desactives = set(reglages.get("gate_checks_disabled") or [])
     seuil = reglages.get("max_spread_sl_ratio")
     for nom in c.failed:
@@ -164,9 +168,18 @@ def run(cands: list[ReplayCandidate], reglages: dict, pm: dict, bars_for: Callab
     """Décide et simule tous les candidats ; une seule position simulée par symbole à la fois."""
     import pandas as pd
 
+    import dataclasses
+
     occupe: dict[str, object] = {}
     trades = []
+    elargir = reglages.get("stop_min_atr_elargi")
     for c in cands:
+        if elargir and c.atr > 0 and abs(c.entry - c.sl) < float(elargir) * c.atr:
+            # stop ÉLARGI à `elargir` ATR (risque en $ identique : volume réduit d'autant) ; objectif structurel conservé,
+            # coût d'entrée ramené à la nouvelle distance
+            dist0, dist1 = abs(c.entry - c.sl), float(elargir) * c.atr
+            c = dataclasses.replace(c, sl=c.entry - c.side * dist1,
+                                    cost_ratio=(c.cost_ratio * dist0 / dist1) if c.cost_ratio is not None else None)
         if not decide(c, reglages):
             continue
         t0 = pd.Timestamp(c.ts)
@@ -226,7 +239,8 @@ def main(argv: Optional[list[str]] = None) -> int:  # pragma: no cover - outil e
     load_dotenv(s.home / ".env")
     ex = s.execution
     actuels = {"gate_checks_disabled": list(ex.get("gate_checks_disabled") or []),
-               "max_spread_sl_ratio": ex.get("max_spread_sl_ratio"), "agents_exclus": []}
+               "max_spread_sl_ratio": ex.get("max_spread_sl_ratio"), "agents_exclus": [],
+               "min_sl_atr_ratio": ex.get("min_sl_atr_ratio", 0.25)}
     pm_actuel = dict(s.profit_management)
     surcharge = yaml.safe_load(args.reglages.read_text(encoding="utf-8")) if args.reglages else {}
     proposes = {**actuels, **{k: v for k, v in (surcharge or {}).items() if k != "profit_management"}}

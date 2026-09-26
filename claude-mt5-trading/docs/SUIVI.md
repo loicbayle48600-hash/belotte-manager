@@ -239,6 +239,14 @@ n'utilise PAS Fable (retiré de TIER_A le 2026-09-23) : le quota Fable est rése
   15 h 09-15 h 12 (MT5 « Authorization failed », connexion du terminal perdue puis revenue) : watchdog dans son rôle.
   La revue IA refuse depuis surtout des stops « dans le bruit » (0,3-0,5 ATR) et POLUSD (spread 3,2 ATR > stop).
 
+- **Revue IA hors délai = entrée validée sans l'IA (26/09, corrigé)** : le BTCUSD perdant de 13 h 50 avait été mis en
+  attente par l'IA à 13 h 45 (stop fragile) puis APPROUVÉ par le repli déterministe (score 63 ≥ 55) quand la revue a
+  dépassé 25 s. Désormais une revue IA sans verdict (hors délai, erreur, arbitre muet) ne valide jamais d'entrée.
+- **Stops serrés — rejeu des 7 derniers jours (26/09)** : réglage actuel (stop ≥ 0,25 ATR H1) : 98 trades, −34,9 R.
+  Refuser les stops < 0,75 ATR : 54 trades, −21,6 R ; < 1,0 ATR : 20 trades, −3,3 R (DD 6 R au lieu de 35).
+  ÉLARGIR les stops serrés au lieu de les refuser est pire (−42,6 à −50,7 R) : l'objectif reste au même endroit, le
+  gain en R fond. En attente de la décision de l'utilisateur (seuil du gate, gel lab-v1).
+
 ## À FAIRE (lundi, avec Fable)
 
 - **Plus tard, à la demande de l'utilisateur (25/09 : « laisse pour le moment, pourquoi pas plus tard ») :** retirer

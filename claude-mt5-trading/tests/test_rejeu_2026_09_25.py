@@ -59,3 +59,17 @@ def test_rejeu_compare_et_une_position_par_symbole(tmp_path):
     res = compare(cands, {"max_spread_sl_ratio": 0.2}, {"max_spread_sl_ratio": 0.35}, PM, PM, lambda s: bars)
     assert res["actuel"]["trades"] == 1 and res["propose"]["trades"] == 1      # le 2e attend que le symbole se libère
     assert res["actuel"]["total_r"] == -1.1                                    # -1 R et 10 % de coût d'entrée
+
+
+def test_distance_minimale_du_stop():
+    c = _c(0.1)                                    # stop 0,0020 pour un ATR 0,0010 : 2 ATR
+    assert decide(c, {"min_sl_atr_ratio": 1.5}) and not decide(c, {"min_sl_atr_ratio": 2.5})
+
+
+def test_stop_elargi_garde_l_objectif_et_reduit_le_cout():
+    c = _c(0.2)                                    # stop 0,0020 = 2 ATR (ATR 0,0010)
+    c = ReplayCandidate(**{**c.__dict__, "atr": 0.0040})   # stop = 0,5 ATR : trop serré
+    bars = _bars([1.0990, 1.0975, 1.0970])         # descend à 1,0968 : le stop d'origine (1,0980) sauterait
+    res = compare([c], {}, {"stop_min_atr_elargi": 1.0}, PM, PM, lambda s: bars)
+    assert res["actuel"]["total_r"] == -1.2                                   # −1 R − 20 % de coût
+    assert res["propose"]["total_r"] > -1.0                                   # stop à 1,0960 : non touché
