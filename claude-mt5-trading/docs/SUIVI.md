@@ -270,6 +270,12 @@ n'utilise PAS Fable (retiré de TIER_A le 2026-09-23) : le quota Fable est rése
 
 - **P14 (RSI(2) BTC/ETH) en SHADOW** (26/09, décision utilisateur) : PF 0,75 en backtest.
 
+- **Commission crypto (26/09, corrigé)** : la commission FOXX crypto (3 $/lot) appliquée PAR LOT valait 150 % (SOL) à
+  16 700 % (XRP) du risque, car un lot crypto va d'un BTC à un seul XRP. Le contrôle 07b bloquait toute crypto hors BTC
+  et le break-even crypto était impossible à placer. Elle est comptée en % de la valeur du trade (0,004 %, soit ~3 $
+  sur un lot BTC) : `crypto_commission_percent_of_notional`, `tests/test_commission_crypto_2026_09_26.py`.
+  Restent bloquées par leur SPREAD seul (> 20 % du risque sur des stops H1) : ADA, DOT, POL, KSM, souvent LNK et AVX.
+
 ## À FAIRE (lundi, avec Fable)
 
 - **Plus tard, à la demande de l'utilisateur (25/09 : « laisse pour le moment, pourquoi pas plus tard ») :** retirer

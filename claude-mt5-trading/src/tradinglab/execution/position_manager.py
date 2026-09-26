@@ -276,6 +276,8 @@ class PositionManager:
 
     #: commission aller-retour par lot selon la classe d'actif (branchée par l'orchestrateur sur le profil prop)
     commission_per_lot = None
+    #: commission ramenée en distance de prix (spec, prix) -> float ; prioritaire sur `commission_per_lot` (crypto)
+    commission_price = None
 
     def _be_level(self, plan: BotPositionPlan, side: Side, spec: Optional[SymbolSpec]) -> float:
         """Niveau de break-even : entrée + offset (0,05 R) + commission ramenée en distance de prix.
@@ -285,6 +287,12 @@ class PositionManager:
         Commission par lot / (valeur d'un tick par lot / taille du tick) = distance de prix, indépendante du volume."""
         dist = abs(plan.entry - plan.initial_sl)
         com = 0.0
+        if self.commission_price is not None and spec is not None:
+            try:
+                com = float(self.commission_price(spec, plan.entry))
+            except Exception:  # noqa: BLE001 - commission inconnue : l'offset seul s'applique
+                com = 0.0
+            return plan.entry + side.sign * (dist * self.cfg.break_even_offset_r + com)
         if self.commission_per_lot is not None and spec is not None and getattr(spec, "tick_value", 0) > 0:
             try:
                 com = float(self.commission_per_lot(spec.asset_class)) * spec.tick_size / spec.tick_value

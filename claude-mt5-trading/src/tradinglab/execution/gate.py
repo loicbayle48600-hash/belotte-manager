@@ -165,8 +165,7 @@ class ExecutionGate:
             # Commission de la prop firm (FOXX : 7 $/lot forex et matières premières, 3 $ crypto, 0 indice — relevé
             # le 2026-09-23) convertie en distance de prix : commission / (valeur d'un tick par lot / taille du tick).
             # Elle s'ajoute au spread : c'est le coût réel d'entrée rapporté à la distance au stop.
-            com_lot = self.prop.commission_per_lot(ctx.spec.asset_class)
-            com_price = (com_lot * ctx.spec.tick_size / ctx.spec.tick_value) if (com_lot > 0 and ctx.spec.tick_value > 0) else 0.0
+            com_price = self.prop.commission_price(ctx.spec, ref)
             part = (sp_price + com_price) / dist_sl if dist_sl > 0 else 1.0
             part_sp = sp_price / dist_sl if dist_sl > 0 else 1.0
             cost_part = part

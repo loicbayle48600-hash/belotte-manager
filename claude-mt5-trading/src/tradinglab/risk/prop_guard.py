@@ -271,6 +271,24 @@ class PropGuard:
             return float(row[col])
         return float(min(float(v) for v in row.values()))
 
+    def commission_price(self, spec, price: float) -> float:
+        """Commission aller-retour ramenée en DISTANCE DE PRIX, pour la comparer au stop.
+
+        Hors crypto : commission par lot / (valeur d'un tick par lot / taille du tick).
+        Crypto (2026-09-26) : la table FOXX donne 3 $/lot, mais la taille d'un lot crypto chez le broker va d'un
+        bitcoin (~84 000 $) à un seul XRP (~3 $). Appliquée par lot, la commission valait 150 % (SOL) à 16 700 % (XRP)
+        du risque et le contrôle 07b bloquait toute crypto hors BTC ; le break-even devenait impossible à placer.
+        On la compte en POURCENTAGE de la valeur du trade (`crypto_commission_percent_of_notional`, 3 $ sur un lot
+        BTC ≈ 0,004 %) : même coût relatif quelle que soit la taille du lot."""
+        if spec is None:
+            return 0.0
+        if str(getattr(spec, "asset_class", "")).lower() == "crypto":
+            pct = float((self.profile.raw or {}).get("crypto_commission_percent_of_notional", 0.004) or 0.0)
+            return abs(float(price)) * pct / 100.0
+        com_lot = self.commission_per_lot(spec.asset_class)
+        tv = float(getattr(spec, "tick_value", 0.0) or 0.0)
+        return (com_lot * float(spec.tick_size) / tv) if (com_lot > 0 and tv > 0) else 0.0
+
     def commission_per_lot(self, asset_class: str) -> float:
         """Commission aller-retour par lot (USD) de la prop firm pour cette classe ; 0 si non renseignée."""
         table = self.profile.commissions_per_lot or {}

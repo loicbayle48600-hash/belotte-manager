@@ -101,6 +101,7 @@ class Orchestrator:
                                  idea_window_minutes=self.prop.profile.trade_idea_aggregation_minutes)
         self.pm = PositionManager(broker, self.store, self.journal, PMConfig.from_config(settings.profit_management), self.magic)
         self.pm.commission_per_lot = self.prop.commission_per_lot   # break-even commission comprise (2026-09-25)
+        self.pm.commission_price = self.prop.commission_price       # crypto en % de la valeur (2026-09-26)
         tfs = settings.scheduler.get("timeframes", ["M5", "M15", "H1", "H4", "D1"])
         self.feed = MarketDataFeed(broker, tfs, bars=max(300, int(settings.system.get("min_bars_required", 250)) + 50),
                                    max_tick_age_sec=int(settings.system.get("data_max_age_sec", 30)),

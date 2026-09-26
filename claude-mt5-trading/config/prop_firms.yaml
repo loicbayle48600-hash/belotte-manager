@@ -70,6 +70,9 @@ prop:
 
   # --- Commissions (FAQ relevée le 2026-09-23), par lot aller-retour, USD ---
   commissions_per_lot: {forex: 7.0, commodities: 7.0, indices: 0.0, crypto: 3.0}
+  # crypto en % de la valeur du trade (2026-09-26) : 3 $ par lot BTC (~84 000 $) ≈ 0,004 %. Par lot, la commission
+  # valait 150 % à 16 700 % du risque sur les cryptos à petit lot (SOL, XRP, ADA…) et bloquait tout sauf le BTC.
+  crypto_commission_percent_of_notional: 0.004
 
   # --- Cycle de paiement automatique (décision utilisateur 2026-09-23 : « je trade tous les jours et tous
   # les 7 jours je retire tous mes bénéfices ; les comptes démo font comme un compte financé ») ---
