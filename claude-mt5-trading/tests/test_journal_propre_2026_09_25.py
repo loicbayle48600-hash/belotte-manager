@@ -104,3 +104,25 @@ def test_revue_ia_bornee_dans_le_temps():
     assert lent.verdict is Verdict.WAIT and "hors délai" in lent.review["llm_skipped"]
     _t.sleep(2.0)
     assert lent.verdict is Verdict.WAIT                    # la revue tardive n'a rien modifié
+
+
+def test_revue_ia_hors_delai_ne_valide_jamais_une_entree():
+    """2026-09-26 : IA hors délai → le repli déterministe approuvait (score 63 ≥ 55) un BTCUSD que l'IA avait mis en
+    attente 5 min plus tôt ; −617 $. Désormais APPROVE devient WAIT quand l'avis IA manque."""
+    import time as _t
+    from tradinglab.core.types import Verdict
+    from tradinglab.orchestration.orchestrator import Orchestrator
+
+    class _Rev:
+        def review(self, c, bonus):
+            _t.sleep(1.0)
+
+        def deterministic(self, c, bonus):
+            return SimpleNamespace(verdict=Verdict.APPROVE, to_dict=lambda: {"verdict": "APPROVE"})
+
+    o = Orchestrator.__new__(Orchestrator)
+    o.review, o.journal = _Rev(), _J()
+    o.journal.warn = lambda msg, **kw: None
+    c = SimpleNamespace(symbol="BTCUSD", agent_id="C01", verdict=None, review={})
+    o._review_with_deadline([c], 0.0, deadline=0.2)
+    assert c.verdict is Verdict.WAIT and c.review["verdict"] == "WAIT" and "hors délai" in c.review["llm_skipped"]

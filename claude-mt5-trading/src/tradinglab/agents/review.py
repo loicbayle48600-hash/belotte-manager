@@ -141,7 +141,13 @@ class AdversarialReview:
         total = c1 + c2 + c3 + c4
         if not arb or str(arb.get("verdict", "")).upper() not in Verdict.__members__:
             det.bull, det.bear, det.devil, det.cost_usd = bull, bear, devil, total
-            det.rationale += " | arbitre LLM indisponible → décision déterministe"
+            # 2026-09-26 : une revue IA commencée mais sans verdict ne valide JAMAIS une entrée. Le verdict
+            # déterministe (souvent APPROVE, simple seuil de score) prenait la place d'un avis IA manquant.
+            if det.verdict is Verdict.APPROVE:
+                det.verdict = Verdict.WAIT
+                det.rationale += " | arbitre IA sans verdict → attente (jamais d'entrée sans son avis)"
+            else:
+                det.rationale += " | arbitre IA sans verdict → décision déterministe"
             c.verdict, c.review = det.verdict, det.to_dict()
             return det
         v = Verdict[str(arb["verdict"]).upper()]

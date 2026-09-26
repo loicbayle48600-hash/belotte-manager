@@ -278,7 +278,8 @@ def test_review_non_object_llm_json_does_not_raise():
     rv = AdversarialReview(llm, 65, 1.5)
     c = candidate()
     res = rv.review(c)
-    assert res.verdict is Verdict.APPROVE and res.arbiter == "deterministic"
+    # 2026-09-26 : sans verdict de l'arbitre IA, jamais d'entrée (l'APPROVE déterministe devient WAIT)
+    assert res.verdict is Verdict.WAIT and res.arbiter == "deterministic"
     assert res.bull.get("parse_error") and llm.calls == 4
     rv2 = AdversarialReview(FakeLLM(text='"APPROVE"'), 65, 1.5)
     assert rv2.review(candidate()).arbiter == "deterministic"

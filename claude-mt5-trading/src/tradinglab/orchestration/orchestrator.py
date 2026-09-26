@@ -1004,7 +1004,12 @@ class Orchestrator:
                 c.verdict, c.review = cc.verdict, cc.review
                 continue
             det = self.review.deterministic(c, score_bonus)
-            c.verdict, c.review = det.verdict, det.to_dict()
+            # 2026-09-26 : le repli déterministe APPROUVAIT (score 63 ≥ 55) un BTCUSD que l'IA venait de mettre en
+            # attente 5 min plus tôt (stop jugé fragile) ; le trade a perdu 617 $. Une revue IA qui n'aboutit pas ne
+            # valide jamais une entrée : APPROVE devient WAIT, le candidat est revu au cycle suivant.
+            verdict = Verdict.WAIT if det.verdict is Verdict.APPROVE else det.verdict
+            c.verdict, c.review = verdict, det.to_dict()
+            c.review["verdict"] = verdict.value
             raison = f"revue IA hors délai ({deadline:.0f} s)" if f not in done else f"revue IA en erreur ({type(f.exception()).__name__})"
             c.review["llm_skipped"] = raison
             self.journal.warn("revue IA remplacée par la revue déterministe", symbol=c.symbol, agent_id=c.agent_id, raison=raison)
