@@ -450,7 +450,7 @@ class Orchestrator:
         symboles_portes = {p.symbol for p in st.bot_positions.values()}
         for c in cands:
             spec = self.registry.get(c.agent_id)
-            nc = self.news.check(self._symbol_currencies(c.symbol), now, news_sensitive_strategy=bool(spec and spec.news_sensitive))
+            nc = self._news_check(c, spec, now)
             c.news_state = nc.state
             c.macro_alignment = macro.get("risk_sentiment", "UNKNOWN")
             self.cot.annotate(c)
@@ -576,7 +576,7 @@ class Orchestrator:
             except (ValueError, TypeError, KeyError):
                 wd_alive = False
         agent = self.registry.get(c.agent_id)
-        nc = self.news.check(self._symbol_currencies(c.symbol), now, news_sensitive_strategy=bool(agent and agent.news_sensitive))
+        nc = self._news_check(c, agent, now)
         bot_pos = list(st.bot_positions.values())
         ex = self.s.execution
         max_sp = max_spread_points_for(spec.asset_class if spec else "", ex.get("max_spread_points", {}))
@@ -1060,6 +1060,18 @@ class Orchestrator:
             return None
         spec = self.broker.symbol_info(c.symbol)
         return self.NOTE_CRYPTO_WEEKEND if spec is not None and spec.asset_class == "crypto" else None
+
+    def _news_check(self, c, spec, now: datetime):
+        """Contrôle des annonces pour un candidat. Les agents qui TRADENT les annonces (`news_trader`, décision
+        utilisateur du 2026-09-26, option news FOXX) passent la fenêtre de blocage et le choc de news ; jamais un
+        calendrier indisponible (DEGRADED reste bloquant pour eux). Tous les autres agents gardent le blocage."""
+        from ..news.hub import NewsCheck
+
+        nc = self.news.check(self._symbol_currencies(c.symbol), now, news_sensitive_strategy=bool(spec and spec.news_sensitive))
+        if spec is not None and getattr(spec, "news_trader", False) and (nc.state.startswith("BLOCKED") or nc.state == "SHOCK"):
+            return NewsCheck(ok=True, state="NEWS_TRADING", reason=f"annonce tradée par un agent spécialisé ({nc.state} : {nc.reason})",
+                             events=nc.events)
+        return nc
 
     def _priorite(self, c) -> tuple:
         """Clé de tri des candidats : agents mis en avant par l'utilisateur d'abord (2026-09-25), puis score de setup."""

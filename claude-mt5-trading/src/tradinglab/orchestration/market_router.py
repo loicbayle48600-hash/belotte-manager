@@ -52,15 +52,16 @@ class MarketRouter:
                 continue
             shock = snap.regime.regime.value == "NEWS_SHOCK"
             live = AgentStatus.LIVE.value in (statuses or self.statuses)
-            if shock and live:
-                # jamais de trade RÉEL en choc de news ; en routage SHADOW seuls les agents d'annonces tournent
-                rep.skipped[sym] = "NEWS_SHOCK"
-                continue
             root = snap.spec.root or root_of(sym)
             agents = self.registry.active_for(snap.regime.regime.value, snap.session.value, snap.spec.asset_class, root,
                                               self.group_of.get(root), statuses or self.statuses)
             if shock:
-                agents = [a for a in agents if a.news_sensitive]
+                # choc de news : en LIVE, seuls les agents qui tradent les annonces (`news_trader`, décision utilisateur
+                # 2026-09-26) ; en SHADOW, tous les agents d'annonces
+                agents = [a for a in agents if (a.news_trader if live else a.news_sensitive)]
+                if not agents:
+                    rep.skipped[sym] = "NEWS_SHOCK"
+                    continue
             rep.agents_activated[sym] = [a.agent_id for a in agents]
             for a in agents:
                 c = run_screener(a, snap)

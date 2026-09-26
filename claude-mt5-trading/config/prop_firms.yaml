@@ -102,7 +102,8 @@ prop:
 
   # --- News ---
   news_trading_allowed_during_evaluation: true
-  news_trading_allowed_on_funded: false
+  # true le 2026-09-26 : l'utilisateur a pris l'option news FOXX (trading autorisé pendant les annonces)
+  news_trading_allowed_on_funded: true
   news_trading_window_minutes: 5                  # 5 min avant ET après un événement à fort impact (compte financé)
 
   # --- Sessions ---

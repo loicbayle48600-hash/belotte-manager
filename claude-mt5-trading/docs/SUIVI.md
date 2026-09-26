@@ -262,6 +262,12 @@ n'utilise PAS Fable (retiré de TIER_A le 2026-09-23) : le quota Fable est rése
   — PF 1,20 sur 153 trades ; P14 RSI(2) BTC/ETH — PF 0,75 (perdant). Tous restent LIVE (décision utilisateur).
   Premiers candidats P en attente : l'IA hésite sur des agents sans historique (sample_size = 0) et sur les spreads.
 
+- **Trading des annonces (26/09, décision utilisateur, option news FOXX)** : seuls les agents qui tradent les annonces
+  (`news_trader`) passent la fenêtre de blocage et le choc de news : K03-K07 (suivi, retournement, cassure de range,
+  reprise de tendance, dérive après banque centrale) passent LIVE, et K08-K12, leurs versions crypto (stops plus
+  larges), sont créés en LIVE. Tous les autres agents gardent la fenêtre 30/15 min (60/30 banques centrales).
+  Calendrier indisponible → toujours bloqué. `prop_firms.yaml` : `news_trading_allowed_on_funded: true`.
+
 ## À FAIRE (lundi, avec Fable)
 
 - **Plus tard, à la demande de l'utilisateur (25/09 : « laisse pour le moment, pourquoi pas plus tard ») :** retirer

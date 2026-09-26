@@ -44,6 +44,9 @@ class AgentSpec:
     version: str = "1.0"
     model_tier_role: str = "worker"  # rôle LLM pour l'analyse approfondie
     news_sensitive: bool = False
+    # agent spécialisé qui TRADE les annonces (2026-09-26, décision utilisateur, option news FOXX) : seul exempté du
+    # blocage des annonces (fenêtre avant/après, choc de news). Tous les autres agents gardent le blocage.
+    news_trader: bool = False
     cost_budget_usd: float = 0.5
     description: str = ""
     entry_rules: str = ""
@@ -181,10 +184,23 @@ def default_agents() -> list[AgentSpec]:  # noqa: C901 - registre déclaratif
           ("news_trend_resume", "news_trend_resume", tf("M15", "H1"), {"min_after": 30, "max_after": 120, "sl_atr": 1.5, "rr": 2.0}),
           ("central_bank_drift", "central_bank_drift", tf("M15", "H1"), {"min_after": 60, "max_after": 360, "drift_atr": 1.5,
                                                                             "sl_atr": 2.0, "rr": 2.5})]
+    # 2026-09-26, décision utilisateur (option news FOXX achetée) : ces agents passent en LIVE et sont les SEULS à
+    # trader pendant les annonces (`news_trader`) ; tous les autres gardent la fenêtre de blocage.
     for i, (nm, st, tfs, p) in enumerate(KN, len(K) + 1):
         A.append(_a(f"K{i:02d}", "I", nm, st, ALL_CLASSES, ALL_SESSIONS, tfs, ALL_REGIMES + [Regime.NEWS_SHOCK.value], p,
-                    news_sensitive=True, model_tier_role="complex_news", status=AgentStatus.SHADOW.value,
-                    description="Trading d'annonce (SHADOW) : mesuré sur positions virtuelles, jamais d'ordre"))
+                    news_sensitive=True, news_trader=True, model_tier_role="complex_news",
+                    description="Trading d'annonce (LIVE) : seul autorisé pendant les annonces"))
+    # agents d'annonce spécialisés CRYPTO (2026-09-26, demande utilisateur) : la crypto réagit fortement aux annonces
+    # américaines (CPI, emploi, Fed) ; mêmes stratégies, stops plus larges (volatilité crypto), crypto uniquement
+    KC = [("crypto_news_follow", "news_follow", tf("M5", "H1"), {"min_after": 2, "max_after": 20, "impulse_atr": 1.2, "sl_atr": 1.5, "rr": 2.0}),
+          ("crypto_news_fade", "news_fade", tf("M5", "H1"), {"min_after": 10, "max_after": 60, "spike_atr": 3.0, "sl_atr": 1.5, "rr": 1.5}),
+          ("crypto_news_range_break", "news_range_break", tf("M5", "H1"), {"min_after": 5, "max_after": 45, "range_bars": 12, "sl_atr": 1.5, "rr": 2.0}),
+          ("crypto_news_trend_resume", "news_trend_resume", tf("M15", "H1"), {"min_after": 30, "max_after": 180, "sl_atr": 2.0, "rr": 2.0}),
+          ("crypto_fed_drift", "central_bank_drift", tf("M15", "H1"), {"min_after": 60, "max_after": 480, "drift_atr": 1.5, "sl_atr": 2.5, "rr": 2.5})]
+    for i, (nm, st, tfs, p) in enumerate(KC, len(K) + len(KN) + 1):
+        A.append(_a(f"K{i:02d}", "I", nm, st, ["crypto"], ALL_SESSIONS, tfs, ALL_REGIMES + [Regime.NEWS_SHOCK.value], p,
+                    news_sensitive=True, news_trader=True, model_tier_role="complex_news",
+                    description="Trading d'annonce crypto (LIVE) : seul autorisé pendant les annonces"))
     # ---------------- L. Variantes par classe d'actif (métaux / indices / crypto) ----------------
     L = [("gold_london_pullback", "mtf_trend_pullback", ["metals"], ["LONDON", "OVERLAP_LDN_NY"], {"rsi_lo": 38, "rsi_hi": 62, "sl_atr": 1.5, "rr": 2.0}),
          ("gold_mean_reversion_asia", "bollinger_mr", ["metals"], ["ASIA"], {"rsi_lo": 30, "rsi_hi": 70, "sl_atr": 0.8, "rr": 1.5}),

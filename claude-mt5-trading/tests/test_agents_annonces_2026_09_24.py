@@ -46,11 +46,15 @@ def _impulsion(snap, atr_mult: float, event_bars_ago: int = 3):
 
 
 def test_sept_agents_d_annonces_en_shadow():
+    """2026-09-26 (décision utilisateur, option news FOXX) : K03-K07 passent LIVE et tradent les annonces, K08-K12
+    (spécialistes crypto) s'y ajoutent ; K01-K02 restent en SHADOW."""
     reg = AgentRegistry()
     k = {a.agent_id: a for a in reg.agents.values() if a.agent_id.startswith("K")}
-    assert sorted(k) == ["K01", "K02", "K03", "K04", "K05", "K06", "K07"]
-    assert all(a.status == AgentStatus.SHADOW.value and a.news_sensitive for a in k.values())
-    assert all(Regime.NEWS_SHOCK.value in k[i].regimes for i in ("K03", "K04", "K05", "K06", "K07"))
+    assert sorted(k) == [f"K{i:02d}" for i in range(1, 13)]
+    assert all(a.news_sensitive for a in k.values())
+    assert all(k[i].status == AgentStatus.SHADOW.value for i in ("K01", "K02"))
+    assert all(k[f"K{i:02d}"].status == AgentStatus.LIVE.value and k[f"K{i:02d}"].news_trader for i in range(3, 13))
+    assert all(Regime.NEWS_SHOCK.value in k[f"K{i:02d}"].regimes for i in range(3, 13))
 
 
 def test_news_follow_suit_l_impulsion_apres_l_annonce(snap):
@@ -100,7 +104,7 @@ def test_routeur_news_shock_seulement_agents_d_annonces_en_shadow(snap, monkeypa
     vus: list[str] = []
     monkeypatch.setattr(mr, "run_screener", lambda a, s: vus.append(a.agent_id) or None)
     router = mr.MarketRouter(reg)
+    # 2026-09-26 (décision utilisateur) : en LIVE, seuls les agents qui tradent les annonces tournent en choc de news
     _, rep = router.route({"EURUSD": snap}, (AgentStatus.LIVE.value,))
-    assert rep.skipped.get("EURUSD") == "NEWS_SHOCK" and vus == [], "jamais de trade réel en choc de news"
-    _, rep = router.route({"EURUSD": snap}, (AgentStatus.SHADOW.value, AgentStatus.CANDIDATE.value))
-    assert vus and set(vus) <= {"K03", "K04", "K05", "K06", "K07"}
+    assert vus and set(vus) <= {"K03", "K04", "K05", "K06", "K07"}, "forex : les spécialistes crypto K08-K12 n'y vont pas"
+    assert all(reg.get(a).news_trader for a in vus)
