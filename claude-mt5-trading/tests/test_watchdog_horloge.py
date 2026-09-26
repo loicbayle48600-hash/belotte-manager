@@ -189,3 +189,16 @@ def test_tick_indisponible_compte_comme_gele(settings, home, monkeypatch):
     wd = _wd(settings, home, broker)
     rep = wd.check_once()
     assert rep.data_fresh is False and rep.safe_mode_request is True
+
+
+def test_ancrage_reessaie_tant_que_le_terminal_ne_liste_aucun_symbole(watchdog):
+    """2026-09-26 : l'ancrage passait avant la connexion ; liste de symboles vide → aucune crypto retenue, ancrage
+    déclaré fait pour toujours, seul EURUSD surveillé → SAFE_MODE tout le samedi, aucun trade crypto."""
+    wd, broker = watchdog
+    vrais = broker._symboles
+    broker._symboles = []                       # terminal pas encore connecté
+    wd._ancrer_horloge()
+    assert not wd._ancrage_fait and wd._surveilles == []
+    broker._symboles = vrais                    # connecté au contrôle suivant
+    wd._ancrer_horloge()
+    assert wd._ancrage_fait and "BTCUSD" in wd._surveilles

@@ -115,10 +115,17 @@ class Watchdog:
         symboles: list[str] = []
         if self.ref_symbol:
             symboles.append(self.ref_symbol)
-        symboles += [str(x) for x in (self.s.markets.get("crypto") or [])][:6]
+        cryptos = [str(x) for x in (self.s.markets.get("crypto") or [])][:6]
+        symboles += cryptos
         try:
             reels = resolve_symbols(symboles, self.broker.symbols())
         except Exception:  # noqa: BLE001 - broker indisponible : on réessaiera au prochain cycle
+            return
+        # 2026-09-26 : l'ancrage passait AVANT la connexion au terminal ; la liste des symboles du broker était vide,
+        # aucune crypto n'était retenue et l'ancrage était déclaré fait pour toujours. Seul EURUSD restait surveillé :
+        # le samedi, forex gelé → « aucun marché suivi ne cote » → SAFE_MODE, aucun trade crypto du week-end.
+        # On réessaie à chaque contrôle tant qu'aucune crypto n'est résolue.
+        if cryptos and not any(reels.get(c) for c in cryptos):
             return
         for reel in reels.values():
             if reel:
