@@ -49,3 +49,4 @@ data/cot_cache.json
 data/research/
 data/validation_live/
 data/validation_live_*/
+data/validation_*/
