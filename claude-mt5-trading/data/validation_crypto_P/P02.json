@@ -1,0 +1,34 @@
+{
+ "agent_id": "P02",
+ "version": "1.0",
+ "stages": {
+  "BACKTEST": {
+   "passed": false,
+   "metrics": {
+    "symbol": "BTCUSD",
+    "symbols": [
+     "BTCUSD",
+     "ETHUSD",
+     "XRPUSD"
+    ],
+    "entry_tf": "H1",
+    "trades": 27,
+    "wins": 8,
+    "losses": 19,
+    "win_rate": 0.2962962962962963,
+    "profit_factor": 1.0018096176358335,
+    "expectancy_r": 0.0012809895947263504,
+    "avg_r": 0.0012809895947263504,
+    "median_r": -1.0000425076888275,
+    "max_drawdown_r": 9.760171515924885,
+    "sharpe": 0.004204235739113956,
+    "sortino": 0.007887649630275715,
+    "total_r": 0.03458671905761146,
+    "avg_bars_held": 37.666666666666664,
+    "sample_size": 27
+   },
+   "ts": "2026-09-26T16:39:47.442145+00:00"
+  }
+ },
+ "history": []
+}

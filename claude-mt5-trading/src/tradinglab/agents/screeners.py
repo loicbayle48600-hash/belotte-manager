@@ -580,6 +580,7 @@ def _load_own_strategies() -> None:
     except ImportError:
         pass
     from . import news_strategies  # noqa: F401 - stratégies d'annonces (famille K, 2026-09-24)
+    from . import crypto_strategies  # noqa: F401 - stratégies crypto 7 j/7 (famille P, 2026-09-26)
 
 
 def resolve_screener(spec: AgentSpec):

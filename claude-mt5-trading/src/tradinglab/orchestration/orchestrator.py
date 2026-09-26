@@ -111,6 +111,7 @@ class Orchestrator:
         self.llm: Optional[LLMClient] = None
         self.review = AdversarialReview(None, float(settings.execution.get("required_setup_score", 65)),
                                         float(settings.execution.get("min_rr_required", 1.5)), int(settings.learning.get("min_sample_size", 40)))
+        self.review.market_note = self._market_note
         self.news = NewsHub(build_providers(settings.news), settings.news, cache_dir=settings.data_dir / "cache")
         self.learning = LearningStore(settings.data_dir / "learning.db")
         self.post_trade = PostTradeAnalyzer(self.learning, None, settings.learning)
@@ -477,6 +478,11 @@ class Orchestrator:
                         c.review["llm_skipped"] = f"position déjà ouverte sur {c.symbol} (1 par symbole)"
                     else:
                         c.review["llm_skipped"] = f"au-delà des {MAX_LLM_REVIEWS_PER_CYCLE} meilleurs candidats"
+                        # 2026-09-26 (décision utilisateur) : sans l'avis de l'IA, pas d'entrée. Au-delà des N créneaux,
+                        # un APPROVE sur le seul score (ADAUSD 18 h 02, arrêté par le gate) devient WAIT.
+                        if c.verdict is Verdict.APPROVE:
+                            c.verdict = Verdict.WAIT
+                            c.review["verdict"] = Verdict.WAIT.value
             reviewed.append(c)
         if llm_batch:
             # Les N revues LLM sont indépendantes : en parallèle. Mesuré le 2026-09-21 en séquentiel :
@@ -1040,6 +1046,20 @@ class Orchestrator:
         except (KeyError, TypeError, ValueError):
             pass
         return base
+
+    #: 2026-09-26 : l'IA refusait des setups crypto du samedi pour « session Londres/New York un samedi : données
+    #: incohérentes ». La crypto cote en continu ; le nom de session n'est qu'une plage horaire UTC le week-end.
+    NOTE_CRYPTO_WEEKEND = ("Crypto : marché ouvert 24 h/24, 7 j/7. Le week-end, le nom de session (ASIA, LONDON, "
+                           "NEWYORK, OVERLAP_LDN_NY) désigne seulement la plage horaire UTC, pas l'ouverture d'une place "
+                           "boursière : ce n'est pas une incohérence de données. La liquidité du week-end est plus faible.")
+
+    def _market_note(self, c) -> Optional[str]:
+        """Contexte ajouté au dossier de l'IA : crypto le samedi ou le dimanche (UTC)."""
+        created = getattr(c, "created_at", None)
+        if created is None or created.weekday() < 5:
+            return None
+        spec = self.broker.symbol_info(c.symbol)
+        return self.NOTE_CRYPTO_WEEKEND if spec is not None and spec.asset_class == "crypto" else None
 
     def _priorite(self, c) -> tuple:
         """Clé de tri des candidats : agents mis en avant par l'utilisateur d'abord (2026-09-25), puis score de setup."""

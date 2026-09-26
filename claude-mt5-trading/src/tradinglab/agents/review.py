@@ -61,6 +61,8 @@ class ReviewResult:
 class AdversarialReview:
     def __init__(self, llm: Optional[LLMClient], required_score: float = 65.0, min_rr: float = 1.5, min_sample_for_stats: int = 40):
         self.llm = llm
+        # note de contexte de marché ajoutée au dossier de l'IA (branchée par l'orchestrateur) : callable(c) -> str | None
+        self.market_note = None
         self.required_score = required_score
         self.min_rr = min_rr
         self.min_sample = min_sample_for_stats
@@ -105,6 +107,14 @@ class AdversarialReview:
         if self.llm is None:
             return {}, 0.0
         payload = {k: v for k, v in c.to_dict().items() if k not in _VOLATILE_FIELDS + _DOWNSTREAM_FIELDS}
+        note = None
+        if self.market_note is not None:
+            try:
+                note = self.market_note(c)
+            except Exception:  # noqa: BLE001 - une note de contexte ne doit jamais empêcher la revue
+                note = None
+        if note:
+            payload["contexte_marche"] = note
         user = instruction + "\n\nCANDIDAT:\n" + json.dumps(payload, ensure_ascii=False, default=str)[:6000]
         resp = self.llm.complete(role, SYSTEM_COMMON, user, max_tokens=max_tokens, financial_importance=importance,
                                  cache_key=self._cache_key(c))

@@ -247,6 +247,14 @@ n'utilise PAS Fable (retiré de TIER_A le 2026-09-23) : le quota Fable est rése
   ÉLARGIR les stops serrés au lieu de les refuser est pire (−42,6 à −50,7 R) : l'objectif reste au même endroit, le
   gain en R fond. En attente de la décision de l'utilisateur (seuil du gate, gel lab-v1).
 
+- **Trader 7 j/7 : famille P crypto (26/09, décision utilisateur, LIVE directement sans SHADOW)** : 15 agents crypto.
+  P01-P11 : screeners éprouvés en entrée H1 / tendance H4, stop ≥ 1,5 ATR H1. P12-P15 : stratégies issues de la
+  recherche (`agents/crypto_strategies.py`) — Donchian 20 et 55 barres H4 (momentum de série temporelle), RSI(2) de
+  Connors sur BTC/ETH, fenêtre de saisonnalité du week-end (samedi et dimanche 15-17 h UTC, dimanche 23 h UTC).
+- **Revue IA (26/09, décision utilisateur)** : note « crypto 24 h/24 » ajoutée au dossier de l'IA le week-end (elle
+  jugeait « incohérente » une session Londres/New York un samedi) ; au-delà des 3 créneaux IA, un APPROVE sur le seul
+  score devient WAIT (jamais d'entrée sans l'avis de l'IA).
+
 ## À FAIRE (lundi, avec Fable)
 
 - **Plus tard, à la demande de l'utilisateur (25/09 : « laisse pour le moment, pourquoi pas plus tard ») :** retirer

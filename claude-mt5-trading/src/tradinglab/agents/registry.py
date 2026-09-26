@@ -244,6 +244,35 @@ def default_agents() -> list[AgentSpec]:  # noqa: C901 - registre déclaratif
                     entry_rules="mêmes règles que le screener générique, sur entrée H4 / tendance D1",
                     invalidation_rules="clôture H4 au-delà du niveau d'invalidation du screener",
                     description="Cycle long (SHADOW) : screener éprouvé rejoué en H4/D1 — moins de bruit, trades tenus"))
+    # ---------------- P. CRYPTO 7 J/7 (LIVE, décision utilisateur 2026-09-26 : « je dois trader 7 jours sur 7, des agents
+    # que pour la crypto », mis en LIVE directement à sa demande, sans passage par le SHADOW) ----------------
+    # Entrée H1 dans le sens de la tendance H4 (le M15 est trop bruité le week-end) et stops LARGES : sur la semaine
+    # rejouée, les stops < 1 ATR H1 perdaient l'essentiel ; ici le stop vaut au moins 1,5 ATR H1.
+    P = [("crypto_h1_ema_trend", "ema_trend", {"adx_min": 20, "sl_atr": 1.8, "rr": 2.0}, TREND_REGIMES),
+         ("crypto_h1_trend_pullback", "mtf_trend_pullback", {"rsi_lo": 38, "rsi_hi": 62, "sl_atr": 1.6, "rr": 2.0}, TREND_REGIMES),
+         ("crypto_h1_structure", "structure_bos", {"sl_atr": 1.6, "rr": 2.2}, TREND_REGIMES + [Regime.UNCERTAIN.value]),
+         ("crypto_h1_macd", "macd_momentum", {"sl_atr": 1.8, "rr": 2.2}, TREND_REGIMES),
+         ("crypto_h1_range_mr", "bollinger_mr", {"rsi_lo": 30, "rsi_hi": 70, "sl_atr": 1.5, "rr": 1.6}, RANGE_REGIMES),
+         ("crypto_h1_rsi_divergence", "rsi_divergence", {"sl_atr": 1.5, "rr": 1.8}, RANGE_REGIMES + [Regime.UNCERTAIN.value]),
+         ("crypto_h1_liquidity_sweep", "liquidity_sweep", {"with_trend": True, "sl_atr": 1.5, "rr": 2.0}, ALL_REGIMES),
+         ("crypto_h1_failed_breakout", "failed_breakout", {"sl_atr": 1.5, "rr": 2.0}, RANGE_REGIMES + [Regime.UNCERTAIN.value]),
+         ("crypto_h1_breakout_retest", "breakout_retest", {"sl_atr": 1.5, "rr": 2.0}, BREAKOUT_REGIMES),
+         ("crypto_h1_atr_expansion", "atr_expansion", {"atr_ratio": 1.3, "sl_atr": 1.6, "rr": 2.0}, BREAKOUT_REGIMES),
+         ("crypto_h1_sr_rejection", "sr_rejection", {"tol_atr": 0.3, "with_trend": True, "sl_atr": 1.5, "rr": 2.0},
+          TREND_REGIMES + RANGE_REGIMES)]
+    for i, (nm, st, prm, rg) in enumerate(P, 1):
+        A.append(_a(f"P{i:02d}", "P", nm, st, ["crypto"], ALL_SESSIONS, tf("H1", "H4"), rg, prm,
+                    model_tier_role="technical_analysis",
+                    description="Crypto 7 j/7 : entrée H1, tendance H4, stop ≥ 1,5 ATR H1 (LIVE à la demande de l'utilisateur)"))
+    # stratégies crypto issues de la recherche (agents/crypto_strategies.py) : Donchian H4 (momentum de série
+    # temporelle), RSI(2) de Connors sur BTC/ETH, saisonnalité du week-end du bitcoin
+    PR = [("crypto_donchian20_h4", "donchian_breakout", ["crypto"], tf("H4", "D1"), {"lookback": 20, "sl_atr": 1.5, "rr": 2.5}),
+          ("crypto_donchian55_h4", "donchian_breakout", ["crypto"], tf("H4", "D1"), {"lookback": 55, "sl_atr": 1.5, "rr": 3.0}),
+          ("crypto_rsi2_btc_eth", "rsi2_reversion", ["BTCUSD", "ETHUSD"], tf("H1", "H4"), {"rsi_lo": 10, "rsi_hi": 90, "sl_atr": 1.5, "rr": 1.5}),
+          ("crypto_weekend_window", "weekend_window", ["BTCUSD", "ETHUSD"], tf("H1", "H4"), {"sl_atr": 1.5, "rr": 2.0})]
+    for i, (nm, st, mk, tfs, prm) in enumerate(PR, len(P) + 1):
+        A.append(_a(f"P{i:02d}", "P", nm, st, mk, ALL_SESSIONS, tfs, ALL_REGIMES, prm, model_tier_role="technical_analysis",
+                    description="Crypto 7 j/7, stratégie issue de la recherche (LIVE à la demande de l'utilisateur)"))
     # Chaque agent générateur possède SA PROPRE stratégie (clé = agent_id, module agents/strategies/*) ;
     # le screener générique historique reste en repli (base_strategy) tant que la stratégie propre n'existe pas.
     for a in A:

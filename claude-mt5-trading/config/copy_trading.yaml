@@ -40,3 +40,7 @@ copy_trading:
     env_prefix: COPY7
     size_factor: 0.5
     enabled: true
+  - name: "moneta 10k change"
+    env_prefix: COPY2
+    size_factor: 1.0
+    enabled: true

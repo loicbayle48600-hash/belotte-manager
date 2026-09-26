@@ -126,3 +126,35 @@ def test_revue_ia_hors_delai_ne_valide_jamais_une_entree():
     c = SimpleNamespace(symbol="BTCUSD", agent_id="C01", verdict=None, review={})
     o._review_with_deadline([c], 0.0, deadline=0.2)
     assert c.verdict is Verdict.WAIT and c.review["verdict"] == "WAIT" and "hors délai" in c.review["llm_skipped"]
+
+
+def test_note_crypto_du_week_end_dans_le_dossier_ia():
+    """2026-09-26 : l'IA jugeait « incohérente » la session Londres/New York d'un samedi sur la crypto."""
+    from datetime import datetime, timezone
+    from tradinglab.orchestration.orchestrator import Orchestrator
+
+    o = Orchestrator.__new__(Orchestrator)
+    specs = {"BTCUSD": SimpleNamespace(asset_class="crypto"), "NETH25": SimpleNamespace(asset_class="indices")}
+    o.broker = SimpleNamespace(symbol_info=lambda s: specs.get(s))
+    samedi, lundi = datetime(2026, 9, 26, 15, tzinfo=timezone.utc), datetime(2026, 9, 28, 15, tzinfo=timezone.utc)
+    assert "24 h/24" in o._market_note(SimpleNamespace(symbol="BTCUSD", created_at=samedi))
+    assert o._market_note(SimpleNamespace(symbol="NETH25", created_at=samedi)) is None
+    assert o._market_note(SimpleNamespace(symbol="BTCUSD", created_at=lundi)) is None
+
+
+def test_note_de_contexte_transmise_a_l_ia():
+    from tradinglab.agents.review import AdversarialReview
+
+    vus = []
+
+    class _LLM:
+        def complete(self, role, system, user, **kw):
+            vus.append(user)
+            return None
+
+    rv = AdversarialReview(_LLM(), 65, 1.5)
+    rv.market_note = lambda c: "NOTE-TEST"
+    c = SimpleNamespace(to_dict=lambda: {"symbol": "BTCUSD"}, symbol="BTCUSD", side=SimpleNamespace(value="BUY"),
+                        agent_id="E01", bar_time="t")
+    rv._ask("bull_thesis", "x", c)
+    assert "NOTE-TEST" in vus[0] and "contexte_marche" in vus[0]

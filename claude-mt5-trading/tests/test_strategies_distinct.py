@@ -62,11 +62,15 @@ def test_tous_les_modules_de_strategies_se_chargent():
 #: paramètre de timeframe près serait du code dupliqué, pas une stratégie propre. Exception fermée :
 #: ces agents sont en SHADOW et leur horizon est leur seule différence assumée.
 REPLI_GENERIQUE_ASSUME = {"O01", "O02", "O03", "O04", "O05", "O06"}
+#: famille P (crypto 7 j/7, 2026-09-26) : screeners génériques ou de recherche (`agents/crypto_strategies.py`), mis
+#: en LIVE sans stratégie propre par DÉCISION EXPLICITE de l'utilisateur (« tous en LIVE directement »)
+REPLI_LIVE_DECISION_UTILISATEUR = {f"P{i:02d}" for i in range(1, 16)}
 
 
 def test_chaque_agent_generateur_a_sa_propre_strategie(generators, own_functions):
     manquants = sorted(a.agent_id for a in generators
-                       if a.agent_id not in own_functions and a.agent_id not in REPLI_GENERIQUE_ASSUME)
+                       if a.agent_id not in own_functions and a.agent_id not in REPLI_GENERIQUE_ASSUME
+                       and a.agent_id not in REPLI_LIVE_DECISION_UTILISATEUR)
     assert not manquants, f"agents sans stratégie propre (repli générique) : {manquants}"
 
 
@@ -136,3 +140,15 @@ def test_aucune_regression_de_vitalite(signatures):
     """
     vivants = [a for a, s in signatures.items() if s]
     assert len(vivants) >= 15, f"seulement {len(vivants)}/{len(signatures)} agents produisent un candidat"
+
+
+
+def test_famille_crypto_p_resolvable_et_limitee_a_la_crypto(generators):
+    from tradinglab.agents import screeners as sc
+
+    sc._load_own_strategies()
+    fam = [a for a in generators if a.agent_id in REPLI_LIVE_DECISION_UTILISATEUR]
+    assert len(fam) == len(REPLI_LIVE_DECISION_UTILISATEUR)
+    for a in fam:
+        assert sc.resolve_screener(a) is not None, a.agent_id
+        assert set(a.markets) <= {"crypto", "BTCUSD", "ETHUSD"}, a.agent_id
