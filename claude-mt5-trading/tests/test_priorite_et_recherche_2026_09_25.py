@@ -107,3 +107,14 @@ def test_validation_live_resume_sans_rien_modifier():
     res = validate(pipe, [SimpleNamespace(agent_id="B01", name="b"), SimpleNamespace(agent_id="E05", name="e")], journal=lambda *_: None)
     assert [r["agent_id"] for r in res] == ["E05", "B01"] and res[0]["valide"] and res[1]["etapes_reussies"] == 1
     assert ("B01", "WALK_FORWARD") not in vus                                   # arrêt à la première étape échouée (OOS)
+
+
+def test_baisse_temporaire_du_score_minimal_expire_seule():
+    """2026-09-26 : score minimal à 55 « juste pour aujourd'hui », retour automatique à 65 à 17 h New York."""
+    o = Orchestrator.__new__(Orchestrator)
+    o.s = SimpleNamespace(execution={"required_setup_score": 65,
+                                     "required_setup_score_temporaire": {"valeur": 55, "jusqu_a": "2026-09-26T21:00:00+00:00"}})
+    assert o._required_score(datetime(2026, 9, 26, 12, 0, tzinfo=timezone.utc)) == 55.0
+    assert o._required_score(datetime(2026, 9, 26, 21, 0, tzinfo=timezone.utc)) == 65.0
+    o.s.execution["required_setup_score_temporaire"] = {"valeur": 55, "jusqu_a": "pas une date"}
+    assert o._required_score(datetime(2026, 9, 26, 12, 0, tzinfo=timezone.utc)) == 65.0

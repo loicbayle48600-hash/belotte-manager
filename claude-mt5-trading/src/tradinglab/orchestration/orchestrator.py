@@ -425,6 +425,7 @@ class Orchestrator:
     def _scan_and_execute(self, now: datetime, dd, macro: Optional[dict] = None) -> dict:
         st = self.state
         out: dict = {}
+        self.review.required_score = self._required_score(now)
         active_statuses = (AgentStatus.LIVE.value,)
         cands, rep = self.router_.route(self.snapshots, active_statuses)
         st.active_agents = sorted({a for lst in rep.agents_activated.values() for a in lst})
@@ -582,7 +583,7 @@ class Orchestrator:
                           max_spread_sl_ratio=float(ex.get("max_spread_sl_ratio", 0.35)),
                           rollover_block=self._rollover_block(spec, now),
                           disabled_checks=tuple(str(x) for x in (ex.get("gate_checks_disabled") or [])),
-                          min_rr_required=float(ex.get("min_rr_required", 1.5)), required_setup_score=float(ex.get("required_setup_score", 65)),
+                          min_rr_required=float(ex.get("min_rr_required", 1.5)), required_setup_score=self._required_score(now),
                           min_sl_atr_ratio=float(ex.get("min_sl_atr_ratio", 0.25)), max_sl_atr_ratio=float(ex.get("max_sl_atr_ratio", 4.0)),
                           deviation_points=int(ex.get("slippage_deviation_points", 20)), magic=self.magic,
                           comment_prefix=str(self.s.system.get("order_comment_prefix", "TLAB")))
@@ -1020,6 +1021,20 @@ class Orchestrator:
             vus.clear()
         vus[dedup_key] = signature
         self.journal.event(kind, **data)
+
+    def _required_score(self, now: datetime) -> float:
+        """Score minimal du setup. Une baisse TEMPORAIRE (`execution.required_setup_score_temporaire`, avec une date de
+        fin) s'applique jusqu'à son échéance puis s'éteint d'elle-même (2026-09-26, demande utilisateur : « juste
+        pour aujourd'hui »). Une échéance illisible ou dépassée → valeur normale."""
+        ex = self.s.execution
+        base = float(ex.get("required_setup_score", 65))
+        tmp = ex.get("required_setup_score_temporaire") or {}
+        try:
+            if tmp and now < datetime.fromisoformat(str(tmp["jusqu_a"])):
+                return float(tmp["valeur"])
+        except (KeyError, TypeError, ValueError):
+            pass
+        return base
 
     def _priorite(self, c) -> tuple:
         """Clé de tri des candidats : agents mis en avant par l'utilisateur d'abord (2026-09-25), puis score de setup."""
