@@ -225,6 +225,12 @@ n'utilise PAS Fable (retiré de TIER_A le 2026-09-23) : le quota Fable est rése
   sort au SL/TP fixe (sans break-even, partiels ni stop suiveur), sans revue IA ni gate ; coûts par défaut. Aucun noyau
   « validé » ne peut être choisi sur cette base : décision laissée à l'utilisateur (gel en cours).
 
+- **Aucun trade crypto le samedi 26/09 (signalé par l'utilisateur)** : SAFE_MODE de vendredi 22 h 58 à samedi 10 h 37
+  (heure de Paris). Le watchdog ne surveillait qu'EURUSD : l'ancrage des cryptos passait avant la connexion au
+  terminal (liste de symboles vide) et n'était jamais retenté. Forex gelé → « aucun marché suivi ne cote » → SAFE_MODE.
+  Corrigé (`tests/test_watchdog_horloge.py`), bot revenu en AUTO, candidats crypto de nouveau analysés. Reste : au
+  redémarrage un week-end, les cryptos fraîchement sélectionnées n'ont pas encore de tick (~9 min de SAFE_MODE).
+
 ## À FAIRE (lundi, avec Fable)
 
 - **Plus tard, à la demande de l'utilisateur (25/09 : « laisse pour le moment, pourquoi pas plus tard ») :** retirer
