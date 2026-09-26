@@ -231,6 +231,14 @@ n'utilise PAS Fable (retiré de TIER_A le 2026-09-23) : le quota Fable est rése
   Corrigé (`tests/test_watchdog_horloge.py`), bot revenu en AUTO, candidats crypto de nouveau analysés. Reste : au
   redémarrage un week-end, les cryptos fraîchement sélectionnées n'ont pas encore de tick (~9 min de SAFE_MODE).
 
+- **Samedi 26/09, journal de l'après-midi** : score minimal à 55 pour la journée (demande utilisateur). Un trade :
+  BTCUSD BUY (C01, cassure du range asiatique) à 13 h 50, stop à 0,16 % (84 170,75 → 84 032,95), stoppé à 14 h 41,
+  −617 $ (−0,995 R). Non copié chez les suiveurs : stop trop serré pour leur broker (élargissement plafonné à ×2) ;
+  retenté chaque minute pendant 50 min → délai croissant appliqué (`test_stop_trop_proche_retente_avec_delai_croissant`,
+  effectif au prochain redémarrage). SAFE_MODE 14 h 59-15 h 06 (aucune crypto n'a coté pendant plus de 60 s) puis
+  15 h 09-15 h 12 (MT5 « Authorization failed », connexion du terminal perdue puis revenue) : watchdog dans son rôle.
+  La revue IA refuse depuis surtout des stops « dans le bruit » (0,3-0,5 ATR) et POLUSD (spread 3,2 ATR > stop).
+
 ## À FAIRE (lundi, avec Fable)
 
 - **Plus tard, à la demande de l'utilisateur (25/09 : « laisse pour le moment, pourquoi pas plus tard ») :** retirer

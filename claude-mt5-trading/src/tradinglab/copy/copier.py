@@ -523,9 +523,11 @@ class CopyTrader:
         if a.kind == "open":
             fit = self._fit_stops(a.symbol, a.side, a.sl, a.tp)
             if fit is None:
-                self._retry_after[a.master_ticket] = getattr(self, "_now", datetime.now(timezone.utc)) + timedelta(seconds=RETRY_BASE_SEC)
+                # délai croissant (60 s, 120 s, 240 s… 15 min) : le 26/09 un stop BTC trop serré pour les suiveurs a été
+                # retenté (et journalisé) chaque minute pendant 50 min, soit ~200 lignes identiques
+                retry_in = self._backoff(self._retry_after, "open", a.master_ticket)
                 self._log("ouverture copiée", symbol=a.symbol, master_symbol=a.master_symbol or a.symbol, side=a.side.value,
-                          volume=a.volume, master_ticket=a.master_ticket, ok=False, retcode=None,
+                          volume=a.volume, master_ticket=a.master_ticket, ok=False, retcode=None, retry_in_sec=retry_in,
                           detail="stop du maître trop proche pour ce broker : copie reportée")
                 return
             sl_ok, tp_ok, note = fit

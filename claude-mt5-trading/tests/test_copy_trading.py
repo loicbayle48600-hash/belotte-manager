@@ -746,3 +746,22 @@ def test_decalage_memorise_pas_de_modification_en_boucle():
     m = master(positions=[dict(mpos(1, sl=1.09), price_current=1.095)])            # break-even chez le maître
     acts = [a for a in plan_sync(m, follower, 50000.0, 1.0, SPECS, mapping=mapping) if a.kind == "modify"]
     assert len(acts) == 1 and acts[0].sl == pytest.approx(1.09 + sh) and acts[0].master_price == 0.0
+
+
+def test_stop_trop_proche_retente_avec_delai_croissant(tmp_path):
+    """2026-09-26 : stop BTC trop serré pour les suiveurs, retenté et journalisé chaque minute pendant 50 min."""
+    from tradinglab.copy.copier import CopyAction
+
+    b = MockBroker(seed=7, balance=50000.0)
+    b.connect()
+    tr = CopyTrader(b, tmp_path / "m.json", size_factor=1.0, magic=52000)
+    spec = b.symbol_info("EURUSD")
+    spec.stops_level_points = 46
+    t = b.tick("EURUSD")
+    a = CopyAction("open", symbol="EURUSD", side=Side.SELL, volume=0.1, sl=round(t.ask + 10 * spec.point, 5), tp=0.0,
+                   master_ticket=77)
+    delais = []
+    for _ in range(3):
+        tr._apply(a)
+        delais.append((tr._retry_after[77] - tr.__dict__.get("_now", datetime.now(timezone.utc))).total_seconds())
+    assert delais[0] < delais[1] < delais[2]
