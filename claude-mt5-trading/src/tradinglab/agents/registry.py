@@ -286,9 +286,12 @@ def default_agents() -> list[AgentSpec]:  # noqa: C901 - registre déclaratif
           ("crypto_donchian55_h4", "donchian_breakout", ["crypto"], tf("H4", "D1"), {"lookback": 55, "sl_atr": 1.5, "rr": 3.0}),
           ("crypto_rsi2_btc_eth", "rsi2_reversion", ["BTCUSD", "ETHUSD"], tf("H1", "H4"), {"rsi_lo": 10, "rsi_hi": 90, "sl_atr": 1.5, "rr": 1.5}),
           ("crypto_weekend_window", "weekend_window", ["BTCUSD", "ETHUSD"], tf("H1", "H4"), {"sl_atr": 1.5, "rr": 2.0})]
+    # RSI(2) : PF 0,75 sur ~4 mois de backtest → SHADOW (décision utilisateur du 2026-09-26) ; les autres restent LIVE
+    PR_SHADOW = {"crypto_rsi2_btc_eth"}
     for i, (nm, st, mk, tfs, prm) in enumerate(PR, len(P) + 1):
         A.append(_a(f"P{i:02d}", "P", nm, st, mk, ALL_SESSIONS, tfs, ALL_REGIMES, prm, model_tier_role="technical_analysis",
-                    description="Crypto 7 j/7, stratégie issue de la recherche (LIVE à la demande de l'utilisateur)"))
+                    status=AgentStatus.SHADOW.value if nm in PR_SHADOW else AgentStatus.LIVE.value,
+                    description="Crypto 7 j/7, stratégie issue de la recherche"))
     # Chaque agent générateur possède SA PROPRE stratégie (clé = agent_id, module agents/strategies/*) ;
     # le screener générique historique reste en repli (base_strategy) tant que la stratégie propre n'existe pas.
     for a in A:
