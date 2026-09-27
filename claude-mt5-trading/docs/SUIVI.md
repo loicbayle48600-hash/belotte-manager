@@ -355,6 +355,11 @@ n'utilise PAS Fable (retiré de TIER_A le 2026-09-23) : le quota Fable est rése
   vendredi 17:00 New York (22:45 Paris en été) et aucune entrée hors crypto n'est prise dans l'heure qui précède.
   Les positions crypto sont conservées.
 
+- **Horaires forex en heure serveur (27/09 soir, corrigé)** : le bot croyait le forex fermé du dimanche 22 h UTC au
+  vendredi 21 h UTC ; IC Markets ouvre le lundi 00:05 et ferme le vendredi 23:55 en heure serveur (UTC+3 l'été, UTC+2
+  l'hiver) — les stops de GBPAUD (−2,2 R, −1 366 $) et NZDJPY (−1,21 R, −755 $) ont sauté dès 21:01 UTC, à
+  l'ouverture réelle (écart du week-end). `forex_market_open` utilise le décalage serveur mesuré, sinon Europe/Athens.
+
 ## À FAIRE (lundi, avec Fable)
 
 - **Plus tard, à la demande de l'utilisateur (25/09 : « laisse pour le moment, pourquoi pas plus tard ») :** retirer

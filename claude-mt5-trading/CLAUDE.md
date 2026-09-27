@@ -326,7 +326,7 @@ week-end, cohérence, activité), `test_market_data.py`, `test_news.py`, `test_b
 | Orchestrateur mort (`orchestrator_heartbeat_age_sec` > 45) | `STATUS`, `logs/orchestrator.err.log` | `PANIC`/`CLOSE_ALL_BOT` agissent directement ; relancer `start_all.ps1` (SAFE) |
 | Budget LLM atteint (`llm_skipped`, `spent_usd ≥ 10`) | `STATUS.model_budget`, `report_day.model_cost_usd` | comportement normal : revue déterministe ; ajuster `daily_budget_usd` si voulu |
 | Données périmées (`data_quality: STALE/NO_TICK/INSUFFICIENT`, `04_data_fresh` refusé) | `routing.skipped` dans `last_cycle` | marché fermé ou flux MT5 interrompu ; attendre / reconnecter ; `min_bars_required: 250` |
-| Marché fermé (`05_symbol_tradable`, smoke test « MARCHE FERME ») | `core/clock.forex_market_open()` | attendre l'ouverture (dim. 22:00 → ven. 21:00 UTC) |
+| Marché fermé (`05_symbol_tradable`, smoke test « MARCHE FERME ») | `core/clock.forex_market_open()` | attendre l'ouverture : lundi 00:05 → vendredi 23:55 en heure serveur (dim. 21:00 UTC l'été, 22:00 l'hiver) |
 | `ACCOUNT_MISMATCH` | journal `account` | connecter le compte attendu (`account_expected`) ou corriger la config volontairement |
 | `NEWS_DATA_DEGRADED` | `NEWS`, `CALENDAR` | sans `FMP_API_KEY` c'est attendu ; les stratégies `news_sensitive` sont bloquées, les autres passent |
 

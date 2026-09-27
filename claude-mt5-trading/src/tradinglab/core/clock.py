@@ -88,16 +88,39 @@ def current_session(now: datetime | None = None, round_the_clock: bool = False) 
     return Session.ASIA if round_the_clock else Session.OFF
 
 
+#: horaires forex d'IC Markets en HEURE SERVEUR : ouverture lundi 00:05, fermeture vendredi 23:55
+FOREX_OPEN_MON = (0, 5)
+FOREX_CLOSE_FRI = (23, 55)
+
+
+def _server_time(now: datetime) -> datetime:
+    """Heure serveur du broker : décalage mesuré par l'adaptateur MT5 si connu, sinon Europe/Athens (EET/EEST :
+    IC Markets et MetaQuotes suivent l'heure d'Europe de l'Est, UTC+2 l'hiver, UTC+3 l'été)."""
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+    if SERVER_UTC_OFFSET_SEC:
+        return (now.astimezone(timezone.utc) + timedelta(seconds=SERVER_UTC_OFFSET_SEC)).replace(tzinfo=None)
+    try:
+        from zoneinfo import ZoneInfo
+        return now.astimezone(ZoneInfo("Europe/Athens")).replace(tzinfo=None)
+    except Exception:  # noqa: BLE001 - base de fuseaux absente : repli UTC+2
+        return (now.astimezone(timezone.utc) + timedelta(hours=2)).replace(tzinfo=None)
+
+
 def forex_market_open(now: datetime | None = None) -> bool:
-    """Marché forex ouvert : du dimanche 22:00 UTC au vendredi 21:00 UTC (approximation, à recouper avec MT5)."""
-    now = now or utcnow()
-    wd = now.weekday()
-    if wd == 5:
+    """Marché forex ouvert, en HEURE SERVEUR du broker : du lundi 00:05 au vendredi 23:55.
+
+    2026-09-27 : l'ancienne règle « dimanche 22:00 → vendredi 21:00 UTC » ratait l'ouverture réelle d'une heure en
+    été (IC Markets rouvre le dimanche à 21:00 UTC : les stops des positions du vendredi ont sauté à 21:01 UTC)."""
+    srv = _server_time(now or utcnow())
+    wd = srv.weekday()
+    if wd in (5, 6):
         return False
-    if wd == 6:
-        return now.hour >= 22
-    if wd == 4:
-        return now.hour < 21
+    hm = (srv.hour, srv.minute)
+    if wd == 0 and hm < FOREX_OPEN_MON:
+        return False
+    if wd == 4 and hm >= FOREX_CLOSE_FRI:
+        return False
     return True
 
 
