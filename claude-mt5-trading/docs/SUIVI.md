@@ -327,6 +327,11 @@ n'utilise PAS Fable (retiré de TIER_A le 2026-09-23) : le quota Fable est rése
   terminal IC : il ne connaît pas le serveur MonetaFunded-Live (« Authorization failed ») → l'utilisateur doit y ouvrir
   le compte une fois (Fichier > Ouvrir un compte > Moneta Funded), puis relancer le copieur.
 
+- **Copie : seulement les positions ouvertes en même temps (27/09, décision utilisateur)** : une position du maître
+  ouverte plus de 10 min avant le démarrage d'un suiveur n'est jamais copiée (marquée traitée, journalisée). Cas
+  Moneta connecté le dimanche : NZDJPY et NETH25 du vendredi auraient été copiés lundi à un prix sans rapport.
+  L'export du maître porte désormais `time_open`. Copieur demo 1 : verrou réparé (SystemError Windows sur PID mort).
+
 ## À FAIRE (lundi, avec Fable)
 
 - **Plus tard, à la demande de l'utilisateur (25/09 : « laisse pour le moment, pourquoi pas plus tard ») :** retirer

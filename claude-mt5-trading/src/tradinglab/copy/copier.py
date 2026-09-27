@@ -224,6 +224,10 @@ class CopyTrader:
         self.status_file = Path(status_file) if status_file else None
         self._recent: list[dict] = []
         self.factor_source = factor_source           # callable → facteur courant (config relue à chaque cycle)
+        # 2026-09-27, décision utilisateur (« copier que les positions qui s'ouvrent en même temps ») : une position du
+        # maître ouverte plus de MAX_OPEN_AGE_SEC avant le démarrage du suiveur n'est jamais copiée (elle serait
+        # reprise à un prix sans rapport, parfois des jours plus tard — cas Moneta / positions du vendredi)
+        self.started_at = datetime.now(timezone.utc)
         self.stats_since: Optional[str] = None       # début des statistiques du compte (remise à zéro, 2026-09-25)
         self._retry_after: dict[int, datetime] = {}  # ticket maître → pas de nouvelle tentative d'ouverture avant
         self._modify_after: dict[int, datetime] = {}  # ticket suiveur → pas de nouvelle modification SL/TP avant
@@ -356,6 +360,7 @@ class CopyTrader:
         self.done &= master_tickets
         if self.done != avant:
             self._save_done()
+        self._skip_old_positions(master)
         self._master_vol = {int(p["ticket"]): float(p["volume"]) for p in master.get("positions", [])}
         self._follower_vol = {fp.ticket: float(fp.volume) for fp in follower}
         actions = plan_sync(master, follower, float(acc.equity), self.size_factor, specs, allow_open=fresh,
@@ -436,6 +441,31 @@ class CopyTrader:
 
     #: écart relatif de prix maître / suiveur au-delà duquel SL/TP sont recopiés en DISTANCE et non en niveau
     PRICE_GAP_RATIO = 0.002
+
+    #: une position du maître plus ancienne que ceci AU DÉMARRAGE du suiveur n'est pas copiée
+    MAX_OPEN_AGE_SEC = 600.0
+
+    def _skip_old_positions(self, master: dict) -> None:
+        """Marque « déjà traitée » toute position du maître ouverte bien avant le démarrage de ce suiveur."""
+        limite = self.started_at - timedelta(seconds=self.MAX_OPEN_AGE_SEC)
+        nouveaux = []
+        for p in master.get("positions", []):
+            t = int(p["ticket"])
+            if t in self.done or t in self.mapping or not p.get("time_open"):
+                continue
+            try:
+                ouverte = datetime.fromisoformat(str(p["time_open"]))
+            except ValueError:
+                continue
+            if ouverte.tzinfo is None:
+                ouverte = ouverte.replace(tzinfo=timezone.utc)
+            if ouverte < limite:
+                self.done.add(t)
+                nouveaux.append((t, p.get("symbol")))
+        for t, sym in nouveaux:
+            self._log("position antérieure au démarrage du suiveur : non copiée", master_ticket=t, symbol=sym)
+        if nouveaux:
+            self._save_done()
 
     def _shift_to_follower_price(self, a) -> None:
         """Un suiveur peut coter un autre contrat que le maître (2026-09-25 : Brent 104,90 chez IC, 98,21 chez Admirals).

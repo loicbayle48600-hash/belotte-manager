@@ -948,6 +948,7 @@ class Orchestrator:
                 positions.append({"ticket": p.ticket, "symbol": p.symbol, "side": p.side.value, "volume": p.volume,
                                   "sl": p.sl, "tp": p.tp, "price_open": p.price_open, "value_per_price": vpp,
                                   "price_current": float(p.price_current or 0.0) or None,
+                                  "time_open": p.time_open.isoformat() if getattr(p, "time_open", None) else None,
                                   "contract_size": float(sp.contract_size) if sp else None})
             payload = {"ts_utc": self.now_fn().isoformat(), "equity": float(acc.equity),
                        "magic": self.s.magic, "positions": positions}

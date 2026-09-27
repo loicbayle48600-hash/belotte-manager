@@ -784,3 +784,17 @@ def test_verrou_copieur_pid_inexistant_windows(monkeypatch):
     except (OSError, SystemError):
         alive = False
     assert alive is False
+
+
+def test_position_du_maitre_anterieure_au_demarrage_non_copiee(tmp_path):
+    """2026-09-27 (décision utilisateur) : Moneta, connecté le dimanche, allait copier lundi des positions ouvertes le
+    vendredi. Une position ouverte > 10 min avant le démarrage du suiveur est marquée traitée ; une récente est copiée."""
+    from tradinglab.copy.copier import CopyTrader as CT
+
+    b = MockBroker(seed=7, balance=50000.0)
+    b.connect()
+    tr = CT(b, tmp_path / "m.json", size_factor=1.0, magic=52000)
+    vieille = dict(mpos(1, volume=1.0), time_open=(tr.started_at - timedelta(days=2)).isoformat())
+    recente = dict(mpos(2, volume=1.0), time_open=(tr.started_at - timedelta(minutes=1)).isoformat())
+    tr._skip_old_positions({"positions": [vieille, recente]})
+    assert 1 in tr.done and 2 not in tr.done
