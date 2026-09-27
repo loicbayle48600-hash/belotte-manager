@@ -63,6 +63,8 @@ class AdversarialReview:
         self.llm = llm
         # note de contexte de marché ajoutée au dossier de l'IA (branchée par l'orchestrateur) : callable(c) -> str | None
         self.market_note = None
+        # coût d'entrée exprimé en PRIX et en % du stop (branché par l'orchestrateur) : callable(c) -> dict | None
+        self.cost_note = None
         self.required_score = required_score
         self.min_rr = min_rr
         self.min_sample = min_sample_for_stats
@@ -115,6 +117,18 @@ class AdversarialReview:
                 note = None
         if note:
             payload["contexte_marche"] = note
+        # 2026-09-27 : l'IA comparait `spread_points` (500 POINTS = 5 $ sur le BTC) à la distance du stop en PRIX
+        # (91,8 $) et concluait « spread supérieur au stop » : 48 BTC en attente, 27 rejetés en une nuit. Le coût est
+        # désormais donné en prix et en % du stop, et `spread_points` retiré du dossier pour lever l'ambiguïté.
+        cout = None
+        if self.cost_note is not None:
+            try:
+                cout = self.cost_note(c)
+            except Exception:  # noqa: BLE001 - une note de coût ne doit jamais empêcher la revue
+                cout = None
+        if cout:
+            payload.pop("spread_points", None)
+            payload["cout_entree"] = cout
         user = instruction + "\n\nCANDIDAT:\n" + json.dumps(payload, ensure_ascii=False, default=str)[:6000]
         resp = self.llm.complete(role, SYSTEM_COMMON, user, max_tokens=max_tokens, financial_importance=importance,
                                  cache_key=self._cache_key(c))

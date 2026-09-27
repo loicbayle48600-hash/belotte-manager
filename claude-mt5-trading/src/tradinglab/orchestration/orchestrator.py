@@ -113,6 +113,7 @@ class Orchestrator:
         self.review = AdversarialReview(None, float(settings.execution.get("required_setup_score", 65)),
                                         float(settings.execution.get("min_rr_required", 1.5)), int(settings.learning.get("min_sample_size", 40)))
         self.review.market_note = self._market_note
+        self.review.cost_note = self._cost_note
         self.news = NewsHub(build_providers(settings.news), settings.news, cache_dir=settings.data_dir / "cache")
         self.learning = LearningStore(settings.data_dir / "learning.db")
         self.post_trade = PostTradeAnalyzer(self.learning, None, settings.learning)
@@ -1053,6 +1054,20 @@ class Orchestrator:
     NOTE_CRYPTO_WEEKEND = ("Crypto : marché ouvert 24 h/24, 7 j/7. Le week-end, le nom de session (ASIA, LONDON, "
                            "NEWYORK, OVERLAP_LDN_NY) désigne seulement la plage horaire UTC, pas l'ouverture d'une place "
                            "boursière : ce n'est pas une incohérence de données. La liquidité du week-end est plus faible.")
+
+    def _cost_note(self, c) -> Optional[dict]:
+        """Coût d'entrée du candidat, en unités de PRIX et en % de la distance au stop (dossier de l'IA)."""
+        spec = self.broker.symbol_info(c.symbol)
+        dist = abs(float(c.entry) - float(c.sl))
+        if spec is None or dist <= 0:
+            return None
+        spread = float(c.spread_points or 0) * float(spec.point)
+        com = float(self.prop.commission_price(spec, float(c.entry)))
+        return {"spread_prix": round(spread, spec.digits), "commission_prix": round(com, spec.digits),
+                "distance_stop_prix": round(dist, spec.digits),
+                "spread_pct_du_stop": round(100.0 * spread / dist, 1), "commission_pct_du_stop": round(100.0 * com / dist, 1),
+                "unite": "montants en unités de PRIX du symbole (pas en points) ; le contrôle déterministe refuse au-delà "
+                         "de 20 % du stop (spread + commission)"}
 
     def _market_note(self, c) -> Optional[str]:
         """Contexte ajouté au dossier de l'IA : crypto le samedi ou le dimanche (UTC)."""

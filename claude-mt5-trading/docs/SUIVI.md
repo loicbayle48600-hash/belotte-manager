@@ -287,6 +287,10 @@ n'utilise PAS Fable (retiré de TIER_A le 2026-09-23) : le quota Fable est rése
 
 - **P17, P20, P22, P23, P26, P30 en SHADOW** (27/09, décision utilisateur) : PF < 0,8 en backtest.
 
+- **L'IA confondait points et prix (27/09, corrigé)** : elle comparait `spread_points` (500 points = 5 $ sur le BTC) à
+  la distance du stop en prix (91,8 $) et jugeait « spread supérieur au stop » : 76 candidats BTC dans la nuit, aucun
+  approuvé. Le dossier de l'IA donne désormais le coût en prix et en % du stop (`cout_entree`), sans `spread_points`.
+
 ## À FAIRE (lundi, avec Fable)
 
 - **Plus tard, à la demande de l'utilisateur (25/09 : « laisse pour le moment, pourquoi pas plus tard ») :** retirer

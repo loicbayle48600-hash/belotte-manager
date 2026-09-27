@@ -1,6 +1,7 @@
 """Journal propre (plan pro du 2026-09-25, point 7) : alertes du watchdog dédupliquées."""
 from __future__ import annotations
 
+import pytest
 from types import SimpleNamespace
 
 from tradinglab.monitoring.watchdog import Watchdog
@@ -158,3 +159,31 @@ def test_note_de_contexte_transmise_a_l_ia():
                         agent_id="E01", bar_time="t")
     rv._ask("bull_thesis", "x", c)
     assert "NOTE-TEST" in vus[0] and "contexte_marche" in vus[0]
+
+
+def test_cout_en_prix_et_pourcentage_du_stop_dans_le_dossier_ia():
+    """2026-09-27 : l'IA comparait 500 POINTS de spread BTC (5 $) à un stop de 91,8 $ et bloquait tout le BTC."""
+    from tradinglab.agents.review import AdversarialReview
+    from tradinglab.orchestration.orchestrator import Orchestrator
+
+    o = Orchestrator.__new__(Orchestrator)
+    spec = SimpleNamespace(point=0.01, digits=2, asset_class="crypto", tick_size=0.01, tick_value=0.01)
+    o.broker = SimpleNamespace(symbol_info=lambda s: spec)
+    o.prop = SimpleNamespace(commission_price=lambda sp, px: px * 0.004 / 100)
+    c = SimpleNamespace(symbol="BTCUSD", entry=84000.0, sl=83908.2, spread_points=500)
+    note = o._cost_note(c)
+    assert note["spread_prix"] == 5.0 and note["spread_pct_du_stop"] == pytest.approx(5.4, abs=0.1)
+
+    vus = []
+
+    class _LLM:
+        def complete(self, role, system, user, **kw):
+            vus.append(user)
+            return None
+
+    rv = AdversarialReview(_LLM(), 65, 1.5)
+    rv.cost_note = lambda cand: note
+    cand = SimpleNamespace(to_dict=lambda: {"symbol": "BTCUSD", "spread_points": 500}, symbol="BTCUSD",
+                           side=SimpleNamespace(value="BUY"), agent_id="P16", bar_time="t")
+    rv._ask("bull_thesis", "x", cand)
+    assert "cout_entree" in vus[0] and '"spread_points"' not in vus[0]
