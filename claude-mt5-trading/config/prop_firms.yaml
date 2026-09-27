@@ -111,9 +111,11 @@ prop:
 
   # --- Sessions ---
   weekend_trading_allowed: CRYPTO_ONLY
-  weekend_holding_allowed: CRYPTO_ONLY
-  # appliqué depuis le 2026-09-27 (3 positions hors crypto étaient restées ouvertes le week-end) : aucune entrée hors
-  # crypto dans l'heure qui précède le week-end, fermeture des positions hors crypto 15 min avant le reset du vendredi
+  # ALL depuis le 2026-09-27 (décision utilisateur) : le relevé FOXX interdit seulement de TRADER hors crypto le
+  # week-end (`weekend_trading_allowed`), pas de GARDER une position ouverte ; « CRYPTO_ONLY » venait du modèle de
+  # départ (18/09), pas des règles FOXX. Avec CRYPTO_ONLY, le bot fermerait les positions hors crypto 15 min avant
+  # le reset du vendredi et refuserait les entrées hors crypto dans l'heure qui précède (code conservé).
+  weekend_holding_allowed: ALL
   weekend_no_entry_minutes_before: 60
   weekend_close_minutes_before: 15
 

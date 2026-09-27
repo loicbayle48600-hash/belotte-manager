@@ -297,6 +297,11 @@ n'utilise PAS Fable (retiré de TIER_A le 2026-09-23) : le quota Fable est rése
   week-end (`19_prop_weekend_holding`), fermeture des positions hors crypto 15 min avant le reset du vendredi
   17:00 New York (`weekend_close`). Les 3 positions actuelles seront gérées à la réouverture (SL en place).
 
+- **Tenue des positions le week-end : désactivée (27/09, décision utilisateur)** : le relevé FOXX interdit de TRADER hors
+  crypto le week-end, pas de GARDER une position ouverte (« CRYPTO_ONLY » venait du modèle de départ du 18/09).
+  `weekend_holding_allowed: ALL` ; fermeture d'avant week-end et blocage de la dernière heure conservés mais inactifs.
+  Risque assumé : écart de prix à la réouverture (le stop s'exécute au premier prix disponible).
+
 ## À FAIRE (lundi, avec Fable)
 
 - **Plus tard, à la demande de l'utilisateur (25/09 : « laisse pour le moment, pourquoi pas plus tard ») :** retirer

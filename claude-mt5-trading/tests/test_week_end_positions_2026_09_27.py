@@ -1,5 +1,5 @@
-"""Positions hors crypto interdites le week-end (FOXX `weekend_holding_allowed: CRYPTO_ONLY`), appliqué le 2026-09-27 :
-GBPAUD, NZDJPY et NETH25 étaient restées ouvertes pendant la fermeture du week-end."""
+"""Tenue des positions hors crypto le week-end : mécanisme disponible (`weekend_holding_allowed: CRYPTO_ONLY`) mais
+DÉSACTIVÉ dans la config FOXX le 2026-09-27 (décision utilisateur : la règle interdit de trader, pas de garder)."""
 from __future__ import annotations
 
 from datetime import datetime, timezone
@@ -30,3 +30,11 @@ def test_pas_d_entree_hors_crypto_dans_l_heure_qui_precede():
     assert g.weekend_holding_check("crypto", VEN_16H30_NY).ok is True
     assert g.weekend_holding_check("forex", VEN_12H_NY).ok is True
     assert g.weekend_holding_check("forex", JEU_16H30_NY).ok is True
+
+
+
+def test_config_reelle_garde_les_positions_le_week_end():
+    import yaml
+    cfg = yaml.safe_load(open("config/prop_firms.yaml", encoding="utf-8"))["prop"]
+    g = PropGuard(PropProfile.from_config(cfg), True, False, 1.0)
+    assert g.weekend_holding_check("forex", VEN_16H30_NY).ok is True
