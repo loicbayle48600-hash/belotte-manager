@@ -135,6 +135,7 @@ class LLMClient:
         self.fallback_factory = fallback_factory
         self.using_fallback = False
         self.paused_until = 0.0        # horodatage (time.time) jusqu'auquel les appels LLM sont suspendus
+        self._skip_seen: dict = {}     # (rôle, nature de la raison) → dernier journal (llm_skipped dédupliqué)
 
     def _client(self):
         if self._sdk is None:
@@ -165,6 +166,26 @@ class LLMClient:
             self.journal.event("models", message="backend LLM basculé", backend="claude_code")
         return True
 
+    #: un même motif de saut (rôle + raison sans chiffres) n'est journalisé qu'une fois par période
+    SKIP_LOG_EVERY_SEC = 600.0
+
+    def _skip(self, role: str, reason: str) -> None:
+        """Journalise `llm_skipped` une fois par (rôle, nature de la raison) et par 10 min (2026-09-27 : 2 900 lignes
+        identiques par jour). La décision, elle, est prise à chaque appel."""
+        if not self.journal:
+            return
+        import re
+        nature = re.sub(r"\d+(?:[.,]\d+)?", "#", reason)
+        now = time.time()
+        with self._lock:
+            last = self._skip_seen.get((role, nature), 0.0)
+            if now - last < self.SKIP_LOG_EVERY_SEC:
+                return
+            self._skip_seen[(role, nature)] = now
+            if len(self._skip_seen) > 500:
+                self._skip_seen.clear()
+        self.journal.event("llm_skipped", role=role, reason=reason)
+
     def _prune_cache(self) -> None:
         """Purge les entrées périmées (TTL) et borne la taille : le processus tourne des jours, le cache ne doit pas croître sans limite."""
         now = time.time()
@@ -183,9 +204,7 @@ class LLMClient:
         with self._lock:
             pause = self.paused_until - time.time()
         if pause > 0:
-            if self.journal:
-                self.journal.event("llm_skipped", role=role,
-                                   reason=f"quota abonnement atteint : reprise dans {pause / 60:.0f} min")
+            self._skip(role, f"quota abonnement atteint : reprise dans {pause / 60:.0f} min")
             return None
         with self._lock:
             decision: RouteDecision = self.router.route(role, self.state, financial_importance)
@@ -204,8 +223,7 @@ class LLMClient:
                     # strictement respecté même avec N appels API en vol (le coût est ajouté au retour)
                     self.router.reserve(self.state, decision.tier)
         if not decision.use_llm:
-            if self.journal:
-                self.journal.event("llm_skipped", role=role, reason=decision.reason)
+            self._skip(role, decision.reason)
             return None
         if fresh_hit is not None:
             r = fresh_hit
@@ -252,7 +270,7 @@ class LLMClient:
             # timeout / erreur SDK : repli déterministe journalisé comme llm_skipped (l'appelant dégrade proprement)
             if self.journal:
                 self.journal.warn("appel LLM échoué", role=role, model=decision.model, error=type(e).__name__)
-                self.journal.event("llm_skipped", role=role, reason=f"erreur appel: {type(e).__name__}")
+                self._skip(role, f"erreur appel: {type(e).__name__}")
             return None
         return self._finish(msg, role, decision, max_tokens, key)
 

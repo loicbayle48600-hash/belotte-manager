@@ -203,3 +203,32 @@ def test_prefiltre_cout_et_symbole_ferme_avant_la_revue_ia():
     assert "clôture seulement" in o._prefiltre_cout(SimpleNamespace(symbol="POLUSD", entry=0.117, sl=0.114, spread_points=56))
     assert o._prefiltre_cout(SimpleNamespace(symbol="BTCUSD", entry=84000.0, sl=83900.0, spread_points=500)) == ""
     assert "coût" in o._prefiltre_cout(SimpleNamespace(symbol="KSMUSD", entry=46.6, sl=45.9, spread_points=449))
+
+
+
+def test_llm_skipped_journalise_une_fois_par_motif_et_par_10_min():
+    """2026-09-27 : 2 900 lignes `llm_skipped` identiques par jour."""
+    import threading
+    from tradinglab.models.client import LLMClient
+    cl = LLMClient.__new__(LLMClient)
+    cl.journal, cl._skip_seen, cl._lock = _J(), {}, threading.Lock()
+    for i in range(5):
+        cl._skip("bull_thesis", f"quota abonnement atteint : reprise dans {i} min")
+    cl._skip("bear_thesis", "quota abonnement atteint : reprise dans 3 min")
+    assert len(cl.journal.events) == 2
+    cl._skip_seen[("bull_thesis", "quota abonnement atteint : reprise dans # min")] -= 601
+    cl._skip("bull_thesis", "quota abonnement atteint : reprise dans 9 min")
+    assert len(cl.journal.events) == 3
+
+
+def test_rapport_du_jour_affiche_les_ecarts_de_copie(tmp_path):
+    from datetime import datetime, timezone
+    from tradinglab.learning.quality import daily_report_text
+    from tradinglab.learning.store import LearningStore
+    LearningStore(tmp_path / "l.db")
+    txt = daily_report_text(tmp_path / "l.db", datetime(2026, 9, 26, 21, tzinfo=timezone.utc),
+                            datetime(2026, 9, 27, 21, tzinfo=timezone.utc),
+                            [{"nom": "moneta", "trades": 1, "pnl": 12.0,
+                              "ecarts": ["positions du maître non portées : GBPAUD", "NZDJPY : Market closed (×8)"]}],
+                            [], None, "2026-09-27")
+    assert "écart : positions du maître non portées : GBPAUD" in txt and "Market closed" in txt

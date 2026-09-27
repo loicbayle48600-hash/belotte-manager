@@ -304,7 +304,7 @@ def test_llm_review_skipped_when_entries_not_allowed_and_heartbeat_persisted(set
     assert o.state.mode == SystemMode.AUTO.value
     broker.set_now(broker.now() + timedelta(minutes=5))
     s = o.cycle()
-    assert fake.calls <= 4 * MAX_LLM_REVIEWS_PER_CYCLE
+    assert fake.calls <= 4 * o._max_llm_reviews()
     if fake.calls:
         assert seen[0] == s["ts"]                     # heartbeat du cycle courant déjà sur disque pendant la revue
 

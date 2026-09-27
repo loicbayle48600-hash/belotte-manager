@@ -427,7 +427,7 @@ def test_orchestrateur_revues_llm_en_parallele_heartbeat_et_creneaux(settings, b
     wall = _time.monotonic() - t0
     cands = [e["candidate"] for e in o.journal.read_day(kinds={"candidate"}) if e["ts_utc"] >= s["ts"][:19]]
     consulted = [c for c in cands if c["review"].get("llm_consulted")]
-    assert fake.calls == 4 * len(consulted) <= 4 * MAX_LLM_REVIEWS_PER_CYCLE
+    assert fake.calls == 4 * len(consulted) <= 4 * o._max_llm_reviews()
     if consulted:
         assert any(n.startswith("llm-review") for n in threads)
         # 4 appels × 0,05 s par candidat, candidats en parallèle : bien moins que le séquentiel
@@ -453,7 +453,7 @@ def test_quota_horaire_strict_sous_parallelisme(settings, home):
     assert client.calls == 5 and st.model_budget.spent_usd == pytest.approx(5 * client._cost("claude-opus-5", 100, 50))
     # les 7 refusés sont journalisés llm_skipped ; une réponse en cache ne consomme pas de créneau
     skips = [e for e in client.journal.read_day(datetime.now(timezone.utc)) if e["kind"] == "llm_skipped"]
-    assert len(skips) == 7
+    assert 1 <= len(skips) <= 7                # dédupliqués depuis le 2026-09-27 : un même motif n'est écrit qu'une fois par 10 min
     st.model_budget.calls_by_tier_hour["TIER_B"] = 4
     hit_key = next(k["messages"][0]["content"] for k in msgs.kwargs)
     n_before = len(msgs.kwargs)

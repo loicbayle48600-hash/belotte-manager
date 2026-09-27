@@ -6,7 +6,11 @@ learning:
   agents_prioritaires: [E05, F06, B02, C06, B04, E01, D06, D07, C08]
   # agents avancés dans le pipeline de recherche à chaque passage (2 jusqu'au 2026-09-25 : toujours K01/K02, qui
   # échouaient au backtest, aucun autre agent n'avançait) ; un échec n'est retenté qu'après `research_retry_hours`
-  research_agents_per_cycle: 5     # 5 agents x 3 symboles par passage (toutes les 30 min) : charge bornée
+  research_agents_per_cycle: 5     # mode interne (research_external: false) : 5 agents par passage
+  # 2026-09-27 : la recherche tourne dans un processus séparé (research/worker.py, priorité basse) : plus aucune charge
+  # dans la boucle de trading ; 20 agents par passage (toutes les 30 min) au lieu de 5
+  research_external: true
+  research_worker_agents_per_cycle: 20
   research_retry_hours: 24
   # positions VIRTUELLES (aucun ordre) : 50 places ne suffisaient plus pour 115 agents SHADOW (2026-09-25)
   shadow_max_open: 400

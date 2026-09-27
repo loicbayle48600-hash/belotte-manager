@@ -476,7 +476,7 @@ class Orchestrator:
             deja_porte = c.symbol in symboles_portes
             llm_worthy = (self.review.llm is not None and entries_ok and det.verdict is not Verdict.REJECT
                           and not det.hard and not deja_porte)
-            if llm_worthy and len(llm_batch) < MAX_LLM_REVIEWS_PER_CYCLE:
+            if llm_worthy and len(llm_batch) < self._max_llm_reviews():
                 llm_batch.append(c)
             else:
                 # verdict déterministe seul : aucun appel LLM quand le gate refusera de toute façon (mode/verrous/
@@ -488,7 +488,7 @@ class Orchestrator:
                     elif deja_porte:
                         c.review["llm_skipped"] = f"position déjà ouverte sur {c.symbol} (1 par symbole)"
                     else:
-                        c.review["llm_skipped"] = f"au-delà des {MAX_LLM_REVIEWS_PER_CYCLE} meilleurs candidats"
+                        c.review["llm_skipped"] = f"au-delà des {self._max_llm_reviews()} meilleurs candidats"
                         # 2026-09-26 (décision utilisateur) : sans l'avis de l'IA, pas d'entrée. Au-delà des N créneaux,
                         # un APPROVE sur le seul score (ADAUSD 18 h 02, arrêté par le gate) devient WAIT.
                         if c.verdict is Verdict.APPROVE:
@@ -602,7 +602,7 @@ class Orchestrator:
                           rollover_block=self._rollover_block(spec, now),
                           disabled_checks=tuple(str(x) for x in (ex.get("gate_checks_disabled") or [])),
                           min_rr_required=float(ex.get("min_rr_required", 1.5)), required_setup_score=self._required_score(now),
-                          min_sl_atr_ratio=float(ex.get("min_sl_atr_ratio", 0.25)), max_sl_atr_ratio=float(ex.get("max_sl_atr_ratio", 4.0)),
+                          min_sl_atr_ratio=self._min_sl_atr_ratio(spec), max_sl_atr_ratio=float(ex.get("max_sl_atr_ratio", 4.0)),
                           deviation_points=int(ex.get("slippage_deviation_points", 20)), magic=self.magic,
                           comment_prefix=str(self.s.system.get("order_comment_prefix", "TLAB")))
         return self.gate.evaluate(ctx)
@@ -729,6 +729,38 @@ class Orchestrator:
             return
         self.journal.event("report_day", day=veille, text=texte)
 
+    def _copy_gaps(self, nom: str, statut: dict, debut: datetime, fin: datetime) -> list:
+        """Écarts maître / suiveur pour le rapport de 17 h (2026-09-27) : positions du maître absentes chez le suiveur et
+        motifs distincts de copie refusée dans la journée (journal `copy_trade`)."""
+        import json as _json
+
+        ecarts: list = []
+        tenues = {str(p.get("symbol")) for p in (statut.get("positions") or [])}
+        maitre = {str(p.get("symbol")) for p in self.state.bot_positions.values()}
+        manquants = sorted(maitre - tenues)
+        if manquants:
+            ecarts.append("positions du maître non portées : " + ", ".join(manquants))
+        motifs: dict = {}
+        for jour in sorted({debut.date(), fin.date()}):
+            fichier = self.journal._file(datetime.combine(jour, datetime.min.time(), tzinfo=timezone.utc))
+            if not fichier.exists():
+                continue
+            with fichier.open(encoding="utf-8") as fh:
+                for ligne in fh:
+                    if '"copy_trade"' not in ligne or nom not in ligne or '"ok": false' not in ligne:
+                        continue
+                    try:
+                        ev = _json.loads(ligne)
+                    except ValueError:
+                        continue
+                    if not (debut.isoformat() <= str(ev.get("ts_utc", "")) < fin.isoformat()):
+                        continue
+                    cle = f"{ev.get('symbol')} : {str(ev.get('detail') or ev.get('message') or '')[:60]}"
+                    motifs[cle] = motifs.get(cle, 0) + 1
+        for cle, n in sorted(motifs.items(), key=lambda kv: -kv[1])[:3]:
+            ecarts.append(f"{cle} (×{n})")
+        return ecarts
+
     def _daily_report_text(self, now: datetime, day_label: str) -> str:
         import json as _json
         from ..learning.quality import daily_report_text
@@ -743,7 +775,8 @@ class Orchestrator:
                 continue
             fermes = [t for t in (d.get("closed") or []) if debut.isoformat()[:19] <= str(t.get("closed_at", ""))[:19] < fin.isoformat()[:19]]
             comptes.append({"nom": str(d.get("name") or f.stem), "trades": len(fermes),
-                            "pnl": sum(float(t.get("pnl") or 0.0) for t in fermes)})
+                            "pnl": sum(float(t.get("pnl") or 0.0) for t in fermes),
+                            "ecarts": self._copy_gaps(str(d.get("name") or f.stem), d, debut, fin)})
         raisons: list[str] = []
         for jour in sorted({debut.date(), fin.date()}):
             fichier = self.journal._file(datetime.combine(jour, datetime.min.time(), tzinfo=timezone.utc))
@@ -1078,6 +1111,22 @@ class Orchestrator:
                            "NEWYORK, OVERLAP_LDN_NY) désigne seulement la plage horaire UTC, pas l'ouverture d'une place "
                            "boursière : ce n'est pas une incohérence de données. La liquidité du week-end est plus faible.")
 
+    def _min_sl_atr_ratio(self, spec) -> float:
+        """Distance minimale du stop en ATR H1 (contrôle 10) : par classe d'actif si configuré (hors crypto 0,75 depuis
+        le 2026-09-27, rejeu : +13 R sur la semaine), sinon la valeur générale."""
+        ex = self.s.execution
+        base = float(ex.get("min_sl_atr_ratio", 0.25))
+        par_classe = ex.get("min_sl_atr_ratio_by_class") or {}
+        cls = str(getattr(spec, "asset_class", "") or "").lower()
+        return float(par_classe.get(cls, base))
+
+    def _max_llm_reviews(self) -> int:
+        """Nombre de revues IA par cycle (`execution.max_llm_reviews_per_cycle`, 5 depuis le 2026-09-27)."""
+        try:
+            return max(1, int(self.s.execution.get("max_llm_reviews_per_cycle", MAX_LLM_REVIEWS_PER_CYCLE)))
+        except (TypeError, ValueError):
+            return MAX_LLM_REVIEWS_PER_CYCLE
+
     def _max_spread_atr_ratio(self, spec) -> float:
         """Plafond spread / ATR H1 du contrôle 07 : par classe d'actif si configuré (crypto : 0,25 depuis le 2026-09-27,
         accord utilisateur), sinon la valeur générale."""
@@ -1140,33 +1189,50 @@ class Orchestrator:
         prio = {str(x) for x in ((getattr(getattr(self, "s", None), "learning", None) or {}).get("agents_prioritaires") or [])}
         return (c.agent_id in prio, c.setup_score)
 
+    def _apply_status_requests(self) -> int:
+        """Applique les changements de statut demandés par le processus de recherche séparé (`state/agent_status_requests
+        .jsonl`, une ligne JSON par demande). Le registre n'a qu'un seul écrivain : l'orchestrateur."""
+        import json as _json
+        import os as _os
+
+        f = self.s.state_dir / "agent_status_requests.jsonl"
+        if not f.exists():
+            return 0
+        en_cours = f.with_suffix(".processing")
+        try:
+            _os.replace(f, en_cours)
+        except OSError:
+            return 0
+        n = 0
+        try:
+            for ligne in en_cours.read_text(encoding="utf-8").splitlines():
+                try:
+                    d = _json.loads(ligne)
+                    statut = AgentStatus(str(d["status"]))
+                    if d["agent_id"] not in self.registry.agents:
+                        continue
+                    self.registry.set_status(str(d["agent_id"]), statut, str(d.get("reason", "")))
+                    self.journal.event("agent_status_applied", agent_id=d["agent_id"], status=statut.value,
+                                       reason=d.get("reason", ""), source="research_worker")
+                    n += 1
+                except (ValueError, KeyError, TypeError) as e:
+                    self.journal.warn("demande de statut illisible", error=f"{type(e).__name__}: {e}", ligne=ligne[:120])
+        finally:
+            try:
+                en_cours.unlink()
+            except OSError:
+                pass
+        return n
+
     def _research_queue(self, now: datetime) -> list:
         """Agents à faire avancer dans le pipeline, les plus anciennement essayés d'abord.
 
         Jusqu'au 2026-09-25 la boucle prenait les 2 PREMIERS agents non-LIVE du registre : K01 et K02, qui échouaient au
         backtest à chaque passage, occupaient les deux places pour toujours et aucun autre agent n'avançait. Un agent
         dont l'étape suivante vient d'échouer attend `research_retry_hours` avant un nouvel essai."""
-        cfg = self.s.learning or {}
-        retry = timedelta(hours=float(cfg.get("research_retry_hours", 24)))
-        statuts = (AgentStatus.RESEARCH.value, AgentStatus.BACKTEST.value, AgentStatus.SHADOW.value, AgentStatus.CANDIDATE.value)
-        file = []
-        for a in list(self.registry.agents.values()):
-            if not a.generates_trades or a.status not in statuts:
-                continue
-            rec = self.research.record(a.agent_id)
-            nxt = rec.next_stage()
-            if nxt is None:
-                continue
-            last = (rec.stages.get(nxt.value) or {}).get("ts") or ""
-            if last:
-                try:
-                    if now - datetime.fromisoformat(last) < retry:
-                        continue
-                except (ValueError, TypeError):
-                    pass
-            file.append((last, a.agent_id))
-        file.sort()
-        return [aid for _, aid in file[:int(cfg.get("research_agents_per_cycle", 2))]]
+        from ..research.pipeline import research_queue
+
+        return research_queue(self.registry, self.research, self.s.learning or {}, now)
 
     def _research_cycle(self) -> None:
         changes = self.degradation.run()
@@ -1174,12 +1240,17 @@ class Orchestrator:
             self.journal.event("degradation", changes=changes)
         if self.research is None:
             return
-        # faire avancer les agents non-LIVE dans le pipeline, à tour de rôle (voir `_research_queue`)
-        for aid in self._research_queue(self.now_fn()):
-            try:
-                self.research.advance(aid)
-            except Exception as e:  # noqa: BLE001
-                self.journal.warn("recherche : étape échouée", agent_id=aid, error=f"{type(e).__name__}: {e}")
+        if bool((self.s.learning or {}).get("research_external", False)):
+            # 2026-09-27 : les backtests tournent dans le processus séparé `research/worker.py` (plus de charge dans la
+            # boucle de trading) ; il dépose ses changements de statut dans une file que l'orchestrateur applique ici
+            self._apply_status_requests()
+        else:
+            # faire avancer les agents non-LIVE dans le pipeline, à tour de rôle (voir `_research_queue`)
+            for aid in self._research_queue(self.now_fn()):
+                try:
+                    self.research.advance(aid)
+                except Exception as e:  # noqa: BLE001
+                    self.journal.warn("recherche : étape échouée", agent_id=aid, error=f"{type(e).__name__}: {e}")
         # nouveaux challengers pour les champions dégradés
         for a in self.registry.by_status(AgentStatus.DEGRADED):
             if not any(x.parent_id == a.agent_id for x in self.registry.agents.values()):

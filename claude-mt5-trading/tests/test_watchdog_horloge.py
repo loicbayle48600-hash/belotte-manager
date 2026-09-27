@@ -188,6 +188,9 @@ def test_tick_indisponible_compte_comme_gele(settings, home, monkeypatch):
     broker = _BrokerTicks(["EURUSD", "BTCUSD"], {})        # aucun tick
     wd = _wd(settings, home, broker)
     rep = wd.check_once()
+    assert rep.data_fresh is None and rep.safe_mode_request is False   # tolérance de démarrage : inconnu (2026-09-27)
+    wd._started_mono -= wd.STARTUP_GRACE_SEC + 1                        # tolérance écoulée : flux figé
+    rep = wd.check_once()
     assert rep.data_fresh is False and rep.safe_mode_request is True
 
 
@@ -202,3 +205,13 @@ def test_ancrage_reessaie_tant_que_le_terminal_ne_liste_aucun_symbole(watchdog):
     broker._symboles = vrais                    # connecté au contrôle suivant
     wd._ancrer_horloge()
     assert wd._ancrage_fait and "BTCUSD" in wd._surveilles
+
+
+
+def test_tolerance_de_demarrage_symbole_sans_tick(watchdog):
+    """2026-09-27 : après un redémarrage le week-end, les cryptos fraîchement sélectionnées n'avaient pas encore de tick
+    et le watchdog demandait SAFE_MODE (~10 min). Pendant la tolérance, « pas de tick » = inconnu, pas périmé."""
+    import time as _t
+    wd, broker = watchdog
+    assert wd.STARTUP_GRACE_SEC >= 600
+    assert (_t.monotonic() - wd._started_mono) < wd.STARTUP_GRACE_SEC

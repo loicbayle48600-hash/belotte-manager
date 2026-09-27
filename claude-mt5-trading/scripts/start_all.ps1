@@ -188,6 +188,9 @@ function Start-Component {
         if ($Name -in @('orchestrator', 'watchdog')) {
             try { $proc.PriorityClass = 'AboveNormal'; Write-TlLog "$Name : priorité haute" 'OK' } catch { Write-TlLog "$Name : priorité inchangée ($($_.Exception.Message))" 'WARN' }
         }
+        if ($Name -eq 'research') {
+            try { $proc.PriorityClass = 'BelowNormal'; Write-TlLog "$Name : priorité basse" 'OK' } catch { }
+        }
     } else {
         Write-TlLog ("{0} s'est arrêté immédiatement (code {1}). Voir {2}" -f $Name, $proc.ExitCode, $errLog) 'ERREUR'
         try { Get-Content -LiteralPath $errLog -Tail 15 -ErrorAction Stop | ForEach-Object { Write-Host "    $_" -ForegroundColor DarkRed } } catch { }
@@ -351,7 +354,9 @@ $entries = @()
 
 $components = @(
     @{ Name = 'watchdog';     Pattern = 'tradinglab.monitoring.watchdog';          Args = @('-m', 'tradinglab.monitoring.watchdog') },
-    @{ Name = 'orchestrator'; Pattern = 'tradinglab.orchestration.orchestrator';   Args = @('-m', 'tradinglab.orchestration.orchestrator', '--mode', $Mode) }
+    @{ Name = 'orchestrator'; Pattern = 'tradinglab.orchestration.orchestrator';   Args = @('-m', 'tradinglab.orchestration.orchestrator', '--mode', $Mode) },
+    # 2026-09-27 : backtests des agents non-LIVE dans un processus séparé, en priorité basse (voir research/worker.py)
+    @{ Name = 'research';     Pattern = 'tradinglab.research.worker';              Args = @('-m', 'tradinglab.research.worker') }
 )
 if (-not $NoDashboard) {
     # --host 0.0.0.0 (2026-09-22, demande utilisateur : accès depuis le téléphone via le LAN/VPN Tailscale).

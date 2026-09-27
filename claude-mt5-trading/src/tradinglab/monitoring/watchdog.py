@@ -67,6 +67,10 @@ class Watchdog:
         # (et poussée sur Telegram) toutes les 3 s — 1 491 fois en deux heures
         self._alert_key: Optional[str] = None
         self._alert_ts: float = 0.0
+        # 2026-09-27 : après un redémarrage le week-end, les cryptos fraîchement sélectionnées n'ont pas encore de tick
+        # (« indisponible ») pendant ~10 min et le watchdog demandait SAFE_MODE. Pendant STARTUP_GRACE_SEC, un symbole
+        # sans tick est « inconnu », pas « périmé » ; sans aucun âge mesurable, la fraîcheur n'est pas jugée.
+        self._started_mono = time.monotonic()
         self.magic = settings.magic
         self.ref_symbol = reference_symbol
         self._ref_resolved: Optional[str] = None  # symbole broker réel (suffixe résolu), calculé une fois connecté
@@ -216,11 +220,14 @@ class Watchdog:
                 surveilles = [positions[0].symbol]
             if surveilles:
                 ages: dict[str, float] = {}
+                en_grace = (time.monotonic() - self._started_mono) < self.STARTUP_GRACE_SEC
                 for sym in surveilles:
                     t = self.broker.tick(sym)
+                    if t is None and en_grace:
+                        continue                      # pas encore de tick après sélection : inconnu, pas périmé
                     ages[sym] = t.age_seconds(self.broker.server_time()) if t else float("inf")
-                plus_frais = min(ages.values())
-                rep.data_fresh = plus_frais <= self.max_tick_age
+                plus_frais = min(ages.values()) if ages else None
+                rep.data_fresh = (plus_frais <= self.max_tick_age) if plus_frais is not None else None
                 if rep.data_fresh is False:
                     # Aucun marché suivi ne cote : flux réellement figé → SAFE_MODE demandé.
                     detail = ", ".join(f"{s}: {a:.0f}s" if a != float("inf") else f"{s}: indisponible"
@@ -236,6 +243,9 @@ class Watchdog:
         self._write(rep)
         self._emit_alert(rep)
         return rep
+
+    #: tolérance après le démarrage : un symbole sans tick n'est pas compté comme périmé
+    STARTUP_GRACE_SEC = 900.0
 
     #: rappel d'une alerte inchangée qui persiste
     ALERT_REMINDER_SEC = 900.0

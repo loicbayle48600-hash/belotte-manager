@@ -56,6 +56,12 @@ execution:
   max_spread_points: {default: 40, XAU: 60, indices: 100, crypto: 6000}
   slippage_deviation_points: 20
   min_sl_atr_ratio: 0.25         # SL minimum = 0.25 x ATR
+  # 2026-09-27, accord utilisateur (« fais-le si c'est mieux ») : rejeu des 7 derniers jours — refuser les stops < 0,75 ATR H1
+  # améliorait la semaine de +13 R (98 → 54 trades, DD 35 → 22 R). Hors crypto seulement : les agents crypto M5/M15
+  # (P16-P23) ont par construction des stops de 1,5 ATR de leur unité de temps, soit 0,4-0,75 ATR H1.
+  min_sl_atr_ratio_by_class: {forex: 0.75, indices: 0.75, metals: 0.75, energies: 0.75}
+  # 2026-09-27, accord utilisateur : revues IA par cycle 3 → 5 (« monte à 10 si besoin »). En parallèle, bornées à 25 s.
+  max_llm_reviews_per_cycle: 5
   max_sl_atr_ratio: 4.0
   min_rr_required: 1.5
   required_setup_score: 65       # score minimal pour candidat sérieux (0-100)

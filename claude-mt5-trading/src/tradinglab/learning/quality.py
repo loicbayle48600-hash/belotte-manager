@@ -114,6 +114,8 @@ def daily_report_text(db: Path, start: datetime, end: datetime, accounts: list[d
             lignes.append(f"Glissement moyen : {s['glissement_moy_r']:+.3f} R")
     for a in accounts:
         lignes.append(f"{a['nom']} : {a.get('trades', 0)} trades · {float(a.get('pnl', 0.0)):+,.0f} $".replace(",", " "))
+        for ecart in (a.get("ecarts") or [])[:4]:
+            lignes.append(f"  écart : {ecart}")
     par: dict[str, float] = {}
     for r in rows:
         par[r["agent_id"]] = par.get(r["agent_id"], 0.0) + r["r"]

@@ -24,8 +24,10 @@ models:
   # ~500 appels/h en session active, dont ~400 étaient refusés faute de quota. Servir TOUTE la demande
   # (12 000 appels/jour) épuiserait l'abonnement ; on double, ce qui porte le service de ~90 à ~210
   # appels/h (~2,1x le poids hebdomadaire). À revoir sur /usage.
-  max_opus_calls_per_hour: 60           # MAX_OPUS_CALLS_PER_HOUR
-  max_worker_calls_per_hour: 150        # MAX_WORKER_CALLS_PER_HOUR
+  # 60 → 100 et 150 → 300 le 2026-09-27 (accord utilisateur : 5 revues IA par cycle, « monte à 10 si besoin ») :
+  # mesuré ~180-200 appels/h avec 3 revues, déjà 20 refus « quotas épuisés » ce jour ; 5 revues ≈ 330 appels/h.
+  max_opus_calls_per_hour: 100          # MAX_OPUS_CALLS_PER_HOUR
+  max_worker_calls_per_hour: 300        # MAX_WORKER_CALLS_PER_HOUR
   cache_ttl_sec: 240                    # cache des analyses non périmées
   tiers:
     TIER_A:

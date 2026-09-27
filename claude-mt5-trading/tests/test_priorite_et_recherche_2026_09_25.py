@@ -139,3 +139,15 @@ def test_consigne_arbitre_wait_reserve_aux_confirmations_precises():
     from tradinglab.agents.review import AdversarialReview
     src = inspect.getsource(AdversarialReview.review)
     assert "WAIT uniquement si une confirmation PRÉCISE" in src
+
+
+def test_stop_minimal_par_classe_et_revues_ia_configurables():
+    """2026-09-27 : stop ≥ 0,75 ATR H1 hors crypto (rejeu +13 R), crypto inchangée ; revues IA par cycle configurables."""
+    o = Orchestrator.__new__(Orchestrator)
+    o.s = SimpleNamespace(execution={"min_sl_atr_ratio": 0.25, "min_sl_atr_ratio_by_class": {"forex": 0.75},
+                                     "max_llm_reviews_per_cycle": 5})
+    assert o._min_sl_atr_ratio(SimpleNamespace(asset_class="forex")) == 0.75
+    assert o._min_sl_atr_ratio(SimpleNamespace(asset_class="crypto")) == 0.25
+    assert o._max_llm_reviews() == 5
+    o.s.execution["max_llm_reviews_per_cycle"] = "x"
+    assert o._max_llm_reviews() == 3

@@ -462,3 +462,34 @@ class DegradationManager:
             if self.journal:
                 self.journal.event("agent_status_change", **c)
         return changes
+
+
+
+def research_queue(registry, pipeline, cfg: dict, now, per_cycle_key: str = "research_agents_per_cycle",
+                   default_per_cycle: int = 2) -> list:
+    """Agents à faire avancer dans le pipeline, les plus anciennement essayés d'abord.
+
+    Un agent dont l'étape suivante vient d'échouer attend `research_retry_hours` avant un nouvel essai. Partagée par
+    l'orchestrateur (mode interne) et le processus de recherche séparé `research/worker.py` (2026-09-27)."""
+    from datetime import datetime as _dt, timedelta as _td
+
+    retry = _td(hours=float(cfg.get("research_retry_hours", 24)))
+    statuts = (AgentStatus.RESEARCH.value, AgentStatus.BACKTEST.value, AgentStatus.SHADOW.value, AgentStatus.CANDIDATE.value)
+    file = []
+    for a in list(registry.agents.values()):
+        if not a.generates_trades or a.status not in statuts:
+            continue
+        rec = pipeline.record(a.agent_id)
+        nxt = rec.next_stage()
+        if nxt is None:
+            continue
+        last = (rec.stages.get(nxt.value) or {}).get("ts") or ""
+        if last:
+            try:
+                if now - _dt.fromisoformat(last) < retry:
+                    continue
+            except (ValueError, TypeError):
+                pass
+        file.append((last, a.agent_id))
+    file.sort()
+    return [aid for _, aid in file[:int(cfg.get(per_cycle_key, default_per_cycle))]]
