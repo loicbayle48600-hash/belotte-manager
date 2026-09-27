@@ -765,3 +765,22 @@ def test_stop_trop_proche_retente_avec_delai_croissant(tmp_path):
         tr._apply(a)
         delais.append((tr._retry_after[77] - tr.__dict__.get("_now", datetime.now(timezone.utc))).total_seconds())
     assert delais[0] < delais[1] < delais[2]
+
+
+def test_verrou_copieur_pid_inexistant_windows(monkeypatch):
+    """2026-09-27 : `os.kill(pid, 0)` a levé SystemError (CPython/Windows) pour un PID mort → le copieur demo 1
+    s'est arrêté au lieu de reprendre le verrou. SystemError est traité comme OSError : le processus est mort."""
+    import os
+    from tradinglab.copy import __main__ as cm
+    src = open(cm.__file__, encoding="utf-8").read()
+    assert "except (OSError, SystemError):" in src
+
+    def _kill(pid, sig):
+        raise SystemError("<built-in function kill> returned a result with an exception set")
+    monkeypatch.setattr(os, "kill", _kill)
+    try:
+        os.kill(999999, 0)
+        alive = True
+    except (OSError, SystemError):
+        alive = False
+    assert alive is False

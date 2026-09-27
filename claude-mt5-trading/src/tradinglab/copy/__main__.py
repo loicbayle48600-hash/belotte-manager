@@ -63,7 +63,9 @@ def main(argv: list[str] | None = None) -> int:
         try:
             os.kill(other, 0)
             alive = True
-        except OSError:
+        except (OSError, SystemError):
+            # SystemError : sur Windows, CPython lève « returned a result with an exception set » pour un PID
+            # inexistant (copieur demo 1 mort au démarrage du 2026-09-27 au lieu de reprendre le verrou)
             alive = False
         if alive:
             print(f"un copieur {prefix} tourne déjà (PID {other}) : arrêt de ce doublon", file=sys.stderr)
