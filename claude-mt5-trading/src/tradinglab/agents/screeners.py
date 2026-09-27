@@ -62,7 +62,9 @@ def _build(spec: AgentSpec, snap, side: Side, entry: float, sl: float, rr: float
             cons.append(f"spread élevé ({ratio:.2f} ATR)")
     score = _clamp(score - spread_pen)
     return TradeCandidate(
-        symbol=snap.symbol, side=side, entry=float(entry), sl=float(sl), tp_plan=[tp1, tp2, tp_final],
+        symbol=snap.symbol, side=side, entry=float(entry), sl=float(sl),
+        # objectif final = TP2 quand rr ≤ 2,5 : doublon retiré (l'IA y voyait un « plan de sortie incohérent », 2026-09-27)
+        tp_plan=[tp1, tp2] + ([tp_final] if abs(tp_final - tp2) > 1e-12 else []),
         timeframes=[spec.timeframes.get("entry", "M15"), spec.timeframes.get("trend", "H1")], regime=snap.regime.regime,
         agent_id=spec.agent_id, agent_version=spec.version, setup_score=round(score, 1), data_quality=snap.data_quality,
         spread_points=snap.spread_points, rr=round(abs(tp_final - entry) / dist, 2), invalidation=invalidation,
