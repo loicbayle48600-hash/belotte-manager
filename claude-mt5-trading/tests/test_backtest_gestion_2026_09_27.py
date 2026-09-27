@@ -9,7 +9,7 @@ from datetime import datetime, timedelta, timezone
 import pandas as pd
 import pytest
 
-from tradinglab.backtest.engine import BTCosts, Signal, run_backtest
+from tradinglab.backtest.engine import BTCosts, Signal, run_backtest, set_default_management
 from tradinglab.core.types import Side
 
 GESTION = {"tp1_r": 1.5, "tp1_close_percent": 30, "tp2_r": 2.5, "tp2_close_percent": 40, "break_even_enabled": True,
@@ -48,6 +48,7 @@ def test_tp1_et_break_even_changent_le_resultat():
 
 
 def test_sans_gestion_par_defaut_comportement_inchange():
+    set_default_management(None)          # un autre test (pipeline) peut avoir branché la gestion par défaut
     closes = [100.0] * 221 + [100.0, 108.0, 116.0, 105.0, 100.4, 89.0, 89.0]
     res = run_backtest(_df(closes), _signal_une_fois(221), ZERO, warmup=200)
     assert res.trades[0].r_multiple == pytest.approx(-1.0)
