@@ -35,6 +35,7 @@ def _signal_une_fois(entry_bar: int):
 
 
 def test_tp1_et_break_even_changent_le_resultat():
+    set_default_management(None)          # un autre test (pipeline) peut avoir branché la gestion par défaut
     # 220 barres plates (warmup), entrée à l'open de la barre 221 à 100 ; monte à 116 (+1,6 R) puis retombe à 89
     closes = [100.0] * 221 + [100.0, 108.0, 116.0, 105.0, 100.4, 89.0, 89.0]
     df = _df(closes)
