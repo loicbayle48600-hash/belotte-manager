@@ -43,7 +43,7 @@ def test_config_reflete_les_regles_officielles():
     assert cfg["consistency_max_share_percent"] == 25.0 and cfg["min_trading_days"] == 5
     # option news FOXX prise par l'utilisateur le 2026-09-26 : annonces autorisées aussi sur compte financé
     assert cfg["news_trading_window_minutes"] == 5 and cfg["news_trading_allowed_on_funded"] is True
-    assert cfg["weekend_holding_allowed"] == "ALL"          # garder une position le week-end : permis (27/09)
+    assert cfg["weekend_holding_allowed"] == "CRYPTO_ONLY"  # 27/09 soir : forex/indices fermés avant le week-end
     assert cfg["weekend_trading_allowed"] == "CRYPTO_ONLY"   # trader le week-end : crypto seulement
     assert cfg["trading_day_reset_hour"] == 17 and cfg["trading_day_timezone"] == "America/New_York"
     assert cfg["drawdown_type"] == "STATIC" and cfg["loss_reference_balance"] == "INITIAL_BALANCE"

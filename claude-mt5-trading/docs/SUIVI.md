@@ -350,6 +350,11 @@ n'utilise PAS Fable (retiré de TIER_A le 2026-09-23) : le quota Fable est rése
      crypto inchangée (agents M5/M15 à stops de 1,5 ATR de leur unité de temps).
   Reporté à la demande de l'utilisateur : garde de risque côté suiveur pour le challenge Moneta (point 1).
 
+- **Fermeture du forex avant le week-end réactivée (27/09 soir, décision utilisateur)** : `weekend_holding_allowed:
+  CRYPTO_ONLY` — les positions hors crypto (forex, indices, métaux, énergie) sont fermées 15 min avant le reset du
+  vendredi 17:00 New York (22:45 Paris en été) et aucune entrée hors crypto n'est prise dans l'heure qui précède.
+  Les positions crypto sont conservées.
+
 ## À FAIRE (lundi, avec Fable)
 
 - **Plus tard, à la demande de l'utilisateur (25/09 : « laisse pour le moment, pourquoi pas plus tard ») :** retirer

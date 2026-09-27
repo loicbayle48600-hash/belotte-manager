@@ -1,5 +1,5 @@
-"""Tenue des positions hors crypto le week-end : mécanisme disponible (`weekend_holding_allowed: CRYPTO_ONLY`) mais
-DÉSACTIVÉ dans la config FOXX le 2026-09-27 (décision utilisateur : la règle interdit de trader, pas de garder)."""
+"""Positions hors crypto fermées avant le week-end (`weekend_holding_allowed: CRYPTO_ONLY`) : désactivé puis
+RÉACTIVÉ le 2026-09-27 au soir (décision utilisateur : « le vendredi, ferme les positions de forex avant la clôture »)."""
 from __future__ import annotations
 
 from datetime import datetime, timezone
@@ -33,8 +33,11 @@ def test_pas_d_entree_hors_crypto_dans_l_heure_qui_precede():
 
 
 
-def test_config_reelle_garde_les_positions_le_week_end():
+def test_config_reelle_ferme_le_forex_avant_le_week_end():
+    """27/09 soir (décision utilisateur) : positions hors crypto fermées avant la clôture du vendredi."""
     import yaml
     cfg = yaml.safe_load(open("config/prop_firms.yaml", encoding="utf-8"))["prop"]
     g = PropGuard(PropProfile.from_config(cfg), True, False, 1.0)
-    assert g.weekend_holding_check("forex", VEN_16H30_NY).ok is True
+    assert g.weekend_holding_check("forex", VEN_16H30_NY).ok is False
+    assert g.weekend_holding_check("crypto", VEN_16H30_NY).ok is True
+    assert float(cfg["weekend_close_minutes_before"]) == 15
