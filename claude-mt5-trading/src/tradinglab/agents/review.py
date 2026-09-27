@@ -164,6 +164,9 @@ class AdversarialReview:
             (bull, c1), (bear, c2), (devil, c3) = list(ex.map(lambda t: self._ask(t[0], t[1], c), theses))
         arb, c4 = self._ask("trade_arbiter",
                             "Tu es l'arbitre. Décide APPROVE / WAIT / REJECT / NO_TRADE en pesant bull, bear et devil ci-dessous. "
+                            "WAIT uniquement si une confirmation PRÉCISE et vérifiable manque (nomme-la : clôture, retest, "
+                            "niveau) ; un doute général, un historique court ou la liquidité du week-end ne sont pas des WAIT : "
+                            "tranche APPROVE ou REJECT. Le coût d'entrée (spread + commission) est déjà contrôlé par le Risk Gate. "
                             "Le Risk Gate déterministe aura le dernier mot. JSON: {\"verdict\": \"...\", \"rationale\": \"...\"} — rationale en une phrase, 50 mots max.\n"
                             + json.dumps({"bull": bull, "bear": bear, "devil": devil}, ensure_ascii=False)[:4000], c,
                             importance="high", max_tokens=ARBITER_MAX_TOKENS)

@@ -597,7 +597,7 @@ class Orchestrator:
                           market_open=forex_market_open(now) if (spec and spec.asset_class == "forex") else True,
                           news_check=nc, correlations=corr, now=now, watchdog_alive=wd_alive,
                           open_positions_symbol=sum(1 for p in bot_pos if p.symbol == c.symbol), open_positions_total=len(bot_pos),
-                          max_spread_points=int(max_sp), max_spread_atr_ratio=float(ex.get("max_spread_atr_ratio", 0.15)),
+                          max_spread_points=int(max_sp), max_spread_atr_ratio=self._max_spread_atr_ratio(spec),
                           max_spread_sl_ratio=float(ex.get("max_spread_sl_ratio", 0.35)),
                           rollover_block=self._rollover_block(spec, now),
                           disabled_checks=tuple(str(x) for x in (ex.get("gate_checks_disabled") or [])),
@@ -1076,6 +1076,15 @@ class Orchestrator:
     NOTE_CRYPTO_WEEKEND = ("Crypto : marché ouvert 24 h/24, 7 j/7. Le week-end, le nom de session (ASIA, LONDON, "
                            "NEWYORK, OVERLAP_LDN_NY) désigne seulement la plage horaire UTC, pas l'ouverture d'une place "
                            "boursière : ce n'est pas une incohérence de données. La liquidité du week-end est plus faible.")
+
+    def _max_spread_atr_ratio(self, spec) -> float:
+        """Plafond spread / ATR H1 du contrôle 07 : par classe d'actif si configuré (crypto : 0,25 depuis le 2026-09-27,
+        accord utilisateur), sinon la valeur générale."""
+        ex = self.s.execution
+        base = float(ex.get("max_spread_atr_ratio", 0.15))
+        par_classe = ex.get("max_spread_atr_ratio_by_class") or {}
+        cls = str(getattr(spec, "asset_class", "") or "").lower()
+        return float(par_classe.get(cls, base))
 
     def _prefiltre_cout(self, c) -> str:
         """Raison de refus déterministe identique à celle du gate (05 : symbole non ouvrable, 07b : coût > plafond),

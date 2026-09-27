@@ -310,6 +310,11 @@ n'utilise PAS Fable (retiré de TIER_A le 2026-09-23) : le quota Fable est rése
   gate). Dossier IA : `historique_note` sous 10 trades (44 refus citaient « sample_size=0 »). En attente de décision :
   contrôle 07 (spread ≤ 0,15 ATR H1) qui refuse SOL à 0,185 ATR alors que 07b (coût / stop) est déjà satisfait.
 
+- **« Je veux des trades » (27/09, accord explicite de l'utilisateur, exceptions au gel lab-v1)** : plafond spread / ATR
+  H1 du contrôle 07 propre à la crypto (`max_spread_atr_ratio_by_class: {crypto: 0.25}`, 07b reste le garde-fou du
+  coût) ; score minimal 55 reconduit pour la journée du dimanche (retour à 65 à 17 h New York) ; consigne à l'arbitre
+  IA : WAIT réservé à une confirmation précise et nommée, sinon APPROVE ou REJECT.
+
 ## À FAIRE (lundi, avec Fable)
 
 - **Plus tard, à la demande de l'utilisateur (25/09 : « laisse pour le moment, pourquoi pas plus tard ») :** retirer

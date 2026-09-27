@@ -38,6 +38,9 @@ execution:
   gate_checks_disabled: [06b_rr_live, 11b_risque_utile]   # 07b réactivé le 2026-09-25 (demande utilisateur)
   invalidation_levels: false
   max_spread_atr_ratio: 0.15     # spread / ATR(14) maximal
+  # 2026-09-27, accord utilisateur (« je veux des trades ») : plafond spread / ATR H1 propre à la crypto. SOL (0,185 ATR)
+  # était refusé alors que son coût réel ne fait que 12 % du stop (07b) ; 07b reste le vrai garde-fou du coût.
+  max_spread_atr_ratio_by_class: {crypto: 0.25}
   # part maximale du RISQUE (distance entrée→stop) que le spread peut consommer — 2026-09-22, accord
   # utilisateur. Complète max_spread_atr_ratio, qui ne voit pas un stop bien plus serré que l'ATR :
   # mesuré sur le journal, GBPTRY proposait un spread médian de 4 126 pts pour un stop médian de 38 pts.
@@ -58,7 +61,8 @@ execution:
   required_setup_score: 65       # score minimal pour candidat sérieux (0-100)
   # 2026-09-26, demande explicite de l'utilisateur (« baisse-le juste pour aujourd'hui », valeur choisie : 55) :
   # exception au gel lab-v1, limitée à la journée FOXX du samedi 26/09. Retour automatique à 65 à 17 h New York.
-  required_setup_score_temporaire: {valeur: 55, jusqu_a: "2026-09-26T21:00:00+00:00"}
+  # 2026-09-27 : reconduit pour la journée du dimanche (accord utilisateur), retour à 65 à 17 h New York
+  required_setup_score_temporaire: {valeur: 55, jusqu_a: "2026-09-27T21:00:00+00:00"}
 
 commands:
   panic_close_all_bot_positions: true

@@ -118,3 +118,24 @@ def test_baisse_temporaire_du_score_minimal_expire_seule():
     assert o._required_score(datetime(2026, 9, 26, 21, 0, tzinfo=timezone.utc)) == 65.0
     o.s.execution["required_setup_score_temporaire"] = {"valeur": 55, "jusqu_a": "pas une date"}
     assert o._required_score(datetime(2026, 9, 26, 12, 0, tzinfo=timezone.utc)) == 65.0
+
+
+def test_plafond_spread_atr_par_classe_d_actif():
+    """2026-09-27 (accord utilisateur) : SOL (0,185 ATR) refusé par 07 alors que son coût ne fait que 12 % du stop."""
+    o = Orchestrator.__new__(Orchestrator)
+    o.s = SimpleNamespace(execution={"max_spread_atr_ratio": 0.15, "max_spread_atr_ratio_by_class": {"crypto": 0.25}})
+    assert o._max_spread_atr_ratio(SimpleNamespace(asset_class="crypto")) == 0.25
+    assert o._max_spread_atr_ratio(SimpleNamespace(asset_class="forex")) == 0.15
+    assert o._max_spread_atr_ratio(None) == 0.15
+
+
+def test_config_reelle_crypto_0_25_et_score_55_dimanche(settings):
+    assert settings.execution["max_spread_atr_ratio_by_class"]["crypto"] == 0.25
+    assert settings.execution["required_setup_score_temporaire"]["jusqu_a"] == "2026-09-27T21:00:00+00:00"
+
+
+def test_consigne_arbitre_wait_reserve_aux_confirmations_precises():
+    import inspect
+    from tradinglab.agents.review import AdversarialReview
+    src = inspect.getsource(AdversarialReview.review)
+    assert "WAIT uniquement si une confirmation PRÉCISE" in src
