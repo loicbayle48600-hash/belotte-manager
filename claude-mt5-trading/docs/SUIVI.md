@@ -285,6 +285,8 @@ n'utilise PAS Fable (retiré de TIER_A le 2026-09-23) : le quota Fable est rése
   (PF 1,40, 2 étapes) ; M5 prometteurs mais sur ~10 jours seulement (P18 PF 2,59, P19 PF 1,71). Perdants (PF < 0,8) :
   P17, P20, P22, P23, P26, P30 — mise en SHADOW proposée à l'utilisateur.
 
+- **P17, P20, P22, P23, P26, P30 en SHADOW** (27/09, décision utilisateur) : PF < 0,8 en backtest.
+
 ## À FAIRE (lundi, avec Fable)
 
 - **Plus tard, à la demande de l'utilisateur (25/09 : « laisse pour le moment, pourquoi pas plus tard ») :** retirer

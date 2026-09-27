@@ -72,8 +72,9 @@ def test_fenetre_du_week_end(agents):
 
 def test_rsi2_en_shadow_les_autres_live(agents):
     """P14 (RSI(2), PF 0,75 en backtest) passe en SHADOW le 2026-09-26 à la demande de l'utilisateur."""
-    assert agents["P14"].status == "SHADOW"
-    assert all(a.status == "LIVE" for k, a in agents.items() if k != "P14")
+    shadow = {"P14", "P17", "P20", "P22", "P23", "P26", "P30"}      # perdants du backtest (26-27/09)
+    assert {k for k, a in agents.items() if a.status == "SHADOW"} == shadow
+    assert all(a.status == "LIVE" for k, a in agents.items() if k not in shadow)
 
 
 

@@ -303,6 +303,9 @@ def default_agents() -> list[AgentSpec]:  # noqa: C901 - registre déclaratif
           ("range_mr", "bollinger_mr", {"rsi_lo": 30, "rsi_hi": 70, "rr": 1.6}, RANGE_REGIMES),
           ("trend_pullback", "mtf_trend_pullback", {"rsi_lo": 38, "rsi_hi": 62, "rr": 2.0}, TREND_REGIMES),
           ("atr_expansion", "atr_expansion", {"atr_ratio": 1.3, "rr": 2.0}, BREAKOUT_REGIMES)]
+    # perdants du backtest (PF < 0,8) mis en SHADOW le 2026-09-27 à la demande de l'utilisateur
+    MT_SHADOW = {("m5", "range_mr"), ("m15", "donchian"), ("m15", "trend_pullback"), ("m15", "atr_expansion"),
+                 ("h4", "trend_pullback"), ("d1", "trend_pullback")}
     n0 = len(P) + len(PR)
     k = 0
     for ut, tfs, mk, sl in MT:
@@ -311,6 +314,7 @@ def default_agents() -> list[AgentSpec]:  # noqa: C901 - registre déclaratif
             prm_ut = {**prm, "sl_atr": sl, **({"lookback": 30} if (ut, nom) == ("h4", "donchian") else {})}  # P12 = 20 H4
             A.append(_a(f"P{n0 + k:02d}", "P", f"crypto_{ut}_{nom}", st, mk, ALL_SESSIONS, tfs, rg, prm_ut,
                         model_tier_role="technical_analysis",
+                        status=AgentStatus.SHADOW.value if (ut, nom) in MT_SHADOW else AgentStatus.LIVE.value,
                         description=f"Crypto 7 j/7, {nom} en {ut.upper()} (LIVE à la demande de l'utilisateur)"))
     # Chaque agent générateur possède SA PROPRE stratégie (clé = agent_id, module agents/strategies/*) ;
     # le screener générique historique reste en repli (base_strategy) tant que la stratégie propre n'existe pas.
