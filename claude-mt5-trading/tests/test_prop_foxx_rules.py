@@ -41,7 +41,9 @@ def test_config_reflete_les_regles_officielles():
     assert (cfg["profit_target_percent"], cfg["max_daily_loss_hard_percent"], cfg["max_overall_loss_hard_percent"]) == (7.0, 4.0, 8.0)
     assert cfg["max_risk_per_trade_idea_percent"] == 2.0 and cfg["trade_idea_aggregation_minutes"] == 10
     assert cfg["consistency_max_share_percent"] == 25.0 and cfg["min_trading_days"] == 5
-    assert cfg["news_trading_window_minutes"] == 5 and cfg["news_trading_allowed_on_funded"] is False
+    # option news FOXX prise par l'utilisateur le 2026-09-26 : annonces autorisées aussi sur compte financé
+    assert cfg["news_trading_window_minutes"] == 5 and cfg["news_trading_allowed_on_funded"] is True
+    assert cfg["weekend_holding_allowed"] == "CRYPTO_ONLY"
     assert cfg["trading_day_reset_hour"] == 17 and cfg["trading_day_timezone"] == "America/New_York"
     assert cfg["drawdown_type"] == "STATIC" and cfg["loss_reference_balance"] == "INITIAL_BALANCE"
     assert cfg["weekend_trading_allowed"] == "CRYPTO_ONLY" and cfg["stop_loss_mandatory"] is True
@@ -212,6 +214,7 @@ def test_gate_applique_le_plafond_par_idee(settings, broker):
     names = [ch.name for ch in res.checks]
     assert {n for n in names if n.startswith("19_")} == {
         "19_prop_hard_daily", "19_prop_hard_overall", "19_prop_trade_idea", "19_prop_weekend",
+        "19_prop_weekend_holding",   # 2026-09-27 : pas d'entrée hors crypto dans l'heure qui précède le week-end
         # relevés le 2026-09-23 : lots max par classe, cohérence 25 % en direct, hedging, inversion après perte
         "19_prop_max_lots", "19_prop_consistency", "19_prop_no_hedge", "19_prop_no_reversal"}
     assert dict((ch.name, ch.ok) for ch in res.checks)["19_prop_trade_idea"] is True

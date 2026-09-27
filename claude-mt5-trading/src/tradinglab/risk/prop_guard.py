@@ -162,6 +162,28 @@ class PropGuard:
                            f"journée prop {day.isoformat()} (week-end) : {allowed}, classe d'actif "
                            f"{cls or 'inconnue'}")
 
+    def minutes_before_weekend(self, now: Optional[datetime]) -> Optional[float]:
+        """Minutes avant le début du week-end prop (reset de vendredi 17:00 New York), None hors journée du vendredi."""
+        if now is None:
+            return None
+        cal = self.profile.trading_day_calendar()
+        if cal.day(now).weekday() != 4:
+            return None
+        return (cal.next_reset(now) - now).total_seconds() / 60.0
+
+    def weekend_holding_check(self, asset_class: str = "", now: Optional[datetime] = None) -> CheckResult:
+        """2026-09-27 : FOXX n'autorise que la crypto EN POSITION le week-end (`weekend_holding_allowed`). Aucune entrée
+        hors crypto dans les `weekend_no_entry_minutes_before` minutes qui précèdent le week-end : une position ouverte
+        maintenant devrait être refermée aussitôt (le bot ferme les positions hors crypto avant le reset du vendredi)."""
+        allowed = str(self.profile.raw.get("weekend_holding_allowed", "CRYPTO_ONLY") or "").strip().upper()
+        reste = self.minutes_before_weekend(now)
+        limite = float(self.profile.raw.get("weekend_no_entry_minutes_before", 60) or 0)
+        cls = str(asset_class or "").strip().lower()
+        if allowed != "CRYPTO_ONLY" or reste is None or cls == "crypto" or reste > limite:
+            return CheckResult("prop_weekend_holding", True, "hors fenêtre de fermeture du week-end")
+        return CheckResult("prop_weekend_holding", False,
+                           f"week-end dans {reste:.0f} min : positions hors crypto interdites le week-end (FOXX)")
+
     def activity_status(self, state: SystemState, now: Optional[datetime] = None) -> dict:
         """Activité minimale : nombre de jours de trading effectués et délai depuis la dernière entrée.
 
@@ -215,6 +237,7 @@ class PropGuard:
         else:
             out.append(CheckResult("prop_trade_idea_risk", True, "idée de trade non évaluable (symbole/sens absents)"))
         out.append(self.weekend_check(asset_class, now))
+        out.append(self.weekend_holding_check(asset_class, now))
         if symbol and side:
             out.append(self.hedge_check(state, symbol, side))
             out.append(self.reversal_check(state, symbol, side, now))

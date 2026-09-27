@@ -650,6 +650,18 @@ class Orchestrator:
                                        cap=round(cap, 2), total_profit=round(self.prop.consistency_total_profit(st), 2), ok=bool(ok))
                     if ok:
                         continue
+            # week-end (2026-09-27) : FOXX n'autorise que la crypto en position le week-end ; les positions du bot hors
+            # crypto sont fermées `weekend_close_minutes_before` minutes avant le reset de vendredi 17:00 New York
+            reste_we = self.prop.minutes_before_weekend(self.now_fn())
+            limite_we = float(self.prop.profile.raw.get("weekend_close_minutes_before", 15) or 0)
+            holding = str(self.prop.profile.raw.get("weekend_holding_allowed", "CRYPTO_ONLY") or "").upper()
+            if (holding == "CRYPTO_ONLY" and reste_we is not None and 0 <= reste_we <= limite_we
+                    and spec is not None and spec.asset_class != "crypto"):
+                ok = self.pm.close(int(ticket), "week-end FOXX")
+                self.journal.event("weekend_close", ticket=int(ticket), symbol=plan.symbol, minutes_avant_week_end=round(reste_we, 1),
+                                   profit=round(float(pos.profit), 2), ok=bool(ok))
+                if ok:
+                    continue
             # rollover (2026-09-24) : une paire exotique n'est pas portée à travers le reset 17:00 New York
             cfg_ro = self._rollover_cfg()
             if cfg_ro and self._is_exotic(spec):

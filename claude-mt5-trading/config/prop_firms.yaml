@@ -112,6 +112,10 @@ prop:
   # --- Sessions ---
   weekend_trading_allowed: CRYPTO_ONLY
   weekend_holding_allowed: CRYPTO_ONLY
+  # appliqué depuis le 2026-09-27 (3 positions hors crypto étaient restées ouvertes le week-end) : aucune entrée hors
+  # crypto dans l'heure qui précède le week-end, fermeture des positions hors crypto 15 min avant le reset du vendredi
+  weekend_no_entry_minutes_before: 60
+  weekend_close_minutes_before: 15
 
   # --- Paiements ---
   payout_rules: "1er paiement après 14 jours de trading puis tous les 7 jours ; fenêtre de demande 24 h ; partage 70/30 puis 80/20 puis 90/10 ; retrait max 15 % du solde initial par cycle"

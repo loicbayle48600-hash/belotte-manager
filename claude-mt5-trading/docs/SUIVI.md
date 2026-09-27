@@ -291,6 +291,12 @@ n'utilise PAS Fable (retiré de TIER_A le 2026-09-23) : le quota Fable est rése
   la distance du stop en prix (91,8 $) et jugeait « spread supérieur au stop » : 76 candidats BTC dans la nuit, aucun
   approuvé. Le dossier de l'IA donne désormais le coût en prix et en % du stop (`cout_entree`), sans `spread_points`.
 
+- **Positions hors crypto le week-end (27/09, corrigé)** : `weekend_holding_allowed: CRYPTO_ONLY` (FOXX) n'était
+  appliqué nulle part ; GBPAUD, NZDJPY et NETH25 sont restées ouvertes pendant la fermeture (risque d'écart à la
+  réouverture, violation FOXX sur compte financé). Désormais : aucune entrée hors crypto dans l'heure qui précède le
+  week-end (`19_prop_weekend_holding`), fermeture des positions hors crypto 15 min avant le reset du vendredi
+  17:00 New York (`weekend_close`). Les 3 positions actuelles seront gérées à la réouverture (SL en place).
+
 ## À FAIRE (lundi, avec Fable)
 
 - **Plus tard, à la demande de l'utilisateur (25/09 : « laisse pour le moment, pourquoi pas plus tard ») :** retirer
