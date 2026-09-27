@@ -51,7 +51,7 @@ SL_ATR = [1.0, 1.5, 2.0]
 RR = [1.5, 2.0, 2.5, 3.0]
 CLASSES = {"forex": ["EURUSD", "GBPUSD", "USDJPY", "AUDUSD"], "indices": ["US500", "USTEC", "DE40"],
            "metals": ["XAUUSD", "XAGUSD"], "crypto": ["BTCUSD", "ETHUSD", "SOLUSD"]}
-BARS = {"M15": 10000, "H1": 10000, "H4": 10000, "D1": 5000}
+BARS = {"M15": 5000, "H1": 5000, "H4": 5000, "D1": 3000}   # 2026-09-28 : 10 000 barres × 52 lectures bloquaient le terminal
 SESSIONS = ["ASIA", "LONDON", "NEWYORK", "OVERLAP_LDN_NY"]
 
 
@@ -200,6 +200,7 @@ def main(argv: Optional[list[str]] = None) -> int:  # pragma: no cover - process
     from ..core.journal import Journal
     from ..mt5.mock_adapter import make_broker
     from ..mt5.symbols import resolve_symbols
+    from .rates_cache import TerminalOccupe, load_rates
 
     ap = argparse.ArgumentParser(description="Optimiseur systématique d'agents")
     ap.add_argument("--workers", type=int, default=max(1, (os.cpu_count() or 4) - 4))
@@ -232,7 +233,13 @@ def main(argv: Optional[list[str]] = None) -> int:  # pragma: no cover - process
                              commission_per_lot=float(bt.get("commission_per_lot", 0.0)), slippage_points=int(bt.get("slippage_points", 3)),
                              point=ss.point, tick_value=ss.tick_value, tick_size=ss.tick_size)
         for tf, n in BARS.items():
-            df = broker.rates(reel, tf, n)
+            try:
+                df = load_rates(broker, reel, tf, n, s.data_dir / "cache" / "rates", pause_sec=2.0,
+                                state_file=s.state_dir / "system_state.json")
+            except TerminalOccupe as e:
+                journal.warn("optimiseur arrêté : terminal occupé", error=str(e))
+                print(f"arrêt : {e}")
+                return 2
             if df is not None and len(df):
                 data[(sym, tf)] = df
     journal.event("optimizer_start", symboles=sorted(specs), jeux_de_donnees=len(data), workers=args.workers)
