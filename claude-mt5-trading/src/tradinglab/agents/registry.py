@@ -335,8 +335,10 @@ def default_agents() -> list[AgentSpec]:  # noqa: C901 - registre déclaratif
           ("asia_indices_trend_pullback", "mtf_trend_pullback", INDICES_ASIE, tf("H1", "H4"), {"rsi_lo": 38, "rsi_hi": 62, "sl_atr": 1.3, "rr": 2.0}, TREND_REGIMES),
           ("asia_gold_range_mr_large", "bollinger_mr", ["XAUUSD"], tf("M15", "H1"), {"rsi_lo": 30, "rsi_hi": 70, "sl_atr": 1.6, "rr": 1.6}, RANGE_REGIMES),
           ("asia_gold_structure", "structure_bos", ["XAUUSD"], tf("H1", "H4"), {"sl_atr": 1.3, "rr": 2.2}, TREND_REGIMES + [Regime.UNCERTAIN.value])]
+    RA_SHADOW = {"asia_oceanie_trend"}   # PF 0,68 en backtest → SHADOW (décision utilisateur 2026-09-28)
     for i, (nm, st, mk, tfs, prm, rg) in enumerate(RA, 1):
         A.append(_a(f"R{i:02d}", "R", nm, st, mk, ["ASIA"], tfs, rg, prm, model_tier_role="technical_analysis",
+                    status=AgentStatus.SHADOW.value if nm in RA_SHADOW else AgentStatus.LIVE.value,
                     description="Session Asie (LIVE à la demande de l'utilisateur) : paires en yen, AUD/NZD, Nikkei, indices asiatiques, or"))
     # Chaque agent générateur possède SA PROPRE stratégie (clé = agent_id, module agents/strategies/*) ;
     # le screener générique historique reste en repli (base_strategy) tant que la stratégie propre n'existe pas.

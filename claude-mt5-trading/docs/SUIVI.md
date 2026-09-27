@@ -365,6 +365,8 @@ n'utilise PAS Fable (retiré de TIER_A le 2026-09-23) : le quota Fable est rése
   momentum d'ouverture de Tokyo, balayage de liquidité, cassure de l'ouverture du Nikkei, structure or). Stops ≥ 0,75
   ATR H1 par construction. Backtest informatif lancé ; perdants → SHADOW sur validation de l'utilisateur.
 
+- **R07 (tendance AUD/NZD en Asie) en SHADOW** (28/09, décision utilisateur) : PF 0,68 en backtest.
+
 ## À FAIRE (lundi, avec Fable)
 
 - **Plus tard, à la demande de l'utilisateur (25/09 : « laisse pour le moment, pourquoi pas plus tard ») :** retirer
