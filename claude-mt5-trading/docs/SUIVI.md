@@ -315,6 +315,13 @@ n'utilise PAS Fable (retiré de TIER_A le 2026-09-23) : le quota Fable est rése
   coût) ; score minimal 55 reconduit pour la journée du dimanche (retour à 65 à 17 h New York) ; consigne à l'arbitre
   IA : WAIT réservé à une confirmation précise et nommée, sinon APPROVE ou REJECT.
 
+- **Mini-trades crypto conservés (27/09, décision utilisateur)** : IC Markets plafonne XRPUSD à 1 000 lots (1 lot = 1 XRP,
+  ~1 540 $ de position) et SOLUSD à 100 lots → un trade XRP ne porte que 28 $ de risque sur 628 $ visés (constaté sur le
+  XRPUSD BUY P09 de 12 h 28), SOL ~250 $ au mieux ; seuls BTC et ETH portent le risque complet. Le contrôle 11b
+  « risque utile » reste désactivé (retour au 19/09) : l'utilisateur préfère garder ces trades (jours de trading FOXX).
+  Copieur Moneta arrêté : « Authorization failed » (identifiants COPY2 dans .env ou connexion manuelle du terminal, à
+  faire par l'utilisateur).
+
 ## À FAIRE (lundi, avec Fable)
 
 - **Plus tard, à la demande de l'utilisateur (25/09 : « laisse pour le moment, pourquoi pas plus tard ») :** retirer
