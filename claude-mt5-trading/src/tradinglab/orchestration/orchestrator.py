@@ -1190,6 +1190,42 @@ class Orchestrator:
         prio = {str(x) for x in ((getattr(getattr(self, "s", None), "learning", None) or {}).get("agents_prioritaires") or [])}
         return (c.agent_id in prio, c.setup_score)
 
+    def _apply_agent_proposals(self) -> int:
+        """Ajoute au registre les agents proposés par l'optimiseur (`state/agent_proposals.jsonl`, une spécification
+        JSON par ligne). Un identifiant déjà présent est ignoré. Registre : un seul écrivain, l'orchestrateur."""
+        import json as _json
+        import os as _os
+
+        from ..agents.registry import AgentSpec
+
+        f = self.s.state_dir / "agent_proposals.jsonl"
+        if not f.exists():
+            return 0
+        en_cours = f.with_suffix(".processing")
+        try:
+            _os.replace(f, en_cours)
+        except OSError:
+            return 0
+        n = 0
+        try:
+            for ligne in en_cours.read_text(encoding="utf-8").splitlines():
+                try:
+                    d = _json.loads(ligne)
+                    if d["agent_id"] in self.registry.agents:
+                        continue
+                    self.registry.add(AgentSpec(**d))
+                    self.journal.event("agent_proposal_applied", agent_id=d["agent_id"], name=d.get("name"),
+                                       status=d.get("status"), source="optimizer")
+                    n += 1
+                except (ValueError, KeyError, TypeError) as e:
+                    self.journal.warn("proposition d'agent illisible", error=f"{type(e).__name__}: {e}", ligne=ligne[:120])
+        finally:
+            try:
+                en_cours.unlink()
+            except OSError:
+                pass
+        return n
+
     def _apply_status_requests(self) -> int:
         """Applique les changements de statut demandés par le processus de recherche séparé (`state/agent_status_requests
         .jsonl`, une ligne JSON par demande). Le registre n'a qu'un seul écrivain : l'orchestrateur."""
@@ -1245,6 +1281,7 @@ class Orchestrator:
             # 2026-09-27 : les backtests tournent dans le processus séparé `research/worker.py` (plus de charge dans la
             # boucle de trading) ; il dépose ses changements de statut dans une file que l'orchestrateur applique ici
             self._apply_status_requests()
+            self._apply_agent_proposals()
         else:
             # faire avancer les agents non-LIVE dans le pipeline, à tour de rôle (voir `_research_queue`)
             for aid in self._research_queue(self.now_fn()):

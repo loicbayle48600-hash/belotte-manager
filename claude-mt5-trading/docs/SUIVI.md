@@ -367,6 +367,14 @@ n'utilise PAS Fable (retiré de TIER_A le 2026-09-23) : le quota Fable est rése
 
 - **R07 (tendance AUD/NZD en Asie) en SHADOW** (28/09, décision utilisateur) : PF 0,68 en backtest.
 
+- **Optimiseur systématique d'agents (28/09, feu vert utilisateur : « les meilleurs agents »)** :
+  `research/optimizer.py` — grille 12 stratégies × 4 unités de temps × 3 stops × 4 objectifs × 4 classes (2 304
+  configurations), chacune jugée sur 2 à 4 symboles à la fois, avec la gestion réelle du bot ; tri large (PF ≥ 1,2,
+  ≥ 40 trades, ≥ 0,10 R, DD ≤ 15 R) puis walk-forward anchoré 4 plis (robustesse ≥ 0,5, hors échantillon > 0).
+  Score = espérance rétrécie (n/(n+30)) × √n. Multiprocessing 20 cœurs, priorité normale (demande utilisateur).
+  Les retenus deviennent des propositions (`state/agent_proposals.jsonl`) que l'orchestrateur ajoute (famille X,
+  SHADOW par défaut, `--status LIVE` possible). GPU non utilisé : moteur barre par barre.
+
 ## À FAIRE (lundi, avec Fable)
 
 - **Plus tard, à la demande de l'utilisateur (25/09 : « laisse pour le moment, pourquoi pas plus tard ») :** retirer
