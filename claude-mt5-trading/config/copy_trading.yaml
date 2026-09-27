@@ -44,3 +44,6 @@ copy_trading:
     env_prefix: COPY2
     size_factor: 1.0
     enabled: true
+    # compte de CHALLENGE Moneta Funded (serveur MonetaFunded-Live, pas un compte démo) : réplication autorisée
+    # EXPLICITEMENT par l'utilisateur le 2026-09-27 (« oui ajoute »), y compris si le broker le déclare REAL/CONTEST
+    allow_real: true

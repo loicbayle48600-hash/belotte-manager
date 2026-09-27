@@ -322,6 +322,11 @@ n'utilise PAS Fable (retiré de TIER_A le 2026-09-23) : le quota Fable est rése
   Copieur Moneta arrêté : « Authorization failed » (identifiants COPY2 dans .env ou connexion manuelle du terminal, à
   faire par l'utilisateur).
 
+- **Suiveur Moneta « 10k change » (27/09)** : compte de challenge Moneta Funded ajouté par l'utilisateur (login et serveur
+  dans .env, à jour). `allow_real: true` ajouté sur sa demande explicite. Terminal `mt5-moneta-10k-change` = copie du
+  terminal IC : il ne connaît pas le serveur MonetaFunded-Live (« Authorization failed ») → l'utilisateur doit y ouvrir
+  le compte une fois (Fichier > Ouvrir un compte > Moneta Funded), puis relancer le copieur.
+
 ## À FAIRE (lundi, avec Fable)
 
 - **Plus tard, à la demande de l'utilisateur (25/09 : « laisse pour le moment, pourquoi pas plus tard ») :** retirer
