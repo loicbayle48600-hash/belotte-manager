@@ -58,7 +58,8 @@ def run_once(settings, broker, journal) -> list[str]:
     symbols = [r for r in resolve_symbols(voulus, broker.symbols()).values() if r]
     specs = {sym: broker.symbol_info(sym) for sym in symbols}
     specs = {k: v for k, v in specs.items() if v}
-    pipe = ResearchPipeline(reg, LearningStore(settings.data_dir / "learning.db"), settings.learning, settings.backtest,
+    pipe = ResearchPipeline(reg, LearningStore(settings.data_dir / "learning.db"), settings.learning,
+                            {**settings.backtest, "management": settings.profit_management},
                             lambda sym, tf, n: broker.rates(sym, tf, n), specs, settings.data_dir / "research", journal)
     cfg = settings.learning or {}
     faits = []

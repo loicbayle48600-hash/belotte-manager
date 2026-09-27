@@ -92,7 +92,8 @@ def main(argv: Optional[list[str]] = None) -> int:  # pragma: no cover - outil e
     symbols = [r for r in resolve_symbols(voulus_sym, broker.symbols()).values() if r]
     specs = {sym: broker.symbol_info(sym) for sym in symbols}
     specs = {k: v for k, v in specs.items() if v}
-    pipe = ResearchPipeline(reg, _NullStore(), s.learning, s.backtest, lambda sym, tf, n: broker.rates(sym, tf, n),
+    pipe = ResearchPipeline(reg, _NullStore(), s.learning, {**s.backtest, "management": s.profit_management},
+                            lambda sym, tf, n: broker.rates(sym, tf, n),
                             specs, s.data_dir / args.sortie, bars=args.barres)
     res = validate(pipe, agents)
     rapport = {"date": datetime.now(timezone.utc).isoformat(), "agents": res,

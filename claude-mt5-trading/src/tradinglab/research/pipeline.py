@@ -85,6 +85,10 @@ class ResearchPipeline:
         self.specs = symbol_specs
         self.dir = Path(research_dir)
         self.dir.mkdir(parents=True, exist_ok=True)
+        # 2026-09-27 (plan pro point 2) : le backtest reproduit la gestion du bot (break-even, partiels, suivi)
+        if bool(self.bt_cfg.get("use_position_management", True)) and self.bt_cfg.get("management"):
+            from ..backtest.engine import set_default_management
+            set_default_management(self.bt_cfg.get("management"))
         self.journal = journal
         self.entry_tf = entry_tf
         self.bars = bars

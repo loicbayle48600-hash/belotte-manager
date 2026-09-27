@@ -223,9 +223,34 @@ def _signal_is_valid(sig: Signal, entry: float) -> bool:
 # ---------------------------------------------------------------------------
 # Moteur
 # ---------------------------------------------------------------------------
+#: gestion de position appliquée par défaut à tous les backtests (2026-09-27, plan pro point 2) : le pipeline y branche
+#: `risk.profit_management` pour que le backtest reproduise ce que le bot fait vraiment (break-even, TP partiels,
+#: stop suiveur) au lieu d'une sortie SL / TP fixe. None = ancien comportement.
+DEFAULT_MANAGEMENT: dict | None = None
+
+
+def set_default_management(cfg: dict | None) -> None:
+    global DEFAULT_MANAGEMENT
+    DEFAULT_MANAGEMENT = dict(cfg) if cfg else None
+
+
+def _atr_causal(highs: np.ndarray, lows: np.ndarray, closes: np.ndarray, n: int = 14) -> np.ndarray:
+    """ATR de Wilder, causal (la valeur en i n'utilise que les barres <= i)."""
+    tr = np.empty(len(highs))
+    tr[0] = highs[0] - lows[0]
+    for i in range(1, len(highs)):
+        tr[i] = max(highs[i] - lows[i], abs(highs[i] - closes[i - 1]), abs(lows[i] - closes[i - 1]))
+    out = np.full(len(highs), np.nan)
+    if len(highs) >= n:
+        out[n - 1] = tr[:n].mean()
+        for i in range(n, len(highs)):
+            out[i] = (out[i - 1] * (n - 1) + tr[i]) / n
+    return out
+
+
 def run_backtest(df: pd.DataFrame, signal_fn: SignalFn, costs: BTCosts, params: dict | None = None,
                  risk_money: float = 100.0, max_bars_held: int | None = None, exit_fn: ExitFn | None = None,
-                 warmup: int = 200) -> BTResult:
+                 warmup: int = 200, management: dict | None = None) -> BTResult:
     """Exécute le backtest barre par barre (voir docstring du module pour les règles).
 
     ``exit_fn(df.iloc[:i+1], trade_en_cours)`` retournant True à la clôture de la barre i ferme la position
@@ -246,6 +271,10 @@ def run_backtest(df: pd.DataFrame, signal_fn: SignalFn, costs: BTCosts, params: 
     lows = df["low"].to_numpy(dtype=float)
     closes = df["close"].to_numpy(dtype=float)
     times = df["time"].tolist()
+    mgmt = management if management is not None else DEFAULT_MANAGEMENT
+    atr_arr = None
+    if mgmt:
+        atr_arr = df["atr14"].to_numpy(dtype=float) if "atr14" in df.columns else _atr_causal(highs, lows, closes)
 
     trades: list[BTTrade] = []
     equity: list[float] = []
@@ -261,8 +290,9 @@ def run_backtest(df: pd.DataFrame, signal_fn: SignalFn, costs: BTCosts, params: 
         p = pos
         entry = p["entry"]
         risk = p["risk"]
-        r = (exit_price - entry) / (entry - p["sl"])
         sign = p["side"].sign
+        # R sur le risque INITIAL (le stop peut avoir été remonté par la gestion) ; parts déjà encaissées comprises
+        r = p["realized"] + p["remaining"] * (sign * (exit_price - entry) / risk)
         # excursions : barres tenues avant la barre de sortie + prix de sortie
         fav = max(p["mfe"], sign * (exit_price - entry))
         adv = max(p["mae"], -sign * (exit_price - entry))
@@ -283,6 +313,34 @@ def run_backtest(df: pd.DataFrame, signal_fn: SignalFn, costs: BTCosts, params: 
         equity.append(cum_r)
         pos = None
 
+    def _manage(p: dict, i: int) -> None:
+        """Gestion du bot sur la barre i (déjà connue close) : TP partiels à 1,5 R / 2,5 R, break-even, stop suiveur.
+        Les niveaux se jugent sur la meilleure excursion (mfe) ; le stop ne recule jamais."""
+        sign = p["side"].sign
+        risk = p["risk"]
+        mfe_r = p["mfe"] / risk
+        tp1_r, tp1_p = float(mgmt.get("tp1_r", 1.5)), float(mgmt.get("tp1_close_percent", 30)) / 100.0
+        tp2_r, tp2_p = float(mgmt.get("tp2_r", 2.5)), float(mgmt.get("tp2_close_percent", 40)) / 100.0
+        if not p["tp1"] and mfe_r >= tp1_r:
+            p["realized"] += tp1_p * tp1_r
+            p["remaining"] -= tp1_p
+            p["tp1"] = True
+        if p["tp1"] and not p["tp2"] and mfe_r >= tp2_r:
+            p["realized"] += tp2_p * tp2_r
+            p["remaining"] -= tp2_p
+            p["tp2"] = True
+        nouveau = p["sl"]
+        if bool(mgmt.get("break_even_enabled", True)) and mfe_r >= float(mgmt.get("break_even_r", 1.0)):
+            be = p["entry"] + sign * float(mgmt.get("break_even_offset_r", 0.05)) * risk
+            nouveau = max(nouveau, be) if sign > 0 else min(nouveau, be)
+        if bool(mgmt.get("trailing_enabled", True)) and mfe_r >= float(mgmt.get("trailing_start_r", 2.0)) and atr_arr is not None:
+            atr_i = atr_arr[i]
+            if atr_i == atr_i and atr_i > 0:
+                meilleur = p["entry"] + sign * p["mfe"]
+                trail = meilleur - sign * float(mgmt.get("trailing_atr_multiplier", 1.5)) * atr_i
+                nouveau = max(nouveau, trail) if sign > 0 else min(nouveau, trail)
+        p["sl"] = float(nouveau)
+
     for i in range(n):
         # 1) exécution d'un signal en attente à l'open de la barre i
         if pending is not None:
@@ -293,7 +351,7 @@ def run_backtest(df: pd.DataFrame, signal_fn: SignalFn, costs: BTCosts, params: 
                     "side": pending.side, "entry": float(entry), "sl": float(pending.sl),
                     "tp": None if pending.tp is None else float(pending.tp), "entry_idx": i,
                     "entry_time": times[i], "risk": float(abs(entry - pending.sl)), "mae": 0.0, "mfe": 0.0,
-                    "note": pending.note,
+                    "note": pending.note, "realized": 0.0, "remaining": 1.0, "tp1": False, "tp2": False,
                 }
             else:
                 rejected += 1
@@ -318,6 +376,8 @@ def run_backtest(df: pd.DataFrame, signal_fn: SignalFn, costs: BTCosts, params: 
                 else:
                     pos["mfe"] = max(pos["mfe"], sign * ((highs[i] if sign > 0 else lows[i]) - pos["entry"]))
                     pos["mae"] = max(pos["mae"], -sign * ((lows[i] if sign > 0 else highs[i]) - pos["entry"]))
+                    if mgmt:
+                        _manage(pos, i)
                     bars_held = i - pos["entry_idx"] + 1
                     if i == n - 1:
                         _close(i, float(closes[i]), "end", times[i])

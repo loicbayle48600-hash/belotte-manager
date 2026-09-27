@@ -256,7 +256,8 @@ class Orchestrator:
     def _setup_research(self) -> None:
         specs = {sym: self.broker.symbol_info(sym) for sym in self.universe.values()}
         specs = {k: v for k, v in specs.items() if v}
-        self.research = ResearchPipeline(self.registry, self.learning, self.s.learning, self.s.backtest,
+        self.research = ResearchPipeline(self.registry, self.learning, self.s.learning,
+                                         {**self.s.backtest, "management": self.s.profit_management},
                                          lambda sym, tf, n: self.broker.rates(sym, tf, n), specs, self.s.data_dir / "research", self.journal)
 
     # ------------------------------------------------------------------ cycle

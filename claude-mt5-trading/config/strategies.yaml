@@ -44,6 +44,9 @@ entry_extension_filter:
   max_atr: 1.5
 
 backtest:
+  # 2026-09-27 : le backtest applique la gestion du bot (risk.profit_management : break-even, TP partiels, stop
+  # suiveur) au lieu d'une sortie SL / TP fixe — c'est ce que le bot fait vraiment
+  use_position_management: true
   # 2026-09-25 : chaque agent est testé sur 3 symboles de son marché (1 seul donnait 2 à 6 trades)
   symbols_per_agent: 3
   default_spread_points: 12

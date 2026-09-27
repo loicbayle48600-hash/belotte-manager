@@ -332,6 +332,24 @@ n'utilise PAS Fable (retiré de TIER_A le 2026-09-23) : le quota Fable est rése
   Moneta connecté le dimanche : NZDJPY et NETH25 du vendredi auraient été copiés lundi à un prix sans rapport.
   L'export du maître porte désormais `time_open`. Copieur demo 1 : verrou réparé (SystemError Windows sur PID mort).
 
+- **Améliorations validées par l'utilisateur (27/09 soir)** :
+  2. Le backtest reproduit la gestion du bot (`backtest/engine.py` : break-even, TP partiels 1,5 R / 2,5 R, stop
+     suiveur, R sur le risque initial) ; branché par le pipeline via `risk.profit_management`
+     (`backtest.use_position_management`). Test : un trade monté à +1,6 R puis revenu au stop vaut +0,49 R au lieu de −1 R.
+  3. Recherche dans un processus séparé (`research/worker.py`, composant `research` de start_all, priorité basse,
+     20 agents par passage toutes les 30 min) ; le registre n'a qu'un écrivain, l'orchestrateur applique les
+     demandes de statut (`state/agent_status_requests.jsonl`). `learning.research_external: true`.
+  4. Watchdog : tolérance de 15 min au démarrage pour les symboles sans tick (fin des 10 min de SAFE_MODE le week-end).
+  5. Terminal Moneta : copie du terminal IC, le compte maître reste dans sa liste de comptes enregistrés
+     (`config/accounts.dat`, binaire) — à retirer à la main dans MT5 (Navigateur > Comptes > Supprimer).
+  6. Rapport de 17 h : écarts maître / suiveur par compte (positions non portées, copies refusées et motifs).
+  7. Journal : `llm_skipped` une fois par (rôle, motif) et par 10 min (2 900 lignes/jour avant).
+  8. Revues IA par cycle 3 → 5 (`execution.max_llm_reviews_per_cycle`, jusqu'à 10 si besoin) ; quotas 60 → 100 Opus
+     et 150 → 300 worker par heure (mesuré ~200 appels/h avec 3 revues).
+  9. Stop minimal 0,75 ATR H1 hors crypto (`execution.min_sl_atr_ratio_by_class`), rejeu : +13 R sur la semaine ;
+     crypto inchangée (agents M5/M15 à stops de 1,5 ATR de leur unité de temps).
+  Reporté à la demande de l'utilisateur : garde de risque côté suiveur pour le challenge Moneta (point 1).
+
 ## À FAIRE (lundi, avec Fable)
 
 - **Plus tard, à la demande de l'utilisateur (25/09 : « laisse pour le moment, pourquoi pas plus tard ») :** retirer
