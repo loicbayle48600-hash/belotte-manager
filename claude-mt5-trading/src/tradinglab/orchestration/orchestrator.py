@@ -462,6 +462,15 @@ class Orchestrator:
             snap = self.snapshots[c.symbol]
             c.review["similar_situations"] = self.learning.similar_situations(c.symbol, c.regime.value, c.session, snap.regime.features.get("vol_pct"))
             det = self.review.deterministic(c, dd.setup_score_bonus)
+            # Pré-filtre de coût et d'ouverture (2026-09-27) : ce que le gate refuserait de toute façon (symbole en
+            # « clôture seulement », spread + commission au-delà du plafond du stop) ne passe plus par l'IA. Les
+            # candidats POL/LNK/DOT et les cryptos chères occupaient les 3 créneaux de revue à chaque cycle.
+            prefiltre = self._prefiltre_cout(c) if (entries_ok and c.symbol not in symboles_portes) else ""
+            if prefiltre:
+                c.verdict, c.review = Verdict.REJECT, det.to_dict()
+                c.review.update({"verdict": Verdict.REJECT.value, "prefiltre": prefiltre, "rationale": prefiltre})
+                reviewed.append(c)
+                continue
             # Un rejet déterministe (ou verdict de sécurité) n'est jamais soumis au LLM et ne consomme pas
             # un des N créneaux : `AdversarialReview.review` applique la même règle.
             deja_porte = c.symbol in symboles_portes
@@ -501,7 +510,8 @@ class Orchestrator:
         out["candidates"] = len(reviewed)
         for c in reviewed:
             # nature = verdict + raison d'une revue IA sautée (symbole déjà porté, hors délai, au-delà des N meilleurs)
-            nature = f"{c.verdict.value if c.verdict else ''}|{(c.review or {}).get('llm_skipped', '')}"
+            nature = (f"{c.verdict.value if c.verdict else ''}|{(c.review or {}).get('llm_skipped', '')}"
+                      f"|{(c.review or {}).get('prefiltre', '')}")
             self._journal_once("candidate", "cand:" + c.idempotency_key, nature, candidate=c.to_dict())
         # exécution (le gate a le dernier mot)
         entries = 0
@@ -1066,6 +1076,20 @@ class Orchestrator:
     NOTE_CRYPTO_WEEKEND = ("Crypto : marché ouvert 24 h/24, 7 j/7. Le week-end, le nom de session (ASIA, LONDON, "
                            "NEWYORK, OVERLAP_LDN_NY) désigne seulement la plage horaire UTC, pas l'ouverture d'une place "
                            "boursière : ce n'est pas une incohérence de données. La liquidité du week-end est plus faible.")
+
+    def _prefiltre_cout(self, c) -> str:
+        """Raison de refus déterministe identique à celle du gate (05 : symbole non ouvrable, 07b : coût > plafond),
+        appliquée AVANT la revue IA. Chaîne vide si le candidat peut être revu."""
+        spec = self.broker.symbol_info(c.symbol)
+        if spec is not None and not spec.trade_allowed:
+            return f"{c.symbol} non ouvrable chez le broker (clôture seulement) : refusé avant revue"
+        cout = self._cost_note(c)
+        if cout:
+            plafond = 100.0 * float(self.s.execution.get("max_spread_sl_ratio", 0.35))
+            total = float(cout["spread_pct_du_stop"]) + float(cout["commission_pct_du_stop"])
+            if total > plafond:
+                return f"coût d'entrée {total:.0f} % du stop > {plafond:.0f} % : refusé avant revue (même règle que le gate)"
+        return ""
 
     def _cost_note(self, c) -> Optional[dict]:
         """Coût d'entrée du candidat, en unités de PRIX et en % de la distance au stop (dossier de l'IA)."""

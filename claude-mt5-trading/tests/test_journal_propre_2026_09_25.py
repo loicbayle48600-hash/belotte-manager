@@ -187,3 +187,19 @@ def test_cout_en_prix_et_pourcentage_du_stop_dans_le_dossier_ia():
                            side=SimpleNamespace(value="BUY"), agent_id="P16", bar_time="t")
     rv._ask("bull_thesis", "x", cand)
     assert "cout_entree" in vus[0] and '"spread_points"' not in vus[0]
+
+
+def test_prefiltre_cout_et_symbole_ferme_avant_la_revue_ia():
+    """2026-09-27 : POL/LNK/DOT (clôture seulement) et les cryptos chères occupaient les créneaux de la revue IA."""
+    from tradinglab.orchestration.orchestrator import Orchestrator
+
+    o = Orchestrator.__new__(Orchestrator)
+    specs = {"POLUSD": SimpleNamespace(trade_allowed=False, point=0.0001, digits=4, asset_class="crypto"),
+             "BTCUSD": SimpleNamespace(trade_allowed=True, point=0.01, digits=2, asset_class="crypto"),
+             "KSMUSD": SimpleNamespace(trade_allowed=True, point=0.01, digits=2, asset_class="crypto")}
+    o.broker = SimpleNamespace(symbol_info=lambda s: specs[s])
+    o.prop = SimpleNamespace(commission_price=lambda sp, px: 0.0)
+    o.s = SimpleNamespace(execution={"max_spread_sl_ratio": 0.20})
+    assert "clôture seulement" in o._prefiltre_cout(SimpleNamespace(symbol="POLUSD", entry=0.117, sl=0.114, spread_points=56))
+    assert o._prefiltre_cout(SimpleNamespace(symbol="BTCUSD", entry=84000.0, sl=83900.0, spread_points=500)) == ""
+    assert "coût" in o._prefiltre_cout(SimpleNamespace(symbol="KSMUSD", entry=46.6, sl=45.9, spread_points=449))

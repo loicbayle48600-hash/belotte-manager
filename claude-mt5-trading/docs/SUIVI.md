@@ -302,6 +302,14 @@ n'utilise PAS Fable (retiré de TIER_A le 2026-09-23) : le quota Fable est rése
   `weekend_holding_allowed: ALL` ; fermeture d'avant week-end et blocage de la dernière heure conservés mais inactifs.
   Risque assumé : écart de prix à la réouverture (le stop s'exécute au premier prix disponible).
 
+- **Audit « des trades crypto dans la journée » (27/09)** : relevé chez IC Markets — DOTUSD, XLMUSD, LNKUSD, POLUSD en
+  « clôture seulement » (85 candidats en une matinée, jamais ouvrables) → retirés de l'univers ; spreads relatifs :
+  BTC 0,006 %, XRP 0,026 %, ETH 0,11 %, SOL 0,15 % (tradables), BNB/BCH/UNI/AVX 0,4-0,5 %, DATA 0,75 %, ADA 1,2 %,
+  LTC 1,6 %, XTZ 2,2 %, DOG 2,9 %, KSM 9,6 % (refusés par le coût sur des stops H1). Pré-filtre déterministe AVANT la
+  revue IA : symbole non ouvrable ou coût > plafond du stop → refusé sans consommer un créneau IA (même règle que le
+  gate). Dossier IA : `historique_note` sous 10 trades (44 refus citaient « sample_size=0 »). En attente de décision :
+  contrôle 07 (spread ≤ 0,15 ATR H1) qui refuse SOL à 0,185 ATR alors que 07b (coût / stop) est déjà satisfait.
+
 ## À FAIRE (lundi, avec Fable)
 
 - **Plus tard, à la demande de l'utilisateur (25/09 : « laisse pour le moment, pourquoi pas plus tard ») :** retirer

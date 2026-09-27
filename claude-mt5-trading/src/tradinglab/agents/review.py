@@ -129,6 +129,11 @@ class AdversarialReview:
         if cout:
             payload.pop("spread_points", None)
             payload["cout_entree"] = cout
+        # 2026-09-27 : 44 refus en une matinée citaient « sample_size=0 » pour des agents créés la veille
+        n_hist = int((payload.get("historical_stats") or {}).get("sample_size", 0) or 0)
+        if n_hist < 10:
+            payload["historique_note"] = (f"agent récent ({n_hist} trade(s)) : statistiques non significatives, ni "
+                                          "positives ni négatives ; juge le setup sur sa structure, pas sur l'historique")
         user = instruction + "\n\nCANDIDAT:\n" + json.dumps(payload, ensure_ascii=False, default=str)[:6000]
         resp = self.llm.complete(role, SYSTEM_COMMON, user, max_tokens=max_tokens, financial_importance=importance,
                                  cache_key=self._cache_key(c))

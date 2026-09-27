@@ -19,9 +19,10 @@ markets:
   energies: [XTIUSD, XBRUSD, XNGUSD]
   # 18 paires disponibles chez IC Markets (relevé 2026-09-20). Spreads relatifs de 0,02 %
   # (XRP) à 11 % (KSM) : max_spread_atr_ratio écarte les inexploitables.
+  # 2026-09-27 : DOTUSD, XLMUSD, LNKUSD, POLUSD retirés — « clôture seulement » chez IC Markets (aucune ouverture
+  # possible) ; ils produisaient 85 candidats en une matinée et occupaient les créneaux de la revue IA.
   crypto: [BTCUSD, ETHUSD, XRPUSD, SOLUSD, BNBUSD, BCHUSD, LTCUSD, ADAUSD,
-           DOGUSD, DOTUSD, XLMUSD, XTZUSD, UNIUSD, LNKUSD, AVXUSD, KSMUSD,
-           POLUSD, DATAUSD]
+           DOGUSD, XTZUSD, UNIUSD, AVXUSD, KSMUSD, DATAUSD]
 sessions:   # heures UTC
   ASIA:   {start: "00:00", end: "08:00"}
   LONDON: {start: "07:00", end: "16:00"}
