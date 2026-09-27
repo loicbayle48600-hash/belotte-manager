@@ -316,6 +316,28 @@ def default_agents() -> list[AgentSpec]:  # noqa: C901 - registre déclaratif
                         model_tier_role="technical_analysis",
                         status=AgentStatus.SHADOW.value if (ut, nom) in MT_SHADOW else AgentStatus.LIVE.value,
                         description=f"Crypto 7 j/7, {nom} en {ut.upper()} (LIVE à la demande de l'utilisateur)"))
+    # ---------------- R. SESSION ASIE (LIVE, décision utilisateur 2026-09-28 : « en Asie il n'y a pas beaucoup d'agents ») ----------------
+    # 8 agents forex/indices seulement étaient actifs en ASIA (00:00-08:00 UTC), la plupart attendant Londres. Marchés qui
+    # vivent en Asie : paires en yen, AUD/NZD, Nikkei, indices asiatiques, or. Stops larges : en M15 le stop vaut 1,6 ATR
+    # M15 (≈ 0,8 ATR H1, au-dessus du minimum 0,75 hors crypto), en H1 1,3 ATR H1.
+    JPY = ["USDJPY", "AUDJPY", "NZDJPY", "EURJPY", "GBPJPY", "CADJPY", "CHFJPY"]
+    OCEANIE = ["AUDUSD", "NZDUSD", "AUDNZD", "AUDCAD", "NZDCAD"]
+    INDICES_ASIE = ["JP225", "AUS200", "HK50", "CHINA50"]
+    RA = [("asia_jpy_range_mr", "bollinger_mr", JPY, tf("M15", "H1"), {"rsi_lo": 30, "rsi_hi": 70, "sl_atr": 1.6, "rr": 1.6}, RANGE_REGIMES),
+          ("asia_jpy_sr_rejection", "sr_rejection", JPY, tf("M15", "H1"), {"tol_atr": 0.3, "with_trend": True, "sl_atr": 1.6, "rr": 2.0}, TREND_REGIMES + RANGE_REGIMES),
+          ("asia_jpy_trend_pullback", "mtf_trend_pullback", JPY, tf("H1", "H4"), {"rsi_lo": 38, "rsi_hi": 62, "sl_atr": 1.3, "rr": 2.0}, TREND_REGIMES),
+          ("asia_tokyo_open_momentum", "atr_expansion", JPY, tf("M15", "H1"), {"atr_ratio": 1.3, "sl_atr": 1.6, "rr": 2.0}, BREAKOUT_REGIMES),
+          ("asia_jpy_failed_breakout", "failed_breakout", JPY, tf("M15", "H1"), {"sl_atr": 1.6, "rr": 2.0}, RANGE_REGIMES + [Regime.UNCERTAIN.value]),
+          ("asia_oceanie_range_mr", "bollinger_mr", OCEANIE, tf("M15", "H1"), {"rsi_lo": 30, "rsi_hi": 70, "sl_atr": 1.6, "rr": 1.6}, RANGE_REGIMES),
+          ("asia_oceanie_trend", "ema_trend", OCEANIE, tf("H1", "H4"), {"adx_min": 20, "sl_atr": 1.3, "rr": 2.0}, TREND_REGIMES),
+          ("asia_oceanie_liquidity_sweep", "liquidity_sweep", OCEANIE, tf("M15", "H1"), {"with_trend": True, "sl_atr": 1.6, "rr": 2.0}, ALL_REGIMES),
+          ("asia_nikkei_open_breakout", "session_breakout", ["JP225"], tf("M15", "H1"), {"session": "ASIA", "start": "00:00", "end": "01:00", "sl_atr": 1.6, "rr": 2.0}, BREAKOUT_REGIMES),
+          ("asia_indices_trend_pullback", "mtf_trend_pullback", INDICES_ASIE, tf("H1", "H4"), {"rsi_lo": 38, "rsi_hi": 62, "sl_atr": 1.3, "rr": 2.0}, TREND_REGIMES),
+          ("asia_gold_range_mr_large", "bollinger_mr", ["XAUUSD"], tf("M15", "H1"), {"rsi_lo": 30, "rsi_hi": 70, "sl_atr": 1.6, "rr": 1.6}, RANGE_REGIMES),
+          ("asia_gold_structure", "structure_bos", ["XAUUSD"], tf("H1", "H4"), {"sl_atr": 1.3, "rr": 2.2}, TREND_REGIMES + [Regime.UNCERTAIN.value])]
+    for i, (nm, st, mk, tfs, prm, rg) in enumerate(RA, 1):
+        A.append(_a(f"R{i:02d}", "R", nm, st, mk, ["ASIA"], tfs, rg, prm, model_tier_role="technical_analysis",
+                    description="Session Asie (LIVE à la demande de l'utilisateur) : paires en yen, AUD/NZD, Nikkei, indices asiatiques, or"))
     # Chaque agent générateur possède SA PROPRE stratégie (clé = agent_id, module agents/strategies/*) ;
     # le screener générique historique reste en repli (base_strategy) tant que la stratégie propre n'existe pas.
     for a in A:

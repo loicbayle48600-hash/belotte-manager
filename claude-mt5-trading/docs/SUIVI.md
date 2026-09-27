@@ -360,6 +360,11 @@ n'utilise PAS Fable (retiré de TIER_A le 2026-09-23) : le quota Fable est rése
   l'hiver) — les stops de GBPAUD (−2,2 R, −1 366 $) et NZDJPY (−1,21 R, −755 $) ont sauté dès 21:01 UTC, à
   l'ouverture réelle (écart du week-end). `forex_market_open` utilise le décalage serveur mesuré, sinon Europe/Athens.
 
+- **Famille R, session Asie (28/09, décision utilisateur, LIVE directement)** : 12 agents actifs 00:00-08:00 UTC sur les
+  paires en yen, AUD/NZD, JP225 / AUS200 / HK50 / CHINA50 et l'or (retour à la moyenne, rejet S/R, repli de tendance,
+  momentum d'ouverture de Tokyo, balayage de liquidité, cassure de l'ouverture du Nikkei, structure or). Stops ≥ 0,75
+  ATR H1 par construction. Backtest informatif lancé ; perdants → SHADOW sur validation de l'utilisateur.
+
 ## À FAIRE (lundi, avec Fable)
 
 - **Plus tard, à la demande de l'utilisateur (25/09 : « laisse pour le moment, pourquoi pas plus tard ») :** retirer
