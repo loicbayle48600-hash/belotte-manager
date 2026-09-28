@@ -1060,12 +1060,15 @@ class Orchestrator:
         deals = self.broker.history_deals(now - timedelta(days=30), now + timedelta(minutes=5))
         # après un redémarrage le cache mémoire est vide : le candidat persisté avec le plan prend le relais
         cand = self.candidates_cache.pop(str(plan.ticket), None) or (getattr(plan, "candidate", None) or None)
+        point, vpp = 0.0, 0.0
         try:
-            point = float(getattr(self.broker.symbol_info(plan.symbol), "point", 0.0) or 0.0)
+            sp = self.broker.symbol_info(plan.symbol)
+            point = float(getattr(sp, "point", 0.0) or 0.0)
+            vpp = (float(sp.tick_value) / float(sp.tick_size)) if (sp and getattr(sp, "tick_size", 0)) else 0.0
         except Exception:  # noqa: BLE001 - spec indisponible : la revue retombe sur le seuil en points
-            point = 0.0
+            point, vpp = 0.0, 0.0
         rec = build_trade_record(plan, deals, cand, now.isoformat(), session=(cand or {}).get("session", ""),
-                                 point=point)
+                                 point=point, value_per_price=vpp)
         tid = self.learning.record_trade(rec)
         if cand and cand.get("snapshot_id"):
             self.learning.set_snapshot_outcome(cand["snapshot_id"], rec.result_r, tid)
@@ -1081,8 +1084,10 @@ class Orchestrator:
         # P&L rattaché à l'idée de trade : sert la règle de cohérence (part du profit total par idée)
         st.close_trade_idea_position(plan.ticket, rec.pnl, now)
         review = self.post_trade.analyze(rec)
+        couts = {k: rec.features.get(k) for k in ("brut", "commission", "swap", "spread_cost") if rec.features.get(k) is not None}
         self.journal.event("post_trade_review", ticket=plan.ticket, symbol=plan.symbol, side=plan.side, agent_id=plan.agent_id,
-                           result_r=rec.result_r, pnl=rec.pnl, review=review.to_dict())
+                           result_r=rec.result_r, pnl=rec.pnl, volume=plan.initial_volume, entry=plan.entry,
+                           exit_reason=rec.exit_reason, review=review.to_dict(), **couts)
         if review.challenger_needed and self.research is not None:
             spec = self.registry.get(plan.agent_id)
             if spec and not any(a.parent_id == spec.agent_id and a.status == AgentStatus.RESEARCH.value for a in self.registry.agents.values()):

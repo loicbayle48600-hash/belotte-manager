@@ -420,6 +420,15 @@ n'utilise PAS Fable (retiré de TIER_A le 2026-09-23) : le quota Fable est rése
   **Verrou** (« si ça monte à 40 $, pas sous 35 $ ») : `protect_profit_lock_ratio: 0.14` — une fois la protection
   déclenchée, le stop se pose à 0,14 R (35 $ pour 250 $ risqués) et le suivi ne redescend jamais sous ce plancher
   (`_floor_level`) ; niveau trop près du prix pour le broker → stop au plus près accepté, en profit, sans attendre.
+  **Verrou logiciel** : si le stop broker n'a pas pu être posé au verrou (distance minimale) et que le prix repasse
+  sous 0,14 R, la position est fermée au marché (`profit_lock_exit`) ; le stop broker au plus près reste le filet.
+  **Bouton break-even** (« les positions qui ont un gros profit : le stop juste sous le prix dès qu'on clique ») : le
+  bouton verrouille le profit ACTUEL — stop au plus près du prix accepté par le broker — s'il est au-delà du break-even.
+  Constat USTEC 17 h 43 : bouton cliqué 30 s après l'entrée, à +5 points, stop posé au plus près, sorti à +8 $ sur le
+  bruit : le bouton est fait pour un profit déjà installé.
+- **Récap Telegram détaillé (28/09, demande utilisateur)** : à la clôture, brut (deals), commission (entrée + sortie),
+  swap, spread à l'entrée estimé (points × valeur du point × volume, compris dans le brut) et **net** — `close_costs`
+  dans `features`, champs `brut/commission/swap/spread_cost/volume/exit_reason` dans `post_trade_review`.
 - **Stop du suiveur élargi du surcroît de spread (28/09, décision utilisateur)** : SILVER chez les démos IC (spread 82
   points) contre XAGUSD chez le maître (11) — les quatre copies argent ont pris le stop à 61,807 sur un pic que le maître
   (stop 61,804, plus haut 61,776) n'a pas vu. Le maître exporte son spread ; à l'ouverture d'une copie, le stop du suiveur

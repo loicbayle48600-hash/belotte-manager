@@ -91,10 +91,21 @@ def format_event(ev: dict) -> str:
                     f"{ev.get('reason', '—')} à {_fmt_nombre(ev.get('r'))} R")
         if kind in ("position_closed", "post_trade_review"):
             rev = ev.get("review") or {}
-            return (f"{icone} <b>Position fermée</b> {heure} · <b>{ev.get('symbol') or rev.get('symbol') or '?'}</b>"
-                    f"{(' ' + str(ev.get('side'))) if ev.get('side') else ''}\n"
-                    f"agent {ev.get('agent_id', '?')}\n"
-                    f"résultat <b>{_fmt_nombre(ev.get('pnl', ev.get('profit', 0)))} $</b> "
+            txt = (f"{icone} <b>Position fermée</b> {heure} · <b>{ev.get('symbol') or rev.get('symbol') or '?'}</b>"
+                   f"{(' ' + str(ev.get('side'))) if ev.get('side') else ''}\n"
+                   f"agent {ev.get('agent_id', '?')}")
+            if ev.get("volume"):
+                txt += f" · {_fmt_nombre(ev.get('volume'))} lot"
+            if ev.get("exit_reason"):
+                txt += f" · sortie {ev.get('exit_reason')}"
+            # 2026-09-28, demande utilisateur : commission, spread et bénéfice NET sur chaque récap
+            if ev.get("brut") is not None or ev.get("commission") is not None:
+                txt += f"\nbrut {_fmt_nombre(ev.get('brut', 0))} $ · commission {_fmt_nombre(ev.get('commission', 0))} $"
+                if ev.get("swap"):
+                    txt += f" · swap {_fmt_nombre(ev.get('swap'))} $"
+                if ev.get("spread_cost") is not None:
+                    txt += f"\nspread à l'entrée ≈ {_fmt_nombre(ev.get('spread_cost'))} $ (compris dans le brut)"
+            return (txt + f"\nnet <b>{_fmt_nombre(ev.get('pnl', ev.get('profit', 0)))} $</b> "
                     f"({_fmt_nombre(ev.get('result_r', ev.get('r_multiple', 0)))} R)\n"
                     f"verdict {rev.get('verdict') or ev.get('verdict', '—')}")
         if kind == "position_managed":

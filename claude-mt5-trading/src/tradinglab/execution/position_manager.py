@@ -234,6 +234,23 @@ class PositionManager:
                 actions.append(f"profit protégé : +{cible} atteints, break-even et stop suiveur armés")
                 self.journal.event("profit_protection", ticket=pos.ticket, profit=round(profit, 2), r=round(r, 3),
                                    seuil_r=ratio, seuil_money=seuil)
+        # 3b. verrou de profit LOGICIEL (2026-09-28, « si ça monte à 40 $, pas sous 35 $ ») : quand le stop broker n'a
+        #     pas pu être posé au verrou (distance minimale du broker) et que le prix repasse sous le verrou, la position
+        #     est fermée au marché — le stop broker, posé au plus près, reste le filet en cas de trou entre deux cycles
+        lock = float(cfg.protect_profit_lock_ratio or 0.0)
+        if plan.trailing_forced and lock > 0 and plan.max_r >= max(lock, float(cfg.protect_profit_risk_ratio or 0.0)) and r < lock:
+            verrou = plan.entry + side.sign * lock * abs(plan.entry - plan.initial_sl)
+            stop_broker = pos.sl if pos.has_sl else plan.last_sl
+            if not stop_broker or not is_tighter_or_equal(side, stop_broker, verrou):
+                res = self.broker.close_position(pos.ticket, comment="verrou de profit")
+                self.journal.event("profit_lock_exit", ticket=pos.ticket, symbol=pos.symbol, r=round(r, 3), verrou_r=lock,
+                                   max_r=round(plan.max_r, 3), ok=bool(res.ok))
+                actions.append(f"verrou de profit : fermeture au marché à {r:.2f} R (verrou {lock} R)" if res.ok
+                               else f"verrou de profit : fermeture refusée ({getattr(res, 'comment', '')})")
+                if res.ok:
+                    plan.notes.append("close_command:profit_lock")
+                    self.store.save()
+                    return actions
         # 3. break-even (le drapeau break_even_done n'est posé qu'une fois le SL effectivement au-delà du BE :
         #    un BE refusé par le broker ou trop proche du prix est retenté au cycle suivant)
         new_sl: Optional[float] = None

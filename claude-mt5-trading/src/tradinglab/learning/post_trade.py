@@ -71,9 +71,19 @@ def close_deals_summary(deals: list[Deal], position_id: int) -> tuple[float, flo
     return pnl, vol, px, reason, max(d.time for d in outs).isoformat()
 
 
+def close_costs(deals: list[Deal], position_id: int) -> dict:
+    """Décomposition du résultat d'une position (2026-09-28, demande utilisateur : « sur le récap Telegram, le prix de
+    la commission, du spread et le bénéfice net ») : brut (deals OUT), commission (IN + OUT), swap."""
+    mine = [d for d in deals if d.position_id == position_id]
+    outs = [d for d in mine if d.entry in ("OUT", "OUT_BY")]
+    return {"brut": round(sum(d.profit for d in outs), 2),
+            "commission": round(sum(d.commission for d in mine), 2),
+            "swap": round(sum(d.swap for d in outs), 2)}
+
+
 def build_trade_record(plan: BotPositionPlan, deals: list[Deal], candidate: dict | None, closed_at: str,
                        session: str = "", news_context: str = "", macro_context: str = "", strict: bool = False,
-                       point: float = 0.0) -> TradeRecord:
+                       point: float = 0.0, value_per_price: float = 0.0) -> TradeRecord:
     """Construit le TradeRecord d'une position fermée à partir des deals OUT.
 
     Sans deal de sortie retrouvé (historique MT5 pas encore synchronisé, fenêtre d'historique dépassée…), le résultat
@@ -97,6 +107,12 @@ def build_trade_record(plan: BotPositionPlan, deals: list[Deal], candidate: dict
     if point and c.get("spread_points") and plan.entry and plan.initial_sl and abs(plan.entry - plan.initial_sl) > 0:
         # part du risque mangée par le spread à l'entrée : la même mesure que le contrôle 07b du gate
         feats["spread_sl_ratio"] = round(float(c["spread_points"]) * float(point) / abs(plan.entry - plan.initial_sl), 4)
+    # coûts en devise du compte (2026-09-28) : brut / commission / swap lus dans les deals ; spread à l'entrée estimé
+    # (points × valeur d'un point pour le volume initial) — le broker ne le facture pas séparément, il est dans le brut
+    if reason != "UNKNOWN":
+        feats.update(close_costs(deals, plan.ticket))
+        if point and value_per_price and c.get("spread_points"):
+            feats["spread_cost"] = round(float(c["spread_points"]) * float(point) * float(value_per_price) * float(plan.initial_volume), 2)
     # jamais de None persisté : une valeur inconnue (candidat absent après redémarrage, position adoptée) = clé absente
     feats = {k: v for k, v in feats.items() if v is not None}
     if reason == "UNKNOWN":
