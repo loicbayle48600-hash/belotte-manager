@@ -198,7 +198,11 @@ def plan_sync(master: dict, follower_positions: list, follower_equity: float, si
         # stop élargi du surcroît de spread du suiveur (mémorisé à l'ouverture, décision utilisateur 2026-09-28) : le
         # stop du maître est comparé APRÈS élargissement, du côté défavorable (au-dessus pour une vente)
         off = float(entries.get(mt, {}).get("spread_offset", 0.0) or 0.0)
-        if off and m_sl:
+        # revue 28/09 : l'élargissement ne vaut que tant que le stop maître est du côté PERDANT de l'entrée ; appliqué au
+        # break-even ou au verrou de profit, il remettait le stop du suiveur du côté perdant de SON entrée
+        sens = 1.0 if str(mp["side"]) == Side.BUY.value else -1.0
+        sl_perdant = bool(mp.get("price_open")) and float(mp["sl"] or 0.0) > 0 and sens * (float(mp["sl"]) - float(mp["price_open"])) < 0
+        if off and m_sl and sl_perdant:
             m_sl = m_sl + off if str(mp["side"]) == Side.SELL.value else m_sl - off
         # Prix du maître ramenés à la précision du SUIVEUR (2026-09-24) : Blue Guardian cote DE40 avec moins de
         # décimales qu'IC Markets ; le SL maître 25 595,14 devenait 25 595,1 chez le suiveur, l'écart ne se

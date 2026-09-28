@@ -433,6 +433,27 @@ n'utilise PAS Fable (retiré de TIER_A le 2026-09-23) : le quota Fable est rése
 - **Récap Telegram détaillé (28/09, demande utilisateur)** : à la clôture, brut (deals), commission (entrée + sortie),
   swap, spread à l'entrée estimé (points × valeur du point × volume, compris dans le brut) et **net** — `close_costs`
   dans `features`, champs `brut/commission/swap/spread_cost/volume/exit_reason` dans `post_trade_review`.
+- **Revue par trois agents (28/09 au soir) et décisions utilisateur (« tout sauf 5 »)**. Chiffres sur 8 jours (197 trades
+  live) : forex 113 trades −14 842 $ (−0,18 R/trade, commission ≈ 5 % du risque) contre crypto +0,19 R, indices +0,08 R,
+  métaux +0,08 R ; M15 120 trades −0,25 R/trade, H1 −0,01 ; famille C −10,6 R/44 ; 31 trades passés par +0,5 R puis
+  finis au stop plein (−20 796 $) ; 11 agents revus ≥ 15 fois par l'IA sans un APPROVE (B06 829/0, C05 1 121/1) ; 40
+  agents LIVE sans aucun candidat ; trades papier depuis 16 h 28 : 33 clos −20,4 R (famille C surtout).
+  Correctifs de code (bugs confirmés) : (A1) l'ombre oublie un signal exécuté en réel (`shadow.forget`, clé
+  d'idempotence dans `ShadowPosition`) ; (A2) papier seulement sur APPROVE déterministe ; (A3) copieur : élargissement
+  du spread seulement tant que le stop maître est du côté perdant (sinon le « break-even » du suiveur perdait) ; (A4)
+  verrou logiciel : fermeture refusée → temporisation 60 s → 15 min, journal à la 1re puis toutes les 5 ; (A5)
+  `_floor_level`/`_lock_r` lisent le réglage du régime courant ; (A6) fichiers de propositions/statuts inaccessibles →
+  avertissement au journal.
+  Décisions appliquées : (C1) C01, C06, D01, K02 SUSPENDED ; (C2) `llm_skip_never_approved_after: 30` — un agent revu
+  30 fois sans APPROVE (compteur `state.llm_review_stats` par version) garde le verdict déterministe et libère les
+  créneaux IA ; (C3) `forex_short_term_paper_only: true` — les signaux forex M1/M5/M15 vont en papier, jamais exécutés
+  (les agents mixtes gardent indices/métaux/crypto) ; (C4) `risk_per_trade_by_class: {forex: 0.025}` — risque forex à
+  moitié ; (C6) dégradation / suspension automatique sur `live+paper` ; (C7) K03–K12 et M02–M14 (0 candidat) en SHADOW
+  — les K dépendent du calendrier économique, signalé « dégradé » dans l'état : à vérifier ; (C8) N06, N12, CH157 à
+  proposer LIVE à 20 trades ; (C9) `forex_blocked_hours_utc: [9, 10, 13]` — appliqué à la demande de l'utilisateur
+  malgré l'échantillon court (recommandation : réévaluer dans 2 semaines). Refusé : (C5) une position par devise.
+  Statuts déposés dans `state/agent_status_requests.jsonl`, appliqués au premier cycle de recherche (30 min après
+  démarrage). Note : `llm_call` n'a ni agent ni symbole — à ajouter pour attribuer le coût IA (505 $ sur 8 jours).
 - **Stop du suiveur élargi du surcroît de spread (28/09, décision utilisateur)** : SILVER chez les démos IC (spread 82
   points) contre XAGUSD chez le maître (11) — les quatre copies argent ont pris le stop à 61,807 sur un pic que le maître
   (stop 61,804, plus haut 61,776) n'a pas vu. Le maître exporte son spread ; à l'ouverture d'une copie, le stop du suiveur

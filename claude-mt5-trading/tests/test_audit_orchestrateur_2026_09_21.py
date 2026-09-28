@@ -130,6 +130,9 @@ def _force_candidate(o, monkeypatch, c: TradeCandidate):
 
 
 def test_orchestrateur_transmet_le_risque_du_gate_a_l_executeur(settings, broker, monkeypatch):
+    # 28/09 : le forex M15 du courtier simulé passerait en papier et les heures forex sont bloquées ; ce test veut une exécution
+    settings.execution["forex_short_term_paper_only"] = False
+    settings.execution["forex_blocked_hours_utc"] = []
     o = _auto(make_orch(settings, broker))
     c, _ = make_candidate(broker)
     c.verdict = None

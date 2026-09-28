@@ -173,6 +173,7 @@ class SystemState:
     orchestrator_heartbeat: str = ""
     watchdog_heartbeat: str = ""
     last_cycle: dict = field(default_factory=dict)
+    llm_review_stats: dict = field(default_factory=dict)   # "agent@version" → {"revues", "approuves"} (2026-09-28)
     active_agents: list[str] = field(default_factory=list)
     top_setups: list[dict] = field(default_factory=list)
     regimes: dict[str, str] = field(default_factory=dict)

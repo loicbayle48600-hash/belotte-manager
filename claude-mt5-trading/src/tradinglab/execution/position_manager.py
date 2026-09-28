@@ -6,6 +6,7 @@ Règles absolues : NEVER_WIDEN_STOP, NEVER_REMOVE_STOP ; la fermeture est toujou
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from typing import Callable, Optional
 
 from ..core.journal import Journal
@@ -89,6 +90,7 @@ class PositionManager:
         self.journal = journal
         self.cfg = cfg
         self.magic = magic
+        self._lock_retry: dict[int, tuple] = {}     # ticket → (prochain essai, nombre d'essais) du verrou de profit
 
     # ---------- synchronisation ----------
     def sync(self) -> list[BotPositionPlan]:
@@ -240,20 +242,34 @@ class PositionManager:
         # 3b. verrou de profit LOGICIEL (2026-09-28, « si ça monte à 40 $, pas sous 35 $ ») : quand le stop broker n'a
         #     pas pu être posé au verrou (distance minimale du broker) et que le prix repasse sous le verrou, la position
         #     est fermée au marché — le stop broker, posé au plus près, reste le filet en cas de trou entre deux cycles
-        lock = self._lock_r(plan)
+        lock = self._lock_r(plan, cfg)
         if plan.trailing_forced and lock > 0 and plan.max_r >= max(lock, float(cfg.protect_profit_risk_ratio or 0.0)) and r < lock:
             verrou = plan.entry + side.sign * lock * abs(plan.entry - plan.initial_sl)
             stop_broker = pos.sl if pos.has_sl else plan.last_sl
             if not stop_broker or not is_tighter_or_equal(side, stop_broker, verrou):
-                res = self.broker.close_position(pos.ticket, comment="verrou de profit")
-                self.journal.event("profit_lock_exit", ticket=pos.ticket, symbol=pos.symbol, r=round(r, 3), verrou_r=lock,
-                                   max_r=round(plan.max_r, 3), ok=bool(res.ok))
-                actions.append(f"verrou de profit : fermeture au marché à {r:.2f} R (verrou {lock:.2f} R)" if res.ok
-                               else f"verrou de profit : fermeture refusée ({getattr(res, 'comment', '')})")
-                if res.ok:
-                    plan.notes.append("close_command:profit_lock")
-                    self.store.save()
-                    return actions
+                # fermeture refusée (marché fermé, requote…) : nouvel essai à 60 s, puis 120, 240… plafonné à 15 min,
+                # journal à la première fois puis toutes les 5 tentatives (revue 28/09 : sans cela, un événement toutes les 15 s)
+                maintenant = datetime.now(timezone.utc)
+                prochain, essais = self._lock_retry.get(pos.ticket, (None, 0))
+                if prochain is not None and maintenant < prochain:
+                    actions.append(f"verrou de profit : fermeture reportée (nouvel essai à {prochain.strftime('%H:%M:%S')} UTC)")
+                else:
+                    res = self.broker.close_position(pos.ticket, comment="verrou de profit")
+                    if res.ok:
+                        self._lock_retry.pop(pos.ticket, None)
+                        self.journal.event("profit_lock_exit", ticket=pos.ticket, symbol=pos.symbol, r=round(r, 3), verrou_r=round(lock, 3),
+                                           max_r=round(plan.max_r, 3), ok=True)
+                        actions.append(f"verrou de profit : fermeture au marché à {r:.2f} R (verrou {lock:.2f} R)")
+                        plan.notes.append("close_command:profit_lock")
+                        self.store.save()
+                        return actions
+                    essais += 1
+                    delai = min(900, 60 * 2 ** (essais - 1))
+                    self._lock_retry[pos.ticket] = (maintenant + timedelta(seconds=delai), essais)
+                    actions.append(f"verrou de profit : fermeture refusée ({getattr(res, 'comment', '')}), nouvel essai dans {delai} s")
+                    if essais == 1 or essais % 5 == 0:
+                        self.journal.warn("verrou de profit : fermeture refusée", ticket=pos.ticket, symbol=pos.symbol, essais=essais,
+                                          detail=str(getattr(res, "comment", ""))[:80], nouvel_essai_sec=delai)
         # 3. break-even (le drapeau break_even_done n'est posé qu'une fois le SL effectivement au-delà du BE :
         #    un BE refusé par le broker ou trop proche du prix est retenté au cycle suivant)
         new_sl: Optional[float] = None
@@ -272,7 +288,7 @@ class PositionManager:
             # le 2026-09-21 : TP1 +2,49 $ puis stop -3,78 $, net -1,29 $, structure jamais validée.
             # Avant TP1 l'exigence garde son sens : elle évite de se faire sortir sur du bruit.
             if plan.tp1_done or plan.trailing_forced or not cfg.break_even_requires_structure or ctx.structure_ok:
-                be = self._floor_level(plan, side, spec)
+                be = self._floor_level(plan, side, spec, cfg)
                 new_sl = be
                 be_pending = True
                 actions.append(f"break-even {be}")
@@ -288,7 +304,7 @@ class PositionManager:
                 if sw is not None:
                     # structure : sous le swing bas (BUY) / au-dessus du swing haut (SELL), on garde le plus protecteur mais pas au-delà du prix
                     trail = max(trail, sw - 0.1 * ctx.atr) if side is Side.BUY else min(trail, sw + 0.1 * ctx.atr)
-            be_floor = self._floor_level(plan, side, spec)
+            be_floor = self._floor_level(plan, side, spec, cfg)
             trail = max(trail, be_floor) if side is Side.BUY else min(trail, be_floor)
             plan.trailing_active = True
             if new_sl is None or (side is Side.BUY and trail > new_sl) or (side is Side.SELL and trail < new_sl):
@@ -311,7 +327,7 @@ class PositionManager:
                     proche = normalize_price(price - side.sign * (min_dist + spec.tick_size), spec)
                     if is_tighter_or_equal(side, proche, current) and side.sign * (proche - plan.entry) > 0 and abs(proche - current) >= spec.tick_size:
                         new_sl, too_close = proche, False
-                        actions.append(f"plancher {normalize_price(self._floor_level(plan, side, spec), spec)} trop proche : stop au plus près {proche}")
+                        actions.append(f"plancher {normalize_price(self._floor_level(plan, side, spec, cfg), spec)} trop proche : stop au plus près {proche}")
                 if too_close:
                     actions.append(f"SL {new_sl} trop proche du prix, ignoré")
                 elif abs(new_sl - current) >= spec.tick_size:
@@ -336,20 +352,22 @@ class PositionManager:
     #: commission ramenée en distance de prix (spec, prix) -> float ; prioritaire sur `commission_per_lot` (crypto)
     commission_price = None
 
-    def _floor_level(self, plan: BotPositionPlan, side: Side, spec: Optional[SymbolSpec]) -> float:
+    def _floor_level(self, plan: BotPositionPlan, side: Side, spec: Optional[SymbolSpec], cfg: Optional[PMConfig] = None) -> float:
         """Plancher du stop une fois le profit protégé : le break-even, ou plus haut, le verrou de profit
         (`protect_profit_lock_ratio` × risque initial) quand la protection a été déclenchée (`trailing_forced`)."""
         be = self._be_level(plan, side, spec)
-        lock = self._lock_r(plan)
+        lock = self._lock_r(plan, cfg)
         if not plan.trailing_forced or lock <= 0:
             return be
         verrou = plan.entry + side.sign * lock * abs(plan.entry - plan.initial_sl)
         return max(be, verrou) if side is Side.BUY else min(be, verrou)
 
-    def _lock_r(self, plan: BotPositionPlan) -> float:
-        """Verrou de profit en R : le plus haut du verrou fixe et de la fraction du meilleur profit atteint."""
-        fixe = float(self.cfg.protect_profit_lock_ratio or 0.0)
-        frac = float(self.cfg.protect_profit_lock_fraction or 0.0)
+    def _lock_r(self, plan: BotPositionPlan, cfg: Optional[PMConfig] = None) -> float:
+        """Verrou de profit en R : le plus haut du verrou fixe et de la fraction du meilleur profit atteint
+        (`cfg` = réglage du régime courant, sinon le réglage de base)."""
+        cfg = cfg or self.cfg
+        fixe = float(cfg.protect_profit_lock_ratio or 0.0)
+        frac = float(cfg.protect_profit_lock_fraction or 0.0)
         return max(fixe, frac * float(plan.max_r or 0.0))
 
     def _be_level(self, plan: BotPositionPlan, side: Side, spec: Optional[SymbolSpec]) -> float:

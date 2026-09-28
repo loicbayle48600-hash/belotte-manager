@@ -52,6 +52,7 @@ class GateContext:
     # contrôles neutralisés par la configuration (2026-09-25, décision utilisateur « reviens au 19 septembre ») :
     # toujours évalués et journalisés, mais ils ne refusent plus rien
     disabled_checks: tuple = ()
+    risk_by_class: dict = field(default_factory=dict)   # classe → risque par trade (%) plafonné (2026-09-28 : forex 0,025)
     required_setup_score: float = 65.0
     min_sl_atr_ratio: float = 0.25
     max_sl_atr_ratio: float = 4.0
@@ -196,6 +197,11 @@ class ExecutionGate:
             px = (ctx.tick.ask if c.side is Side.BUY else ctx.tick.bid) if ctx.tick else c.entry
             spec_eff = ctx.spec
             risk_pct = dd.risk_percent
+            # 2026-09-28, décision utilisateur : le forex (−14,8 k$ sur 8 jours, coût 5 % du risque) tourne à la moitié du
+            # risque des autres classes tant que son espérance reste négative
+            classe = getattr(ctx.spec, "asset_class", "") if ctx.spec else ""
+            if classe and ctx.risk_by_class and classe in ctx.risk_by_class:
+                risk_pct = min(risk_pct, float(ctx.risk_by_class[classe]))
             # 19. plafond de lots FOXX par classe d'actifs (positions déjà ouvertes sur la même idée comprises) :
             # le volume est raboté au reste disponible, jamais dépassé ; plus de reste → refus
             cap_lots = self.prop.max_lots(ctx.spec.asset_class)

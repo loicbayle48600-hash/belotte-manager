@@ -436,7 +436,8 @@ class DegradationManager:
         for a in list(self.registry.agents.values()):
             if not a.generates_trades or a.status not in (AgentStatus.LIVE.value, AgentStatus.DEGRADED.value):
                 continue
-            st = self.store.agent_stats(a.agent_id, windows=tuple(self.cfg.get("windows", [20, 30, 50])),
+            st = self.store.agent_stats(a.agent_id, mode=str(self.cfg.get("trades_mode", "live")),   # 2026-09-28 : live+paper
+                                        windows=tuple(self.cfg.get("windows", [20, 30, 50])),
                                         min_history=int(self.cfg.get("min_history", 60)),
                                         pf_drop_ratio=float(self.cfg.get("pf_drop_ratio", 0.6)),
                                         expectancy_drop_r=float(self.cfg.get("expectancy_drop_r", 0.15)))

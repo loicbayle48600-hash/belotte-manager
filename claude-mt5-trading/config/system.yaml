@@ -62,6 +62,16 @@ execution:
   min_sl_atr_ratio_by_class: {forex: 0.75, indices: 0.75, metals: 0.75, energies: 0.75}
   # 2026-09-27, accord utilisateur : revues IA par cycle 3 → 5 (« monte à 10 si besoin »). En parallèle, bornées à 25 s.
   max_llm_reviews_per_cycle: 5
+  # 2026-09-28 au soir, décisions utilisateur après revue par agents :
+  # - un agent revu par l'IA au moins N fois sans jamais un APPROVE (B06 : 829 revues, 0 ; C05 : 1 121, 1) cesse d'être
+  #   soumis à l'IA (verdict déterministe seul) — il libère les créneaux de revue ; compteur par version d'agent
+  llm_skip_never_approved_after: 30
+  # - le forex en M1/M5/M15 perd en réel (120 trades, −0,25 R/trade ; l'optimiseur ne retient rien en M15) : ses signaux
+  #   sont suivis en papier seulement, jamais exécutés ; H1/H4 et les autres classes continuent
+  forex_short_term_paper_only: true
+  # - heures UTC interdites aux entrées forex (−21 R concentrés sur 09–11 h et 13–14 h UTC en 8 jours ; échantillon court,
+  #   à réévaluer) : refus avant revue IA
+  forex_blocked_hours_utc: [9, 10, 13]
   max_sl_atr_ratio: 4.0
   min_rr_required: 1.5
   required_setup_score: 65       # score minimal pour candidat sérieux (0-100)

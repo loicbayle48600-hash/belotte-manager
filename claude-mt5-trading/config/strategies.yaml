@@ -29,6 +29,10 @@ learning:
   min_expectancy_r: 0.10
   max_drawdown_r: 15.0
   degradation:
+    # 2026-09-28 au soir (décision utilisateur) : la dégradation / suspension automatique juge un agent LIVE sur ses trades
+    # réels ET ses trades papier (signaux non pris faute de capacité), pour atteindre les 40 trades plus vite. Le papier
+    # ignore glissement et spread réel : les seuils restent conservateurs. "live" pour revenir à l'ancien comportement.
+    trades_mode: live+paper
     windows: [20, 30, 50]
     min_history: 60
     pf_drop_ratio: 0.6          # PF récent < 60 % du PF long terme → dégradation

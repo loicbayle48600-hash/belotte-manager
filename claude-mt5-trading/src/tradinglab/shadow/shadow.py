@@ -33,6 +33,7 @@ class ShadowPosition:
     bar_time: str = ""
     mode: str = "shadow"       # "shadow" (agents SHADOW/CANDIDATE) ou "paper" (signal d'un agent LIVE non exécuté, 2026-09-28)
     reason: str = ""           # mode "paper" : pourquoi le signal n'a pas été exécuté (verrou, plafond, créneaux…)
+    key: str = ""              # clé d'idempotence du candidat : retirée si le même signal part finalement en réel
 
 
 class ShadowTrader:
@@ -86,13 +87,24 @@ class ShadowTrader:
             p = ShadowPosition(id=f"sh_{c.id}", agent_id=c.agent_id, symbol=c.symbol, side=c.side.value, entry=c.entry, sl=c.sl,
                                tp=c.tp_plan[-1] if c.tp_plan else c.entry + c.side.sign * 2.5 * c.sl_distance,
                                opened_at=now.isoformat(), regime=c.regime.value, session=c.session, setup_score=c.setup_score, bar_time=c.bar_time,
-                               mode=mode, reason=reason)
+                               mode=mode, reason=reason, key=c.idempotency_key)
             self.positions[p.id] = p
             self.executed[c.idempotency_key] = None
             out.append(p)
         if out:
             self._save()
         return out
+
+    def forget(self, key: str) -> int:
+        """Retire les positions d'ombre nées de ce signal (2026-09-28 : un signal mis en papier au cycle N — « au-delà des
+        revues IA », « plafond d'entrées » — peut être exécuté en réel au cycle N+1 sur la même barre ; sans ceci il
+        comptait deux fois, papier et live)."""
+        morts = [pid for pid, p in self.positions.items() if p.key == key]
+        for pid in morts:
+            del self.positions[pid]
+        if morts:
+            self._save()
+        return len(morts)
 
     def update(self, snapshots: dict[str, MarketSnapshot], now: Optional[datetime] = None, max_hours: float = 72.0) -> list[TradeRecord]:
         """Vérifie SL/TP sur les barres M5 récentes (high/low), SL prioritaire. Enregistre les trades fermés en mode 'shadow'.

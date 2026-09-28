@@ -504,6 +504,16 @@ class Orchestrator:
             # Pré-filtre de coût et d'ouverture (2026-09-27) : ce que le gate refuserait de toute façon (symbole en
             # « clôture seulement », spread + commission au-delà du plafond du stop) ne passe plus par l'IA. Les
             # candidats POL/LNK/DOT et les cryptos chères occupaient les 3 créneaux de revue à chaque cycle.
+            if self._forex_court_terme(c):
+                # 2026-09-28, décision utilisateur : le forex en M15/M5 perd en réel (120 trades, −0,25 R/trade) alors que
+                # H1/H4 et les autres classes tiennent — ses signaux sont suivis en papier seulement, jamais exécutés
+                c.verdict, c.review = det.verdict, det.to_dict()
+                c.review["llm_skipped"] = "forex court terme : papier seulement (décision utilisateur 28/09)"
+                if det.verdict is Verdict.APPROVE:
+                    papier.append((c, "forex court terme : papier seulement"))
+                    c.verdict, c.review["verdict"] = Verdict.WAIT, Verdict.WAIT.value
+                reviewed.append(c)
+                continue
             prefiltre = self._prefiltre_cout(c) if (entries_ok and c.symbol not in symboles_portes) else ""
             if prefiltre:
                 c.verdict, c.review = Verdict.REJECT, det.to_dict()
@@ -513,26 +523,29 @@ class Orchestrator:
             # Un rejet déterministe (ou verdict de sécurité) n'est jamais soumis au LLM et ne consomme pas
             # un des N créneaux : `AdversarialReview.review` applique la même règle.
             deja_porte = c.symbol in symboles_portes
+            jamais = self._jamais_approuve(c)
             llm_worthy = (self.review.llm is not None and entries_ok and det.verdict is not Verdict.REJECT
-                          and not det.hard and not deja_porte)
+                          and not det.hard and not deja_porte and not jamais)
             if llm_worthy and len(llm_batch) < self._max_llm_reviews():
                 llm_batch.append(c)
             else:
                 # verdict déterministe seul : aucun appel LLM quand le gate refusera de toute façon (mode/verrous/
                 # symbole déjà porté) ou au-delà des N meilleurs candidats
                 c.verdict, c.review = det.verdict, det.to_dict()
-                if det.verdict is not Verdict.REJECT and not getattr(det, "hard", False):
+                if det.verdict is Verdict.APPROVE:      # revue 28/09 : un WAIT n'aurait jamais été exécuté, il ne va pas en papier
                     if not entries_ok:
                         papier.append((c, f"entrées verrouillées : {entries_reason}"))
                     elif deja_porte:
                         papier.append((c, f"position déjà ouverte sur {c.symbol}"))
                     elif llm_worthy:
                         papier.append((c, f"au-delà des {self._max_llm_reviews()} revues IA du cycle"))
-                if self.review.llm is not None and (llm_worthy or not entries_ok or deja_porte):
+                if self.review.llm is not None and (llm_worthy or not entries_ok or deja_porte or jamais):
                     if not entries_ok:
                         c.review["llm_skipped"] = entries_reason
                     elif deja_porte:
                         c.review["llm_skipped"] = f"position déjà ouverte sur {c.symbol} (1 par symbole)"
+                    elif jamais:
+                        c.review["llm_skipped"] = f"agent jamais approuvé par l'IA ({self._revues_ia(c)['revues']} revues) : verdict déterministe seul"
                     else:
                         c.review["llm_skipped"] = f"au-delà des {self._max_llm_reviews()} meilleurs candidats"
                         # 2026-09-26 (décision utilisateur) : sans l'avis de l'IA, pas d'entrée. Au-delà des N créneaux,
@@ -545,6 +558,15 @@ class Orchestrator:
             # Les N revues LLM sont indépendantes : en parallèle. Mesuré le 2026-09-21 en séquentiel :
             # 4 appels × ~9 s × 3 candidats = cycle de 100 s, gestion des positions figée d'autant (boucle à 15 s).
             self._review_with_deadline(llm_batch, dd.setup_score_bonus)
+            # compteur revues / approbations IA par agent et version (2026-09-28) : un agent revu N fois sans jamais un
+            # APPROVE (B06 : 829 revues, 0 ; C05 : 1 121, 1) cesse d'occuper les créneaux IA
+            for c in llm_batch:
+                if (c.review or {}).get("llm_skipped"):
+                    continue
+                e = self._revues_ia(c)
+                e["revues"] += 1
+                if c.verdict is Verdict.APPROVE:
+                    e["approuves"] += 1
             # Seul un appel LLM justifie de re-persister l'état : on rafraîchit le heartbeat (figé au début
             # du cycle) pour que le watchdog ne déclare pas l'orchestrateur mort.
             st.orchestrator_heartbeat = self.now_fn().isoformat()
@@ -601,6 +623,7 @@ class Orchestrator:
                                ticket=outcome.position.ticket if outcome.position else None)
             if outcome.executed and outcome.position:
                 entries += 1
+                self.shadow.forget(c.idempotency_key)      # jamais compté deux fois (papier au cycle précédent + live)
                 cd = c.to_dict()
                 # version du code, coût d'entrée et glissement mesurés (plan pro du 2026-09-25, points 1 et 5)
                 fill = float(getattr(outcome.position, "price_open", 0.0) or 0.0)
@@ -643,7 +666,7 @@ class Orchestrator:
         bot_pos = list(st.bot_positions.values())
         ex = self.s.execution
         max_sp = max_spread_points_for(spec.asset_class if spec else "", ex.get("max_spread_points", {}))
-        ctx = GateContext(candidate=c, state=st, account=self.broker.account_info(), spec=spec, tick=tick,
+        ctx = GateContext(risk_by_class=dict((self.s.risk or {}).get("risk_per_trade_by_class") or {}), candidate=c, state=st, account=self.broker.account_info(), spec=spec, tick=tick,
                           atr=snap.atr_h1 if snap else 0.0, data_quality=snap.data_quality if snap else "NO_DATA",
                           market_open=forex_market_open(now) if (spec and spec.asset_class == "forex") else True,
                           news_check=nc, correlations=corr, now=now, watchdog_alive=wd_alive,
@@ -1215,12 +1238,40 @@ class Orchestrator:
         cls = str(getattr(spec, "asset_class", "") or "").lower()
         return float(par_classe.get(cls, base))
 
+    def _revues_ia(self, c) -> dict:
+        """Compteur persistant (état) des revues IA et des approbations d'un agent, par version."""
+        cle = f"{c.agent_id}@{getattr(c, 'agent_version', '') or ''}"
+        return self.state.llm_review_stats.setdefault(cle, {"revues": 0, "approuves": 0})
+
+    def _jamais_approuve(self, c) -> bool:
+        """Vrai quand l'agent a été revu au moins `llm_skip_never_approved_after` fois sans jamais un APPROVE (2026-09-28,
+        décision utilisateur) : ses candidats gardent le verdict déterministe et libèrent les créneaux IA."""
+        n = int(self.s.execution.get("llm_skip_never_approved_after", 0) or 0)
+        if n <= 0:
+            return False
+        e = self.state.llm_review_stats.get(f"{c.agent_id}@{getattr(c, 'agent_version', '') or ''}")
+        return bool(e) and int(e.get("revues", 0)) >= n and int(e.get("approuves", 0)) == 0
+
+    def _forex_court_terme(self, c) -> bool:
+        """Candidat forex dont l'unité de temps d'entrée est M1/M5/M15 (2026-09-28 : papier seulement)."""
+        if not bool(self.s.execution.get("forex_short_term_paper_only", False)):
+            return False
+        spec = self.broker.symbol_info(c.symbol)
+        if spec is None or getattr(spec, "asset_class", "") != "forex":
+            return False
+        tfs = list(getattr(c, "timeframes", None) or [])
+        return bool(tfs) and str(tfs[0]).upper() in ("M1", "M5", "M15")
+
     def _prefiltre_cout(self, c) -> str:
         """Raison de refus déterministe identique à celle du gate (05 : symbole non ouvrable, 07b : coût > plafond),
         appliquée AVANT la revue IA. Chaîne vide si le candidat peut être revu."""
         spec = self.broker.symbol_info(c.symbol)
         if spec is not None and not spec.trade_allowed:
             return f"{c.symbol} non ouvrable chez le broker (clôture seulement) : refusé avant revue"
+        # 2026-09-28, décision utilisateur : heures UTC interdites aux entrées forex (−21 R concentrés sur 09–11 h et 13–14 h)
+        heures = [int(h) for h in (self.s.execution.get("forex_blocked_hours_utc") or [])]
+        if heures and spec is not None and getattr(spec, "asset_class", "") == "forex" and self.now_fn().hour in heures:
+            return f"forex : entrée interdite à {self.now_fn().hour:02d} h UTC (décision utilisateur 28/09) : refusé avant revue"
         cout = self._cost_note(c)
         if cout:
             plafond = 100.0 * float(self.s.execution.get("max_spread_sl_ratio", 0.35))
@@ -1282,7 +1333,8 @@ class Orchestrator:
         en_cours = f.with_suffix(".processing")
         try:
             _os.replace(f, en_cours)
-        except OSError:
+        except OSError as e:
+            self.journal.warn("propositions d'agents : fichier inaccessible", error=f"{type(e).__name__}: {e}")
             return 0
         n = 0
         try:
@@ -1316,7 +1368,8 @@ class Orchestrator:
         en_cours = f.with_suffix(".processing")
         try:
             _os.replace(f, en_cours)
-        except OSError:
+        except OSError as e:
+            self.journal.warn("demandes de statut : fichier inaccessible", error=f"{type(e).__name__}: {e}")
             return 0
         n = 0
         try:
