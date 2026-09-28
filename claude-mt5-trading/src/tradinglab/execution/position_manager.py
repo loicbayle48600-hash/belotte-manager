@@ -375,10 +375,10 @@ class PositionManager:
         return done
 
     def move_to_break_even(self, ticket: int, spec: Optional[SymbolSpec]) -> bool:
-        """Bouton « break-even » (panneau / CLI). 2026-09-28, demande utilisateur : le stop est placé juste au-dessus de
-        l'entrée, EN PROFIT (entrée + 0,05 R + commission ; si le prix est trop près de ce niveau pour le broker, au plus
-        près du prix que le broker accepte, tant que cela reste en profit), et le stop suiveur est armé dès maintenant
-        (`trailing_forced`) sans attendre +1,05 R : le trade est protégé en positif et suit le prix."""
+        """Bouton « break-even » (panneau / CLI). 2026-09-28, demandes utilisateur : le stop verrouille le profit ACTUEL —
+        juste sous le prix (achat) / juste au-dessus (vente), au plus près que le broker accepte — à condition d'être
+        au-delà du break-even (entrée + 0,05 R + commission), et le stop suiveur est armé dès maintenant
+        (`trailing_forced`) sans attendre +1,05 R. Pas encore en profit net : refus propre, rien ne bouge."""
         plan = self.store.state.bot_positions.get(str(ticket))
         pos = self.broker.position(ticket)
         if not plan or not pos or spec is None:
@@ -394,11 +394,14 @@ class PositionManager:
         # recule au niveau le plus proche accepté par le broker (+ 1 tick de marge), s'il reste au-dessus de l'entrée
         marge = max(float(spec.min_stop_distance), float(spec.tick_size)) + float(spec.tick_size)
         limite = normalize_price(price - side.sign * marge, spec)
-        if side.sign * (be - limite) > 0:
-            if side.sign * (limite - plan.entry) <= 0:
-                self.journal.warn("break-even impossible : le prix n'est pas encore en profit", ticket=ticket, sl=be, price=price)
-                return False
-            be = limite
+        # 2026-09-28 (demande utilisateur, « les positions qui ont un gros profit : le stop juste en dessous du prix dès
+        # qu'on clique ») : le bouton verrouille le profit ACTUEL — stop au plus près du prix que le broker accepte —
+        # pourvu que ce niveau soit au-delà du break-even (entrée + commission) ; sinon le trade n'est pas encore en
+        # profit net et rien ne bouge
+        if side.sign * (limite - be) < 0:
+            self.journal.warn("break-even impossible : le prix n'est pas encore en profit", ticket=ticket, sl=be, price=price)
+            return False
+        be = limite
         if not is_tighter_or_equal(side, be, pos.sl):
             # le stop est déjà au-delà : on n'élargit jamais, mais le suivi est armé quand même
             plan.trailing_forced, plan.trailing_active = True, True

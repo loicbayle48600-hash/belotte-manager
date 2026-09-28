@@ -39,6 +39,9 @@ def test_stop_en_profit_et_suivi_arme(broker, tmp_path):
     assert pm.move_to_break_even(pos.ticket, spec)
     sl = broker.position(pos.ticket).sl
     assert sl > pos.price_open and plan.break_even_done and plan.trailing_forced and plan.trailing_active
+    # « juste en dessous du prix » : au plus près que le broker accepte (distance minimale + 1 tick)
+    marge = max(spec.min_stop_distance, spec.tick_size) + spec.tick_size
+    assert abs(sl - (broker.tick("EURUSD").bid - marge)) < 2 * spec.tick_size
     # le prix monte : le suivi agit sans attendre +1,05 R et ne descend jamais sous le break-even
     broker.set_price("EURUSD", pos.price_open + 0.9 * dist)
     acts = pm.manage(plan, broker.position(pos.ticket), spec, MarketContext(atr=0.0004, structure_ok=True))
@@ -53,11 +56,15 @@ def test_prix_trop_pres_du_break_even_stop_au_plus_pres_mais_en_profit(broker, t
     spec = broker.symbol_info("EURUSD")
     dist = pos.price_open - pos.sl
     marge = max(spec.min_stop_distance, spec.tick_size)
-    # juste assez en profit pour qu'un stop tienne devant le prix, mais le BE normal (+0,05 R) est trop près du prix
-    broker.set_price("EURUSD", pos.price_open + max(0.05 * dist, marge) + 0.5 * marge)
+    # profit net à peine au-dessus du break-even : le stop se pose au plus près du prix, au-dessus du BE
+    broker.set_price("EURUSD", pos.price_open + 0.05 * dist + 1.5 * marge)
     assert pm.move_to_break_even(pos.ticket, spec)
     sl = broker.position(pos.ticket).sl
-    assert pos.price_open < sl < pos.price_open + 0.05 * dist + 1e-9
+    assert pos.price_open + 0.05 * dist - 1e-9 <= sl < broker.tick("EURUSD").bid
+    # sous le break-even net : refus, rien ne bouge
+    pos2, plan2 = _buy(broker, store)
+    broker.set_price("EURUSD", pos2.price_open + 0.02 * dist)
+    assert pm.move_to_break_even(pos2.ticket, spec) is False and broker.position(pos2.ticket).sl == plan2.initial_sl
 
 
 def test_pas_encore_en_profit_refus_propre(broker, tmp_path):
@@ -69,7 +76,8 @@ def test_pas_encore_en_profit_refus_propre(broker, tmp_path):
     assert broker.position(pos.ticket).sl == plan.initial_sl and not plan.trailing_forced
 
 
-def test_stop_deja_au_dela_arme_seulement_le_suivi(broker, tmp_path):
+def test_stop_deja_en_profit_resserre_encore_et_arme_le_suivi(broker, tmp_path):
+    """Un stop déjà en profit (+0,5 R) est resserré juste sous le prix (+1 R) : le bouton verrouille le profit actuel."""
     pm, store = _pm(broker, tmp_path)
     pos, plan = _buy(broker, store)
     spec = broker.symbol_info("EURUSD")
@@ -78,8 +86,11 @@ def test_stop_deja_au_dela_arme_seulement_le_suivi(broker, tmp_path):
     haut = pos.price_open + 0.5 * dist
     assert broker.modify_position(pos.ticket, haut, 0.0).ok
     plan.last_sl = haut
-    assert pm.move_to_break_even(pos.ticket, spec)                       # rien à resserrer : suivi armé, stop inchangé
-    assert broker.position(pos.ticket).sl == haut and plan.trailing_forced
+    assert pm.move_to_break_even(pos.ticket, spec)
+    assert broker.position(pos.ticket).sl > haut and plan.trailing_forced
+    # stop déjà au plus près du prix : rien à resserrer, le suivi reste armé et rien n'est élargi
+    sl = broker.position(pos.ticket).sl
+    assert pm.move_to_break_even(pos.ticket, spec) and broker.position(pos.ticket).sl == sl
 
 
 def test_profit_protege_a_0_16_r_break_even_et_suivi_armes(broker, tmp_path):
@@ -169,3 +180,18 @@ def test_config_reelle_verrou_0_14_r():
     import yaml
     cfg = yaml.safe_load(open("config/risk.yaml", encoding="utf-8"))["profit_management"]
     assert PMConfig.from_config(cfg).protect_profit_lock_ratio == 0.14
+
+
+def test_gros_profit_le_bouton_verrouille_le_profit_actuel(broker, tmp_path):
+    """Demande utilisateur du 28/09 : « les positions qui ont un gros profit : le stop juste en dessous du prix dès qu'on
+    clique sur le bouton »."""
+    pm, store = _pm(broker, tmp_path)
+    pos, plan = _buy(broker, store)
+    spec = broker.symbol_info("EURUSD")
+    dist = pos.price_open - pos.sl
+    broker.set_price("EURUSD", pos.price_open + 2.5 * dist)           # +2,5 R
+    assert pm.move_to_break_even(pos.ticket, spec)
+    sl = broker.position(pos.ticket).sl
+    marge = max(spec.min_stop_distance, spec.tick_size) + spec.tick_size
+    assert sl >= broker.tick("EURUSD").bid - marge - 2 * spec.tick_size    # ≈ +2,4 R verrouillés, pas +0,05 R
+    assert plan.trailing_forced
