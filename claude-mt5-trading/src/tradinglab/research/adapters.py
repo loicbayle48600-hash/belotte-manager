@@ -129,7 +129,10 @@ def make_signal_fn(spec: AgentSpec, symbol_spec: SymbolSpec, entry_tf: str = "M1
         c = run_screener(spec, snap)
         if c is None:
             return None
-        return Signal(side=c.side, sl=c.sl, tp=c.tp_plan[-1] if c.tp_plan else None, note=c.agent_id)
+        return Signal(side=c.side, sl=c.sl, tp=c.tp_plan[-1] if c.tp_plan else None, note=c.agent_id,
+                      entry_kind=str(getattr(c, "entry_kind", "MARKET") or "MARKET"),
+                      order_price=(float(c.order_price) if getattr(c, "order_price", 0.0) else None),
+                      expiry_bars=int(getattr(c, "expiry_bars", 0) or 3))
 
     fn.prepare = prepare
     fn.data_error = None

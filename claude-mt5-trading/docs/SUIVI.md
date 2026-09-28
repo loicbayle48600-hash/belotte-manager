@@ -454,6 +454,20 @@ n'utilise PAS Fable (retiré de TIER_A le 2026-09-23) : le quota Fable est rése
   `forex_blocked_hours_utc: []` (le réglage reste disponible). Refusé : (C5) une position par devise.
   Statuts déposés dans `state/agent_status_requests.jsonl`, appliqués au premier cycle de recherche (30 min après
   démarrage). Note : `llm_call` n'a ni agent ni symbole — à ajouter pour attribuer le coût IA (505 $ sur 8 jours).
+- **Ordres en attente — jumeaux SHADOW, famille Q (28/09 au soir, demande utilisateur « ordre d'achat / de vente à tel
+  prix avec TP et SL » → « tout en SHADOW et que ça complète notre pipeline »)**. Le candidat porte `entry_kind`
+  (MARKET / LIMIT / STOP), `order_price`, `expiry_bars` ; `screeners.apply_pending_entry` transforme le signal d'une
+  stratégie générique en ordre limite (retour au niveau, 0,2–0,3 ATR en retrait, distance au stop raccourcie) ou stop
+  (confirmation, 0,15 ATR au-delà), annulé après 3 barres ; RR recalculé sur le prix de l'ordre, cibles inchangées.
+  Simulation : l'ombre remplit l'ordre dès qu'une barre clôturée touche le prix (événements `pending_filled` /
+  `pending_expired`, suivi à partir de la barre suivante) ; le moteur de backtest fait de même (gap → rempli à l'open,
+  `BTResult.expired_orders`), donc les jumeaux passent par tout le pipeline. Q01–Q10 en SHADOW : breakout_retest (limite,
+  métaux H4 / indices H1), sr_rejection (limite, forex H1), liquidity_sweep (limite, crypto H1), structure_bos (limite,
+  métaux H1), donchian (stop, crypto H4 / métaux D1), atr_expansion (stop, indices H1), ema_trend et macd_momentum
+  (stop, métaux H4). À juger sur l'espérance PAR SIGNAL (remplis + ratés) contre les jumeaux au marché. L'exécution réelle
+  d'un ordre en attente n'est pas branchée : un tel candidat d'agent LIVE est refusé avant revue (« SHADOW seulement »).
+  Reste à faire pour le réel : gate sur le prix de l'ordre, gestionnaire des ordres (durée de vie, annulation, une attente
+  par symbole, adoption de la position), copie des positions une fois ouvertes.
 - **Stop du suiveur élargi du surcroît de spread (28/09, décision utilisateur)** : SILVER chez les démos IC (spread 82
   points) contre XAGUSD chez le maître (11) — les quatre copies argent ont pris le stop à 61,807 sur un pic que le maître
   (stop 61,804, plus haut 61,776) n'a pas vu. Le maître exporte son spread ; à l'ouverture d'une copie, le stop du suiveur

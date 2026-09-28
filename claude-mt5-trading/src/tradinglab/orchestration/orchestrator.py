@@ -1268,6 +1268,10 @@ class Orchestrator:
         spec = self.broker.symbol_info(c.symbol)
         if spec is not None and not spec.trade_allowed:
             return f"{c.symbol} non ouvrable chez le broker (clôture seulement) : refusé avant revue"
+        if str(getattr(c, "entry_kind", "MARKET") or "MARKET").upper() != "MARKET":
+            # 2026-09-28 : les jumeaux « ordre en attente » (famille Q) vivent en SHADOW ; l'exécution réelle d'un ordre
+            # limite / stop n'est pas encore branchée (gate sur le prix de l'ordre, durée de vie, adoption)
+            return "ordre en attente : pas encore pris en charge en réel (SHADOW seulement) : refusé avant revue"
         # 2026-09-28, décision utilisateur : heures UTC interdites aux entrées forex (−21 R concentrés sur 09–11 h et 13–14 h)
         heures = [int(h) for h in (self.s.execution.get("forex_blocked_hours_utc") or [])]
         if heures and spec is not None and getattr(spec, "asset_class", "") == "forex" and self.now_fn().hour in heures:

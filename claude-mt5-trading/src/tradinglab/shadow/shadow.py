@@ -4,10 +4,13 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import dataclass, field, asdict
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
 
+import pandas as pd
+
+from ..core.clock import TF_SECONDS
 from ..core.types import AgentStatus, Side, TradeCandidate, utcnow
 from ..learning.store import LearningStore, TradeRecord
 from ..market_data.feed import MarketSnapshot
@@ -34,6 +37,10 @@ class ShadowPosition:
     mode: str = "shadow"       # "shadow" (agents SHADOW/CANDIDATE) ou "paper" (signal d'un agent LIVE non exécuté, 2026-09-28)
     reason: str = ""           # mode "paper" : pourquoi le signal n'a pas été exécuté (verrou, plafond, créneaux…)
     key: str = ""              # clé d'idempotence du candidat : retirée si le même signal part finalement en réel
+    entry_kind: str = "MARKET"  # 2026-09-28 : "LIMIT" / "STOP" = ordre en attente simulé (rempli si une barre touche le prix)
+    order_price: float = 0.0
+    pending: bool = False      # ordre non encore rempli
+    expires_at: str = ""       # annulation de l'ordre après `expiry_bars` barres de l'unité d'entrée
 
 
 class ShadowTrader:
@@ -84,10 +91,18 @@ class ShadowTrader:
                 continue
             if self.max_per_agent and sum(1 for p in self.positions.values() if p.agent_id == c.agent_id) >= self.max_per_agent:
                 continue
+            kind = str(getattr(c, "entry_kind", "MARKET") or "MARKET").upper()
+            attente = kind in ("LIMIT", "STOP") and float(getattr(c, "order_price", 0.0) or 0.0) > 0
+            expire = ""
+            if attente:
+                tf = str((getattr(c, "timeframes", None) or ["H1"])[0]).upper()
+                expire = (now + timedelta(seconds=TF_SECONDS.get(tf, 3600) * int(getattr(c, "expiry_bars", 3) or 3))).isoformat()
             p = ShadowPosition(id=f"sh_{c.id}", agent_id=c.agent_id, symbol=c.symbol, side=c.side.value, entry=c.entry, sl=c.sl,
                                tp=c.tp_plan[-1] if c.tp_plan else c.entry + c.side.sign * 2.5 * c.sl_distance,
                                opened_at=now.isoformat(), regime=c.regime.value, session=c.session, setup_score=c.setup_score, bar_time=c.bar_time,
-                               mode=mode, reason=reason, key=c.idempotency_key)
+                               mode=mode, reason=reason, key=c.idempotency_key,
+                               entry_kind=kind if attente else "MARKET", order_price=float(getattr(c, "order_price", 0.0) or 0.0) if attente else 0.0,
+                               pending=attente, expires_at=expire)
             self.positions[p.id] = p
             self.executed[c.idempotency_key] = None
             out.append(p)
@@ -132,6 +147,30 @@ class ShadowTrader:
                 continue
             bars = df[df["time"] > opened].iloc[:-1]
             side = Side(p.side)
+            if p.pending:
+                # ordre en attente (2026-09-28) : rempli au prix de l'ordre dès qu'une barre clôturée le touche, sinon
+                # annulé à l'expiration ; la position remplie est suivie à partir de la barre suivante
+                px = float(p.order_price)
+                rempli = None
+                for b in bars.itertuples():
+                    hi, lo = float(b.high), float(b.low)
+                    if p.entry_kind == "LIMIT":
+                        touche = (lo <= px) if side is Side.BUY else (hi >= px)
+                    else:
+                        touche = (hi >= px) if side is Side.BUY else (lo <= px)
+                    if touche:
+                        rempli = b
+                        break
+                if rempli is not None:
+                    p.pending, p.entry = False, px
+                    p.opened_at = pd.Timestamp(rempli.time).isoformat()
+                    self.store.agent_event(p.agent_id, "pending_filled", {"position": pid, "symbol": p.symbol, "order_price": px, "kind": p.entry_kind})
+                    dirty = True
+                elif p.expires_at and now >= datetime.fromisoformat(p.expires_at):
+                    self.store.agent_event(p.agent_id, "pending_expired", {"position": pid, "symbol": p.symbol, "order_price": px, "kind": p.entry_kind})
+                    del self.positions[pid]
+                    dirty = True
+                continue
             dist = abs(p.entry - p.sl)
             exit_px, reason = None, ""
             for b in bars.itertuples():

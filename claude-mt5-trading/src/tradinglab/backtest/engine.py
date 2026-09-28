@@ -38,11 +38,17 @@ SignalFactory = Callable[[dict], SignalFn]
 # ---------------------------------------------------------------------------
 @dataclass
 class Signal:
-    """Signal d'entrée : sens, stop-loss et take-profit en prix ABSOLUS."""
+    """Signal d'entrée : sens, stop-loss et take-profit en prix ABSOLUS.
+
+    2026-09-28 : `entry_kind` LIMIT / STOP + `order_price` = ordre en attente, rempli à la première barre qui touche le
+    prix (gap : à l'open), annulé après `expiry_bars` barres. MARKET = exécution à l'open de la barre suivante."""
     side: Side
     sl: float
     tp: float | None = None
     note: str = ""
+    entry_kind: str = "MARKET"
+    order_price: float | None = None
+    expiry_bars: int = 3
 
 
 @dataclass
@@ -107,6 +113,7 @@ class BTResult:
     equity_curve_r: list[float]
     params: dict
     rejected_signals: int = 0
+    expired_orders: int = 0            # ordres en attente jamais remplis (2026-09-28)
 
     def to_dict(self) -> dict:
         return {
@@ -280,6 +287,8 @@ def run_backtest(df: pd.DataFrame, signal_fn: SignalFn, costs: BTCosts, params: 
     equity: list[float] = []
     cum_r = 0.0
     rejected = 0
+    expired = 0                       # ordres en attente jamais touchés (2026-09-28)
+    pending_since = -1
 
     pending: Optional[Signal] = None   # signal à exécuter à l'open de la barre courante
     pos: Optional[dict] = None         # position ouverte
@@ -345,8 +354,29 @@ def run_backtest(df: pd.DataFrame, signal_fn: SignalFn, costs: BTCosts, params: 
         # 1) exécution d'un signal en attente à l'open de la barre i
         if pending is not None:
             sign = pending.side.sign
-            entry = opens[i] + sign * (costs.spread / 2.0 + costs.slippage)
-            if _signal_is_valid(pending, entry):
+            kind = str(getattr(pending, "entry_kind", "MARKET") or "MARKET").upper()
+            fill = True
+            if kind in ("LIMIT", "STOP") and getattr(pending, "order_price", None):
+                # ordre en attente : rempli si la barre i touche le prix (à l'open si elle ouvre au-delà), sinon expire
+                px = float(pending.order_price)
+                if kind == "LIMIT":
+                    touche = (lows[i] <= px) if sign > 0 else (highs[i] >= px)
+                    gap = sign * (opens[i] - px) < 0
+                else:
+                    touche = (highs[i] >= px) if sign > 0 else (lows[i] <= px)
+                    gap = sign * (opens[i] - px) > 0
+                if touche:
+                    entry = (opens[i] if gap else px) + sign * costs.spread / 2.0
+                else:
+                    fill = False
+                    if i - pending_since >= int(getattr(pending, "expiry_bars", 3) or 3):
+                        expired += 1
+                        pending = None
+            else:
+                entry = opens[i] + sign * (costs.spread / 2.0 + costs.slippage)
+            if not fill:
+                pass
+            elif _signal_is_valid(pending, entry):
                 pos = {
                     "side": pending.side, "entry": float(entry), "sl": float(pending.sl),
                     "tp": None if pending.tp is None else float(pending.tp), "entry_idx": i,
@@ -355,8 +385,9 @@ def run_backtest(df: pd.DataFrame, signal_fn: SignalFn, costs: BTCosts, params: 
                 }
             else:
                 rejected += 1
-            pending = None
-            pending_exit = False
+            if fill:
+                pending = None
+                pending_exit = False
 
         # 2) gestion de la position ouverte sur la barre i
         if pos is not None:
@@ -400,11 +431,12 @@ def run_backtest(df: pd.DataFrame, signal_fn: SignalFn, costs: BTCosts, params: 
             if sig is not None:
                 if isinstance(sig, Signal):
                     pending = sig
+                    pending_since = i
                 else:
                     rejected += 1
 
     return BTResult(trades=trades, metrics=compute_metrics(trades), equity_curve_r=equity, params=params,
-                    rejected_signals=rejected)
+                    rejected_signals=rejected, expired_orders=expired)
 
 
 def _signal_key(sig: Any) -> Any:

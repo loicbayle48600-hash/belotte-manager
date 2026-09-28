@@ -340,6 +340,31 @@ def default_agents() -> list[AgentSpec]:  # noqa: C901 - registre déclaratif
         A.append(_a(f"R{i:02d}", "R", nm, st, mk, ["ASIA"], tfs, rg, prm, model_tier_role="technical_analysis",
                     status=AgentStatus.SHADOW.value if nm in RA_SHADOW else AgentStatus.LIVE.value,
                     description="Session Asie (LIVE à la demande de l'utilisateur) : paires en yen, AUD/NZD, Nikkei, indices asiatiques, or"))
+    # ---------------- Q. JUMEAUX « ORDRE EN ATTENTE » (SHADOW, décision utilisateur 2026-09-28) ----------------
+    # Mêmes stratégies génériques que les meilleurs agents existants, mais entrée sur ordre limite (retour au niveau,
+    # 0,2–0,3 ATR en retrait) ou stop (confirmation, 0,15 ATR au-delà), annulé après 3 barres. But : comparer, signal par
+    # signal, l'espérance PAR SIGNAL (remplis + ratés) avec les jumeaux au marché avant toute promotion.
+    METAUX = ["XAUUSD", "XAGUSD"]
+    INDICES3 = ["US500", "USTEC", "DE40"]
+    FOREX4 = ["EURUSD", "GBPUSD", "USDJPY", "AUDUSD"]
+    CRYPTO4 = ["BTCUSD", "ETHUSD", "XRPUSD", "SOLUSD"]
+    LIM = {"entry_kind": "LIMIT", "entry_offset_atr": 0.3, "expiry_bars": 3}
+    LIM2 = {"entry_kind": "LIMIT", "entry_offset_atr": 0.2, "expiry_bars": 3}
+    STP = {"entry_kind": "STOP", "entry_offset_atr": 0.15, "expiry_bars": 3}
+    Q = [("q_breakout_retest_limit_metals_h4", "breakout_retest", METAUX, tf("H4", "D1"), {"sl_atr": 1.0, "rr": 2.0, **LIM}, BREAKOUT_REGIMES),
+         ("q_breakout_retest_limit_indices_h1", "breakout_retest", INDICES3, tf("H1", "H4"), {"sl_atr": 1.5, "rr": 2.0, **LIM}, BREAKOUT_REGIMES),
+         ("q_sr_rejection_limit_forex_h1", "sr_rejection", FOREX4, tf("H1", "H4"), {"tol_atr": 0.3, "with_trend": True, "sl_atr": 1.5, "rr": 2.0, **LIM2}, TREND_REGIMES + RANGE_REGIMES),
+         ("q_liquidity_sweep_limit_crypto_h1", "liquidity_sweep", CRYPTO4, tf("H1", "H4"), {"with_trend": True, "sl_atr": 1.5, "rr": 2.0, **LIM2}, ALL_REGIMES),
+         ("q_structure_bos_limit_metals_h1", "structure_bos", METAUX, tf("H1", "H4"), {"sl_atr": 1.5, "rr": 2.2, **LIM}, TREND_REGIMES + [Regime.UNCERTAIN.value]),
+         ("q_donchian_stop_crypto_h4", "donchian_breakout", CRYPTO4, tf("H4", "D1"), {"lookback": 20, "sl_atr": 2.0, "rr": 2.5, **STP}, ALL_REGIMES),
+         ("q_donchian_stop_metals_d1", "donchian_breakout", METAUX, tf("D1", "D1"), {"lookback": 20, "sl_atr": 2.0, "rr": 2.5, **STP}, ALL_REGIMES),
+         ("q_atr_expansion_stop_indices_h1", "atr_expansion", INDICES3, tf("H1", "H4"), {"atr_ratio": 1.3, "sl_atr": 1.5, "rr": 2.0, **STP}, BREAKOUT_REGIMES),
+         ("q_ema_trend_stop_metals_h4", "ema_trend", METAUX, tf("H4", "D1"), {"adx_min": 20, "sl_atr": 1.0, "rr": 2.0, **STP}, TREND_REGIMES),
+         ("q_macd_momentum_stop_metals_h4", "macd_momentum", METAUX, tf("H4", "D1"), {"sl_atr": 2.0, "rr": 2.0, **STP}, TREND_REGIMES)]
+    for i, (nm, st, mk, tfs, prm, rg) in enumerate(Q, 1):
+        A.append(_a(f"Q{i:02d}", "Q", nm, st, mk, ["ASIA", "LONDON", "NEWYORK", "OVERLAP_LDN_NY"], tfs, rg, prm,
+                    model_tier_role="technical_analysis", status=AgentStatus.SHADOW.value,
+                    description="Jumeau « ordre en attente » (SHADOW) : même stratégie, entrée sur ordre limite/stop"))
     # Chaque agent générateur possède SA PROPRE stratégie (clé = agent_id, module agents/strategies/*) ;
     # le screener générique historique reste en repli (base_strategy) tant que la stratégie propre n'existe pas.
     for a in A:

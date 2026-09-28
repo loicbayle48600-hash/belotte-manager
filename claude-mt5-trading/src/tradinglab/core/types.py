@@ -331,6 +331,12 @@ class TradeCandidate:
     atr: float = 0.0
     session: str = "OFF"
     bar_time: str = ""              # clôture de barre ayant généré le setup (idempotence)
+    # 2026-09-28 (décision utilisateur, jumeaux SHADOW) : entrée sur ORDRE EN ATTENTE au lieu du marché — "LIMIT" (retour
+    # au niveau : achat sous le prix / vente au-dessus) ou "STOP" (confirmation : achat au-dessus / vente en dessous),
+    # au prix `order_price`, annulé après `expiry_bars` barres de l'unité d'entrée. "MARKET" = comportement d'origine.
+    entry_kind: str = "MARKET"
+    order_price: float = 0.0
+    expiry_bars: int = 0
     provenance: Provenance = Provenance.CALCULATED
     id: str = field(default_factory=lambda: new_id("cand"))
     created_at: datetime = field(default_factory=utcnow)

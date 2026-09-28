@@ -594,11 +594,43 @@ def resolve_screener(spec: AgentSpec):
     return fn
 
 
+def apply_pending_entry(spec: AgentSpec, c: Optional[TradeCandidate], snap) -> Optional[TradeCandidate]:
+    """Jumeau « ordre en attente » (2026-09-28, décision utilisateur, SHADOW) : `params.entry_kind` = LIMIT ou STOP.
+
+    - LIMIT : ordre posé à `entry_offset_atr` ATR en retrait du prix de signal (achat plus bas, vente plus haut) — retour
+      au niveau ; le stop ne change pas, la distance au stop raccourcit.
+    - STOP : ordre posé à `entry_offset_atr` ATR au-delà du prix de signal — confirmation du mouvement ; la distance au
+      stop s'allonge.
+    Les cibles restent les niveaux absolus de la stratégie ; le RR est recalculé sur le prix de l'ordre. `expiry_bars`
+    (défaut 3) barres de l'unité d'entrée, puis annulation. Un ordre qui tomberait du mauvais côté du stop est refusé."""
+    if c is None:
+        return None
+    kind = str(spec.params.get("entry_kind", "MARKET") or "MARKET").upper()
+    if kind not in ("LIMIT", "STOP"):
+        return c
+    atr = float(c.atr or getattr(snap, "atr_h1", 0.0) or 0.0)
+    if atr <= 0:
+        return None
+    off = float(spec.params.get("entry_offset_atr", 0.3 if kind == "LIMIT" else 0.15))
+    px = c.entry - c.side.sign * off * atr if kind == "LIMIT" else c.entry + c.side.sign * off * atr
+    digits = int(getattr(getattr(snap, "spec", None), "digits", 5) or 5)
+    px = round(px, digits)
+    dist = c.side.sign * (px - c.sl)
+    if dist <= 0:
+        return None
+    c.entry_kind, c.order_price, c.entry = kind, float(px), float(px)
+    c.expiry_bars = int(spec.params.get("expiry_bars", 3) or 3)
+    if c.tp_plan:
+        c.rr = round(abs(c.tp_plan[-1] - px) / dist, 2)
+    c.arguments_for = list(c.arguments_for) + [f"ordre {kind} à {px} ({off:g} ATR {'en retrait' if kind == 'LIMIT' else 'au-delà'}), valable {c.expiry_bars} barres"]
+    return c
+
+
 def run_screener(spec: AgentSpec, snap) -> Optional[TradeCandidate]:
     fn = resolve_screener(spec)
     if fn is None:
         return None
     try:
-        return fn(spec, snap)
+        return apply_pending_entry(spec, fn(spec, snap), snap)
     except (KeyError, IndexError, ValueError, TypeError):
         return None
