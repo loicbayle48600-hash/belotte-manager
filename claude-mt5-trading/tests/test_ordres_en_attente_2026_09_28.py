@@ -9,7 +9,7 @@ import pandas as pd
 
 from tradinglab.agents.registry import AgentSpec, default_agents
 from tradinglab.agents.screeners import apply_pending_entry, resolve_screener
-from tradinglab.backtest.engine import BTCosts, Signal, run_backtest
+from tradinglab.backtest.engine import BTCosts, Signal, run_backtest, set_default_management
 from tradinglab.core.types import Side, TradeCandidate, Regime
 from tradinglab.orchestration.orchestrator import Orchestrator
 from tradinglab.shadow.shadow import ShadowTrader
@@ -70,6 +70,7 @@ def test_ombre_remplit_a_la_touche_et_annule_a_l_expiration(tmp_path):
 
 
 def test_backtest_ordre_limite_rempli_ou_expire():
+    set_default_management(None)          # indépendant de l'ordre des tests : pas de gestion de position par défaut ici
     t0 = datetime(2026, 9, 1, tzinfo=timezone.utc)
     rows = [(100.0, 100.0, 100.0, 100.0)] * 210
     rows += [(100.0, 100.5, 99.8, 100.2),     # barre 210 : signal à la clôture (achat limite à 99.5, stop 99.0, cible 102)
