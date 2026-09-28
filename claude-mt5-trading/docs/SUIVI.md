@@ -389,6 +389,8 @@ n'utilise PAS Fable (retiré de TIER_A le 2026-09-23) : le quota Fable est rése
     application ; `dedupe()` ajouté à l'optimiseur (un agent par stratégie × TF × classe × stop) et le rapport garde
     désormais toutes les survivantes avec leur walk-forward (`etape_2`). Rapport : `reports/optimizer_2026-09-28_0348.json`.
     Coût : `liquidity_sweep` et `structure_bos` ≈ 100 s par backtest de 5 000 barres contre 13 s pour `ema_trend`.
+  - **Décision utilisateur 28/09 (« oui monte en live »)** : X01 et X02 (`breakout_retest` H4 or/argent, stops 1,0 et
+    1,5 ATR, les deux mieux classés et les plus fournis en trades) ajoutés **LIVE** ; X03–X06 en SHADOW.
 
 ## À FAIRE (lundi, avec Fable)
 
