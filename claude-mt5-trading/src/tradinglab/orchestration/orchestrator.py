@@ -138,6 +138,7 @@ class Orchestrator:
         self._healthy_cycles = 0
         self._research_lock = threading.Lock()
         self._research_thread: Optional[threading.Thread] = None
+        self._research_started_at: Optional[float] = None
         self._bar_candidates: dict[str, TradeCandidate] = {}
         self._initialized = False   # initialisation post-connexion (compte, univers, adoption, modèles, recherche)
 
@@ -379,6 +380,7 @@ class Orchestrator:
         self.shadow.update(self.snapshots, now)
         # 8. recherche / dégradation / modèles (hors chemin critique)
         if self.scheduler.due("research", now):
+            self._apply_research_files()
             self._start_research_thread()
         if self.scheduler.due("models", now) and self.model_router.needs_refresh():
             self._setup_models()
@@ -1038,6 +1040,17 @@ class Orchestrator:
     def _start_research_thread(self) -> None:
         """La recherche (backtests, walk-forward…) tourne hors du chemin critique live."""
         if self._research_thread and self._research_thread.is_alive():
+            # 2026-09-28 : un fil resté bloqué 7 h a empêché toute nouvelle recherche sans laisser de trace dans le
+            # journal. On consigne sa pile pour trouver la cause ; les files (propositions, statuts) ne dépendent plus de lui.
+            depuis = time.time() - (self._research_started_at if self._research_started_at is not None else time.time())
+            pile = ""
+            try:
+                frame = sys._current_frames().get(self._research_thread.ident or -1)
+                if frame is not None:
+                    pile = "".join(traceback.format_stack(frame, limit=12))
+            except Exception:  # noqa: BLE001 - diagnostic seulement
+                pass
+            self.journal.warn("cycle de recherche toujours en cours", depuis_sec=round(depuis), pile=pile[-3000:])
             return
 
         def _run():
@@ -1047,7 +1060,16 @@ class Orchestrator:
                 except Exception as e:  # noqa: BLE001
                     self.journal.warn("cycle de recherche échoué", error=f"{type(e).__name__}: {e}")
         self._research_thread = threading.Thread(target=_run, name="research", daemon=True)
+        self._research_started_at = time.time()
         self._research_thread.start()
+
+    def _apply_research_files(self) -> None:
+        """Files déposées par les processus séparés (worker de recherche : statuts ; optimiseur : propositions d'agents).
+        Appliquées dans la boucle principale et non dans le fil de recherche : le 28/09, un fil bloqué a retardé de
+        7 h l'ajout des agents X01–X06 (opérations sur fichiers, quelques millisecondes)."""
+        if bool((self.s.learning or {}).get("research_external", False)):
+            self._apply_status_requests()
+            self._apply_agent_proposals()
 
     def _review_with_deadline(self, batch: list, score_bonus: float, deadline: float = None) -> None:
         """Revues IA en parallèle, bornées dans le temps. Chaque revue travaille sur une COPIE du candidat : une
@@ -1279,9 +1301,9 @@ class Orchestrator:
             return
         if bool((self.s.learning or {}).get("research_external", False)):
             # 2026-09-27 : les backtests tournent dans le processus séparé `research/worker.py` (plus de charge dans la
-            # boucle de trading) ; il dépose ses changements de statut dans une file que l'orchestrateur applique ici
-            self._apply_status_requests()
-            self._apply_agent_proposals()
+            # boucle de trading). Ses files (statuts, propositions) sont appliquées par `_apply_research_files` dans la
+            # boucle principale (2026-09-28), pas ici.
+            pass
         else:
             # faire avancer les agents non-LIVE dans le pipeline, à tour de rôle (voir `_research_queue`)
             for aid in self._research_queue(self.now_fn()):
