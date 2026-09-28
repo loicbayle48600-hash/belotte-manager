@@ -323,7 +323,7 @@ def test_break_even_sans_ticket_arme_toutes_les_positions_possibles(settings, br
     assert o.state.bot_positions[str(gagnante.ticket)].break_even_done
     assert broker.position(gagnante.ticket).sl >= o.state.bot_positions[str(gagnante.ticket)].entry
     again = o.handle_command("BREAK_EVEN", {"target": "ALL"}, "dashboard")
-    assert again["armed"] == [] and any(s_["raison"] == "déjà au break-even" for s_ in again["skipped"])
+    assert again["armed"] == [] and any("déjà au break-even" in s_["raison"] for s_ in again["skipped"])
     assert o.handle_command("BREAK_EVEN", {"target": "abc"}, "cli")["ok"] is False
 
 

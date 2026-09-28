@@ -1567,14 +1567,14 @@ class Orchestrator:
                 # déjà assez en profit pour que le stop passe à l'entrée ; les autres sont laissées telles quelles
                 done, skipped = [], []
                 for t, plan in list(st.bot_positions.items()):
-                    if plan.break_even_done:
-                        skipped.append({"ticket": int(t), "symbol": plan.symbol, "raison": "déjà au break-even"})
+                    if plan.break_even_done and plan.trailing_forced:
+                        skipped.append({"ticket": int(t), "symbol": plan.symbol, "raison": "déjà au break-even, suivi armé"})
                     elif self.pm.move_to_break_even(int(t), self.broker.symbol_info(plan.symbol)):
                         done.append({"ticket": int(t), "symbol": plan.symbol})
                     else:
-                        skipped.append({"ticket": int(t), "symbol": plan.symbol, "raison": "pas assez en profit"})
+                        skipped.append({"ticket": int(t), "symbol": plan.symbol, "raison": "pas encore en profit"})
                 res.update(ok=True, armed=done, skipped=skipped,
-                           message=f"break-even armé sur {len(done)} position(s), {len(skipped)} laissée(s)")
+                           message=f"break-even + stop suiveur armés sur {len(done)} position(s), {len(skipped)} laissée(s)")
             elif not target.isdigit():
                 res.update(ok=False, reason="ticket invalide")
             else:

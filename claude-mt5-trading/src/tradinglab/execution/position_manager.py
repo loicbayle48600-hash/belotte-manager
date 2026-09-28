@@ -34,6 +34,13 @@ class PMConfig:
     never_widen_stop: bool = True
     never_remove_stop: bool = True
     allow_early_exit_on_invalidation: bool = True
+    # 2026-09-28, demande utilisateur : « quand une position atteint +100 $, mettre directement le stop suiveur pour
+    # rester en positif », puis « adapte, il y a plus de positions avec moins de lots » : le seuil est exprimé en
+    # fraction du risque initial (0,16 = 100 $ pour les 625 $ risqués à 0,125 % ; 40 $ à 0,05 %), il suit donc la
+    # taille des lots et vaut aussi chez les suiveurs. `protect_profit_money` : seuil absolu en devise du compte,
+    # optionnel (le premier atteint déclenche). 0 = désactivé.
+    protect_profit_risk_ratio: float = 0.0
+    protect_profit_money: float = 0.0
     regime_overrides: dict | None = None
 
     @classmethod
@@ -205,6 +212,24 @@ class PositionManager:
             else:
                 plan.tp2_done = True
 
+        # 3a. protection du profit (2026-09-28, demande utilisateur) : dès que le profit flottant atteint le seuil
+        #     (fraction du risque initial, ou montant absolu), break-even et stop suiveur sont armés (`trailing_forced`,
+        #     même mécanique que le bouton break-even), quel que soit le R par ailleurs
+        ratio = float(cfg.protect_profit_risk_ratio or 0.0)
+        seuil = float(cfg.protect_profit_money or 0.0)
+        if (ratio > 0 or seuil > 0) and not plan.trailing_forced:
+            profit = float(getattr(pos, "profit", 0.0) or 0.0)
+            if not profit and plan.initial_volume > 0:
+                # broker sans profit flottant (simulé) : estimation R × risque initial, au prorata du volume restant
+                profit = r * plan.initial_risk_money * (float(pos.volume) / float(plan.initial_volume))
+            par_ratio = ratio > 0 and max(r, plan.max_r) >= ratio
+            par_montant = seuil > 0 and profit >= seuil
+            if par_ratio or par_montant:
+                plan.trailing_forced, plan.trailing_active = True, True
+                cible = f"{ratio:.2f} R (≈ {ratio * plan.initial_risk_money:.0f} $)" if par_ratio else f"{seuil:.0f} $"
+                actions.append(f"profit protégé : +{cible} atteints, break-even et stop suiveur armés")
+                self.journal.event("profit_protection", ticket=pos.ticket, profit=round(profit, 2), r=round(r, 3),
+                                   seuil_r=ratio, seuil_money=seuil)
         # 3. break-even (le drapeau break_even_done n'est posé qu'une fois le SL effectivement au-delà du BE :
         #    un BE refusé par le broker ou trop proche du prix est retenté au cycle suivant)
         new_sl: Optional[float] = None
@@ -215,14 +240,14 @@ class PositionManager:
         # un profit qui a bel et bien existé. Constaté deux fois : CADCHF (+1,11 R → -1,17 R, -586 $) et
         # NETH25 (+1,05 R → -1,03 R, -521 $). Le niveau reste borné par `is_tighter_or_equal` plus bas :
         # si le prix est déjà repassé sous le break-even, le broker refuse et rien ne s'élargit jamais.
-        if cfg.break_even_enabled and not plan.break_even_done and max(r, plan.max_r) >= cfg.break_even_r:
+        if cfg.break_even_enabled and not plan.break_even_done and (max(r, plan.max_r) >= cfg.break_even_r or plan.trailing_forced):
             # `tp1_done` lève l'exigence de structure : une fois un profit partiel encaissé,
             # le break-even n'est plus négociable. TP1 ferme 30 % à 1,5R (+0,45R) et laisse
             # 70 % au risque plein (-0,70R) : sans remontée du stop, un retour au stop initial
             # garantit une perte NETTE de 0,25R malgré un gain déjà pris. Constaté sur XRPUSD
             # le 2026-09-21 : TP1 +2,49 $ puis stop -3,78 $, net -1,29 $, structure jamais validée.
             # Avant TP1 l'exigence garde son sens : elle évite de se faire sortir sur du bruit.
-            if plan.tp1_done or not cfg.break_even_requires_structure or ctx.structure_ok:
+            if plan.tp1_done or plan.trailing_forced or not cfg.break_even_requires_structure or ctx.structure_ok:
                 be = self._be_level(plan, side, spec)
                 new_sl = be
                 be_pending = True
@@ -231,7 +256,8 @@ class PositionManager:
         # 4. trailing (ATR + structure). 2026-09-25, demande utilisateur : démarre à +1,05 R (au lieu de 2 R) et ne
         #    descend jamais sous le break-even (plancher ci-dessous) : une fois +1,05 R atteint, le trade reste en
         #    bénéfice et le stop suit le prix. `max_r` : un pic entre deux cycles arme aussi le suivi.
-        if cfg.trailing_enabled and max(r, plan.max_r) >= cfg.trailing_start_r and ctx.atr > 0:
+        #    `trailing_forced` : armé par le bouton break-even (2026-09-28), le suivi commence sans attendre le seuil.
+        if cfg.trailing_enabled and ctx.atr > 0 and (max(r, plan.max_r) >= cfg.trailing_start_r or plan.trailing_forced):
             trail = price - side.sign * ctx.atr * cfg.trailing_atr_multiplier
             if cfg.trailing_use_market_structure:
                 sw = ctx.last_swing_low if side is Side.BUY else ctx.last_swing_high
@@ -328,6 +354,10 @@ class PositionManager:
         return done
 
     def move_to_break_even(self, ticket: int, spec: Optional[SymbolSpec]) -> bool:
+        """Bouton « break-even » (panneau / CLI). 2026-09-28, demande utilisateur : le stop est placé juste au-dessus de
+        l'entrée, EN PROFIT (entrée + 0,05 R + commission ; si le prix est trop près de ce niveau pour le broker, au plus
+        près du prix que le broker accepte, tant que cela reste en profit), et le stop suiveur est armé dès maintenant
+        (`trailing_forced`) sans attendre +1,05 R : le trade est protégé en positif et suit le prix."""
         plan = self.store.state.bot_positions.get(str(ticket))
         pos = self.broker.position(ticket)
         if not plan or not pos or spec is None:
@@ -336,18 +366,29 @@ class PositionManager:
             return False
         side = Side(plan.side)
         be = normalize_price(self._be_level(plan, side, spec), spec)
-        if not is_tighter_or_equal(side, be, pos.sl):
-            return False
-        # jamais au-delà du prix courant ni sous stops_level (même règle que manage())
         tick = self.broker.tick(pos.symbol)
-        price = pos.price_current or ((tick.bid if side is Side.BUY else tick.ask) if tick else pos.price_open)
-        if abs(price - be) < spec.min_stop_distance or (side is Side.BUY and be >= price) or (side is Side.SELL and be <= price):
-            self.journal.warn("break-even trop proche du prix", ticket=ticket, sl=be, price=price)
-            return False
+        # référence du broker pour la distance du stop : bid pour un achat, ask pour une vente
+        price = ((tick.bid if side is Side.BUY else tick.ask) if tick else None) or pos.price_current or pos.price_open
+        # jamais au-delà du prix courant ni sous stops_level (même règle que manage()) : si le BE est trop près, on
+        # recule au niveau le plus proche accepté par le broker (+ 1 tick de marge), s'il reste au-dessus de l'entrée
+        marge = max(float(spec.min_stop_distance), float(spec.tick_size)) + float(spec.tick_size)
+        limite = normalize_price(price - side.sign * marge, spec)
+        if side.sign * (be - limite) > 0:
+            if side.sign * (limite - plan.entry) <= 0:
+                self.journal.warn("break-even impossible : le prix n'est pas encore en profit", ticket=ticket, sl=be, price=price)
+                return False
+            be = limite
+        if not is_tighter_or_equal(side, be, pos.sl):
+            # le stop est déjà au-delà : on n'élargit jamais, mais le suivi est armé quand même
+            plan.trailing_forced, plan.trailing_active = True, True
+            self.store.save()
+            self.journal.event("break_even_command", ticket=ticket, sl=pos.sl, deja_au_dela=True, suivi=True)
+            return True
         res = self.broker.modify_position(ticket, be, pos.tp)
         if res.ok:
             plan.last_sl = be
             plan.break_even_done = True
+            plan.trailing_forced, plan.trailing_active = True, True
             self.store.save()
-        self.journal.event("break_even_command", ticket=ticket, sl=be, result=res.to_dict())
+        self.journal.event("break_even_command", ticket=ticket, sl=be, suivi=res.ok, result=res.to_dict())
         return res.ok

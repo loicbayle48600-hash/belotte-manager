@@ -83,6 +83,13 @@ profit_management:
   # 2.0 → 1.05 le 2026-09-25, demande utilisateur (« stop suiveur : quand ça passe en positif à 1,05, rester
   # toujours en bénéfice ») : le suivi démarre à +1,05 R, jamais sous le break-even (entrée + 0,05 R + commission)
   trailing_start_r: 1.05
+  # 2026-09-28, demande utilisateur (« quand une position atteint +100 $, mettre directement le stop suiveur pour rester
+  # en positif », puis « adapte : plus de positions avec moins de lots ») : seuil en FRACTION DU RISQUE INITIAL, pour
+  # suivre la taille des lots — 0,16 R = 100 $ pour les 625 $ risqués au réglage de référence (0,125 %), soit 40 $ avec
+  # le risque temporaire de 0,05 % ; vaut aussi chez les suiveurs. À ce seuil : break-even (entrée + 0,05 R + commission)
+  # et stop suiveur armés, quel que soit le R. `protect_profit_money` : seuil absolu optionnel (0 = non utilisé).
+  protect_profit_risk_ratio: 0.16
+  protect_profit_money: 0
   trailing_atr_multiplier: 1.5
   trailing_use_market_structure: true
   never_widen_stop: true

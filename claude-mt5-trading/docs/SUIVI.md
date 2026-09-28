@@ -407,6 +407,16 @@ n'utilise PAS Fable (retiré de TIER_A le 2026-09-23) : le quota Fable est rése
      `max_consecutive_losses` 3 → **5**. Plafonds de concentration inchangés en % d'equity (même argent exposé par
      cluster / devise / classe, composé de plus de tickets — comme le mode test du 23/09) ; budget total 1 % inchangé,
      soit 20 positions au plus. Score requis inchangé (65).
+- **Bouton break-even = stop en profit + stop suiveur (28/09, demande utilisateur)** : `move_to_break_even` place le stop
+  juste au-dessus de l'entrée EN PROFIT (entrée + 0,05 R + commission ; si ce niveau est trop près du prix pour le
+  broker, au plus près accepté — référence bid/ask + 1 tick — tant que cela reste au-dessus de l'entrée) et arme le stop
+  suiveur immédiatement (`plan.trailing_forced`, sans attendre +1,05 R) ; stop déjà au-delà → seul le suivi est armé ;
+  prix pas encore en profit → refus propre. Bouton « Armer partout » : même comportement position par position.
+- **Profit protégé automatiquement (28/09, demande utilisateur « à +100 $, stop suiveur pour rester en positif », puis
+  « adapte : plus de positions avec moins de lots »)** : `profit_management.protect_profit_risk_ratio: 0.16` — dès que
+  le meilleur R atteint 0,16 R (= 100 $ pour les 625 $ risqués à 0,125 %, 40 $ avec le 0,05 % temporaire, et
+  proportionnel chez les suiveurs), break-even et stop suiveur sont armés quel que soit le R (`profit_protection` au
+  journal). `protect_profit_money` : seuil absolu optionnel, 0 = non utilisé.
 - **Stop du suiveur élargi du surcroît de spread (28/09, décision utilisateur)** : SILVER chez les démos IC (spread 82
   points) contre XAGUSD chez le maître (11) — les quatre copies argent ont pris le stop à 61,807 sur un pic que le maître
   (stop 61,804, plus haut 61,776) n'a pas vu. Le maître exporte son spread ; à l'ouverture d'une copie, le stop du suiveur

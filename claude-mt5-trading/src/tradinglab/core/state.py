@@ -68,6 +68,7 @@ class BotPositionPlan:
     tp2_done: bool = False
     break_even_done: bool = False
     trailing_active: bool = False
+    trailing_forced: bool = False     # bouton « break-even » (2026-09-28) : le stop suiveur suit dès maintenant, sans attendre +1,05 R
     opened_at: str = ""
     max_r: float = 0.0
     min_r: float = 0.0
