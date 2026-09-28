@@ -185,11 +185,19 @@ function Start-Component {
         Write-TlLog ("{0} démarré (PID {1}) : python {2}" -f $Name, $proc.Id, ($ModuleArgs -join ' ')) 'OK'
         # 2026-09-25 : la suite de tests (12-15 min de calcul) ralentissait la boucle au-delà de la tolérance du
         # watchdog (cycles de 87 et 168 s). La boucle de trading et son watchdog passent devant le reste du PC.
-        if ($Name -in @('orchestrator', 'watchdog')) {
-            try { $proc.PriorityClass = 'AboveNormal'; Write-TlLog "$Name : priorité haute" 'OK' } catch { Write-TlLog "$Name : priorité inchangée ($($_.Exception.Message))" 'WARN' }
-        }
-        if ($Name -eq 'research') {
-            try { $proc.PriorityClass = 'BelowNormal'; Write-TlLog "$Name : priorité basse" 'OK' } catch { }
+        # 2026-09-28 : `.venv\Scripts\python.exe` n'est qu'un lanceur qui démarre l'interpréteur de base en processus
+        # FILS ; la priorité posée sur le lanceur seul laissait le vrai processus en priorité normale (constaté : 332 s de
+        # CPU sur le fils « Normal », 0 s sur le lanceur « AboveNormal »). On l'applique donc aussi aux fils.
+        $priorite = $null
+        if ($Name -in @('orchestrator', 'watchdog')) { $priorite = 'AboveNormal' }
+        if ($Name -eq 'research') { $priorite = 'BelowNormal' }
+        if ($priorite) {
+            try { $proc.PriorityClass = $priorite } catch { Write-TlLog "$Name : priorité inchangée ($($_.Exception.Message))" 'WARN' }
+            $fils = @(Get-CimInstance Win32_Process -Filter "ParentProcessId=$($proc.Id)" -ErrorAction SilentlyContinue)
+            foreach ($f in $fils) {
+                try { (Get-Process -Id $f.ProcessId -ErrorAction Stop).PriorityClass = $priorite } catch { }
+            }
+            Write-TlLog ("{0} : priorité {1} (lanceur + {2} fils)" -f $Name, $priorite, $fils.Count) 'OK'
         }
     } else {
         Write-TlLog ("{0} s'est arrêté immédiatement (code {1}). Voir {2}" -f $Name, $proc.ExitCode, $errLog) 'ERREUR'

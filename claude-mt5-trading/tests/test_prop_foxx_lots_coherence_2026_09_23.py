@@ -153,6 +153,9 @@ def test_coherence_non_appliquee_sous_le_seuil_de_profit(settings, broker):
 def test_coherence_reduit_le_risque_d_une_nouvelle_idee(settings, broker):
     """Profit net 12 000 $ (autres idées) → une nouvelle idée ne peut viser plus de 4 000 $. À 2,5 R le risque voulu
     (0,25 % = 250 $ → 625 $) reste sous le plafond ; à 25 R (6 250 $) il est réduit à 160 $."""
+    # le test raisonne à 0,25 % par trade : il fixe ce risque lui-même (2026-09-28, le réglage courant est
+    # temporairement 0,05 %, avec lequel 25 R = 1 250 $ ne dépasserait plus le plafond)
+    settings.risk["risk_per_trade_percent"] = 0.25
     gate, prop = _gate(settings, broker)
     st = make_state()
     _ideas(st, [5_000.0, 4_000.0, 3_000.0])                      # net 12 000 ≥ 1 % de 100 000
