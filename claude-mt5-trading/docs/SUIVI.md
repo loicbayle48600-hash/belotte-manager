@@ -450,8 +450,8 @@ n'utilise PAS Fable (retiré de TIER_A le 2026-09-23) : le quota Fable est rése
   (les agents mixtes gardent indices/métaux/crypto) ; (C4) `risk_per_trade_by_class: {forex: 0.025}` — risque forex à
   moitié ; (C6) dégradation / suspension automatique sur `live+paper` ; (C7) K03–K12 et M02–M14 (0 candidat) en SHADOW
   — les K dépendent du calendrier économique, signalé « dégradé » dans l'état : à vérifier ; (C8) N06, N12, CH157 à
-  proposer LIVE à 20 trades ; (C9) `forex_blocked_hours_utc: [9, 10, 13]` — appliqué à la demande de l'utilisateur
-  malgré l'échantillon court (recommandation : réévaluer dans 2 semaines). Refusé : (C5) une position par devise.
+  proposer LIVE à 20 trades ; (C9) heures forex interdites : finalement **non** — l'utilisateur a précisé « s'il peut trader » ;
+  `forex_blocked_hours_utc: []` (le réglage reste disponible). Refusé : (C5) une position par devise.
   Statuts déposés dans `state/agent_status_requests.jsonl`, appliqués au premier cycle de recherche (30 min après
   démarrage). Note : `llm_call` n'a ni agent ni symbole — à ajouter pour attribuer le coût IA (505 $ sur 8 jours).
 - **Stop du suiveur élargi du surcroît de spread (28/09, décision utilisateur)** : SILVER chez les démos IC (spread 82

@@ -69,9 +69,10 @@ execution:
   # - le forex en M1/M5/M15 perd en réel (120 trades, −0,25 R/trade ; l'optimiseur ne retient rien en M15) : ses signaux
   #   sont suivis en papier seulement, jamais exécutés ; H1/H4 et les autres classes continuent
   forex_short_term_paper_only: true
-  # - heures UTC interdites aux entrées forex (−21 R concentrés sur 09–11 h et 13–14 h UTC en 8 jours ; échantillon court,
-  #   à réévaluer) : refus avant revue IA
-  forex_blocked_hours_utc: [9, 10, 13]
+  # - heures UTC interdites aux entrées forex (refus avant revue IA). Mesuré : −21 R concentrés sur 09–11 h et 13–14 h UTC
+  #   en 8 jours, échantillon court. Décision utilisateur 28/09 au soir : le forex garde le droit de trader à ces heures →
+  #   liste vide (le réglage reste disponible, ex. [9, 10, 13]).
+  forex_blocked_hours_utc: []
   max_sl_atr_ratio: 4.0
   min_rr_required: 1.5
   required_setup_score: 65       # score minimal pour candidat sérieux (0-100)
