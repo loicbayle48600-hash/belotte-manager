@@ -977,13 +977,16 @@ class Orchestrator:
             positions = []
             for p in self.broker.positions(magic=self.s.magic):
                 sp = self.broker.symbol_info(p.symbol)
+                tk = self.broker.tick(p.symbol)
+                # spread du maître en prix : un suiveur qui cote le même actif plus cher élargit son stop d'autant (28/09)
+                spread = round(float(tk.ask) - float(tk.bid), int(getattr(sp, "digits", 5) or 5)) if (tk and sp) else None
                 # valeur d'un mouvement de 1,0 du prix pour 1 lot (devise du compte) : les suiveurs dimensionnent sur
                 # cette valeur et non sur le nombre de lots — 1 lot d'argent = 1 000 oz chez IC, 5 000 oz chez Admirals
                 # (2026-09-24 : copie à 5× le risque du maître, −2 781 $ contre −6 $)
                 vpp = (float(sp.tick_value) / float(sp.tick_size)) if (sp and sp.tick_size) else None
                 positions.append({"ticket": p.ticket, "symbol": p.symbol, "side": p.side.value, "volume": p.volume,
                                   "sl": p.sl, "tp": p.tp, "price_open": p.price_open, "value_per_price": vpp,
-                                  "price_current": float(p.price_current or 0.0) or None,
+                                  "price_current": float(p.price_current or 0.0) or None, "spread": spread,
                                   "time_open": p.time_open.isoformat() if getattr(p, "time_open", None) else None,
                                   "contract_size": float(sp.contract_size) if sp else None})
             payload = {"ts_utc": self.now_fn().isoformat(), "equity": float(acc.equity),

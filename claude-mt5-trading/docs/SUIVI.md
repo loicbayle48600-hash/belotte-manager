@@ -389,6 +389,16 @@ n'utilise PAS Fable (retiré de TIER_A le 2026-09-23) : le quota Fable est rése
     application ; `dedupe()` ajouté à l'optimiseur (un agent par stratégie × TF × classe × stop) et le rapport garde
     désormais toutes les survivantes avec leur walk-forward (`etape_2`). Rapport : `reports/optimizer_2026-09-28_0348.json`.
     Coût : `liquidity_sweep` et `structure_bos` ≈ 100 s par backtest de 5 000 barres contre 13 s pour `ema_trend`.
+  - **Fil de recherche bloqué (28/09)** : les propositions ont attendu 7 h, seul le fil de recherche les appliquait et il ne
+    rendait plus la main sans trace. Les files (statuts du worker, propositions de l'optimiseur) sont maintenant traitées
+    dans la boucle principale (`_apply_research_files`) ; un fil encore occupé à l'échéance suivante est journalisé avec
+    sa pile d'appels (« cycle de recherche toujours en cours »). X01–X06 ajoutés au registre le 28/09 à 15 h 12.
+- **Stop du suiveur élargi du surcroît de spread (28/09, décision utilisateur)** : SILVER chez les démos IC (spread 82
+  points) contre XAGUSD chez le maître (11) — les quatre copies argent ont pris le stop à 61,807 sur un pic que le maître
+  (stop 61,804, plus haut 61,776) n'a pas vu. Le maître exporte son spread ; à l'ouverture d'une copie, le stop du suiveur
+  est élargi de (spread suiveur − spread maître) côté défavorable, mémorisé dans la table maître → suiveur
+  (`spread_offset`) et les mises à jour du stop maître sont comparées après élargissement (`copier._widen_for_spread`).
+  Risque de la copie un peu plus grand que celui du maître : accepté par l'utilisateur (option choisie parmi trois).
   - **Décision utilisateur 28/09 (« oui monte en live »)** : X01 et X02 (`breakout_retest` H4 or/argent, stops 1,0 et
     1,5 ATR, les deux mieux classés et les plus fournis en trades) ajoutés **LIVE** ; X03–X06 en SHADOW.
 

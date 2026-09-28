@@ -45,6 +45,8 @@ class CopyAction:
     master_symbol: str = ""  # nom côté maître, pour le journal (US500 chez le maître = SPX500 chez le suiveur)
     master_price: float = 0.0  # prix courant du maître : sert à décaler SL/TP si le suiveur cote un autre contrat
     shift: float = 0.0         # décalage de prix appliqué à SL/TP (mémorisé à l'ouverture dans la table maître → suiveur)
+    master_spread: float = 0.0  # spread du maître (en prix) au moment de l'export : sert à élargir le stop du suiveur
+    spread_offset: float = 0.0  # élargissement du stop appliqué chez le suiveur (spread suiveur − spread maître)
     side: Optional[Side] = None
     volume: float = 0.0
     sl: float = 0.0
@@ -159,6 +161,7 @@ def plan_sync(master: dict, follower_positions: list, follower_equity: float, si
                 continue
             actions.append(CopyAction("open", symbol=cible, master_symbol=mp["symbol"], side=Side(mp["side"]),
                                       master_price=float(mp.get("price_current") or 0.0),
+                                      master_spread=float(mp.get("spread") or 0.0),
                                       volume=vol, sl=float(mp["sl"] or 0.0), tp=float(mp["tp"] or 0.0),
                                       master_ticket=mt,
                                       reason=f"réplication ×{ratio:.4f}" + (f" · contrat ×{contrat:.3f}" if abs(contrat - 1.0) > 1e-9 else "")
@@ -192,6 +195,11 @@ def plan_sync(master: dict, follower_positions: list, follower_equity: float, si
         shift = float(entries.get(mt, {}).get("shift", 0.0) or 0.0)
         if shift:
             m_sl, m_tp = (m_sl + shift if m_sl else 0.0), (m_tp + shift if m_tp else 0.0)
+        # stop élargi du surcroît de spread du suiveur (mémorisé à l'ouverture, décision utilisateur 2026-09-28) : le
+        # stop du maître est comparé APRÈS élargissement, du côté défavorable (au-dessus pour une vente)
+        off = float(entries.get(mt, {}).get("spread_offset", 0.0) or 0.0)
+        if off and m_sl:
+            m_sl = m_sl + off if str(mp["side"]) == Side.SELL.value else m_sl - off
         # Prix du maître ramenés à la précision du SUIVEUR (2026-09-24) : Blue Guardian cote DE40 avec moins de
         # décimales qu'IC Markets ; le SL maître 25 595,14 devenait 25 595,1 chez le suiveur, l'écart ne se
         # résorbait jamais et le copieur redemandait la même modification (« No changes », code 10025) sans fin.
@@ -495,6 +503,30 @@ class CopyTrader:
             self._log("SL/TP décalés au prix du suiveur", symbol=a.symbol, master_ticket=a.master_ticket,
                       ecart=round(ecart, digits), sl=a.sl, tp=a.tp)
 
+    def _widen_for_spread(self, a) -> None:
+        """Le suiveur peut coter le même actif avec un spread bien plus large (2026-09-28 : SILVER 82 points chez les
+        démos IC contre 11 sur XAGUSD du maître). Les quatre copies argent ont pris le stop sur un pic à 61,807
+        (prix d'achat SILVER) alors que le maître, stop à 61,804, n'a vu que 61,776. Décision utilisateur : le stop du
+        suiveur est élargi du surcroît de spread (côté défavorable) — la copie survit aux mêmes pics que le maître, au
+        prix d'un risque un peu plus grand. L'élargissement est mémorisé à l'ouverture (table maître → suiveur)."""
+        if a.kind != "open" or not a.sl or not a.master_spread:
+            return
+        tick = self.broker.tick(a.symbol)
+        spec = self.broker.symbol_info(a.symbol)
+        if tick is None or spec is None:
+            return
+        pt = float(getattr(spec, "point", 0.0) or 0.0)
+        digits = int(getattr(spec, "digits", 5) or 5)
+        delta = round((float(tick.ask) - float(tick.bid)) - float(a.master_spread), digits)
+        if delta <= pt:
+            return
+        sell = getattr(a.side, "value", a.side) == Side.SELL.value
+        a.spread_offset = delta
+        a.sl = round(a.sl + delta if sell else a.sl - delta, digits)
+        self._log("stop élargi du surcroît de spread du suiveur", symbol=a.symbol, master_symbol=a.master_symbol or a.symbol,
+                  master_ticket=a.master_ticket, spread_maitre=a.master_spread,
+                  spread_suiveur=round(float(tick.ask) - float(tick.bid), digits), elargissement=delta, sl=a.sl)
+
     #: élargissement maximal accepté d'un stop pour respecter la distance minimale du broker suiveur
     MAX_SL_WIDEN_RATIO = 2.0
 
@@ -551,6 +583,7 @@ class CopyTrader:
         if a.kind in ("open", "modify"):
             self._shift_to_follower_price(a)
         if a.kind == "open":
+            self._widen_for_spread(a)
             fit = self._fit_stops(a.symbol, a.side, a.sl, a.tp)
             if fit is None:
                 # délai croissant (60 s, 120 s, 240 s… 15 min) : le 26/09 un stop BTC trop serré pour les suiveurs a été
@@ -576,6 +609,8 @@ class CopyTrader:
                                                  "mv": self._master_vol.get(a.master_ticket, 0.0), "fv": float(a.volume)}
                 if a.shift:
                     self.mapping[a.master_ticket]["shift"] = a.shift
+                if a.spread_offset:
+                    self.mapping[a.master_ticket]["spread_offset"] = a.spread_offset
             retry_in = None
             if res.ok:
                 self._failures.pop(("open", a.master_ticket), None)
