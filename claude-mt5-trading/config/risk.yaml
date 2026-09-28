@@ -90,6 +90,10 @@ profit_management:
   # et stop suiveur armés, quel que soit le R. `protect_profit_money` : seuil absolu optionnel (0 = non utilisé).
   protect_profit_risk_ratio: 0.16
   protect_profit_money: 0
+  # « si ça monte à 40 $, je ne veux pas que ça redescende sous 35 $ » (28/09) : une fois la protection déclenchée, le
+  # stop verrouille 0,14 R (35 $ pour 250 $ risqués, 87,5 $ pour 625 $) et le suivi ne redescend jamais sous ce plancher.
+  # Si ce niveau est trop près du prix pour le broker, le stop se pose au plus près accepté, en profit.
+  protect_profit_lock_ratio: 0.14
   trailing_atr_multiplier: 1.5
   trailing_use_market_structure: true
   never_widen_stop: true

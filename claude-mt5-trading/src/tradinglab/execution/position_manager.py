@@ -41,6 +41,10 @@ class PMConfig:
     # optionnel (le premier atteint déclenche). 0 = désactivé.
     protect_profit_risk_ratio: float = 0.0
     protect_profit_money: float = 0.0
+    # 2026-09-28, demande utilisateur : « si ça monte à 40 $, je ne veux pas que ça redescende sous 35 $ » → une fois la
+    # protection déclenchée, le stop verrouille cette fraction du risque initial (0,14 R = 35 $ pour 250 $ risqués) et
+    # le suivi ne redescend jamais sous ce plancher. 0 = plancher au break-even seulement.
+    protect_profit_lock_ratio: float = 0.0
     regime_overrides: dict | None = None
 
     @classmethod
@@ -248,7 +252,7 @@ class PositionManager:
             # le 2026-09-21 : TP1 +2,49 $ puis stop -3,78 $, net -1,29 $, structure jamais validée.
             # Avant TP1 l'exigence garde son sens : elle évite de se faire sortir sur du bruit.
             if plan.tp1_done or plan.trailing_forced or not cfg.break_even_requires_structure or ctx.structure_ok:
-                be = self._be_level(plan, side, spec)
+                be = self._floor_level(plan, side, spec)
                 new_sl = be
                 be_pending = True
                 actions.append(f"break-even {be}")
@@ -264,7 +268,7 @@ class PositionManager:
                 if sw is not None:
                     # structure : sous le swing bas (BUY) / au-dessus du swing haut (SELL), on garde le plus protecteur mais pas au-delà du prix
                     trail = max(trail, sw - 0.1 * ctx.atr) if side is Side.BUY else min(trail, sw + 0.1 * ctx.atr)
-            be_floor = self._be_level(plan, side, spec)
+            be_floor = self._floor_level(plan, side, spec)
             trail = max(trail, be_floor) if side is Side.BUY else min(trail, be_floor)
             plan.trailing_active = True
             if new_sl is None or (side is Side.BUY and trail > new_sl) or (side is Side.SELL and trail < new_sl):
@@ -281,6 +285,13 @@ class PositionManager:
             else:
                 min_dist = spec.min_stop_distance
                 too_close = abs(price - new_sl) < min_dist or (side is Side.BUY and new_sl >= price) or (side is Side.SELL and new_sl <= price)
+                if too_close and plan.trailing_forced:
+                    # profit protégé (2026-09-28) : plutôt que d'attendre un cycle où le niveau serait plaçable — et
+                    # risquer un retour sous le plancher entre-temps — on pose le stop au plus près que le broker accepte
+                    proche = normalize_price(price - side.sign * (min_dist + spec.tick_size), spec)
+                    if is_tighter_or_equal(side, proche, current) and side.sign * (proche - plan.entry) > 0 and abs(proche - current) >= spec.tick_size:
+                        new_sl, too_close = proche, False
+                        actions.append(f"plancher {normalize_price(self._floor_level(plan, side, spec), spec)} trop proche : stop au plus près {proche}")
                 if too_close:
                     actions.append(f"SL {new_sl} trop proche du prix, ignoré")
                 elif abs(new_sl - current) >= spec.tick_size:
@@ -304,6 +315,16 @@ class PositionManager:
     commission_per_lot = None
     #: commission ramenée en distance de prix (spec, prix) -> float ; prioritaire sur `commission_per_lot` (crypto)
     commission_price = None
+
+    def _floor_level(self, plan: BotPositionPlan, side: Side, spec: Optional[SymbolSpec]) -> float:
+        """Plancher du stop une fois le profit protégé : le break-even, ou plus haut, le verrou de profit
+        (`protect_profit_lock_ratio` × risque initial) quand la protection a été déclenchée (`trailing_forced`)."""
+        be = self._be_level(plan, side, spec)
+        lock = float(self.cfg.protect_profit_lock_ratio or 0.0)
+        if not plan.trailing_forced or lock <= 0:
+            return be
+        verrou = plan.entry + side.sign * lock * abs(plan.entry - plan.initial_sl)
+        return max(be, verrou) if side is Side.BUY else min(be, verrou)
 
     def _be_level(self, plan: BotPositionPlan, side: Side, spec: Optional[SymbolSpec]) -> float:
         """Niveau de break-even : entrée + offset (0,05 R) + commission ramenée en distance de prix.

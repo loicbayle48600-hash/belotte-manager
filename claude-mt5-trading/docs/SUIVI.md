@@ -417,6 +417,9 @@ n'utilise PAS Fable (retiré de TIER_A le 2026-09-23) : le quota Fable est rése
   le meilleur R atteint 0,16 R (= 100 $ pour les 625 $ risqués à 0,125 %, 40 $ avec le 0,05 % temporaire, et
   proportionnel chez les suiveurs), break-even et stop suiveur sont armés quel que soit le R (`profit_protection` au
   journal). `protect_profit_money` : seuil absolu optionnel, 0 = non utilisé.
+  **Verrou** (« si ça monte à 40 $, pas sous 35 $ ») : `protect_profit_lock_ratio: 0.14` — une fois la protection
+  déclenchée, le stop se pose à 0,14 R (35 $ pour 250 $ risqués) et le suivi ne redescend jamais sous ce plancher
+  (`_floor_level`) ; niveau trop près du prix pour le broker → stop au plus près accepté, en profit, sans attendre.
 - **Stop du suiveur élargi du surcroît de spread (28/09, décision utilisateur)** : SILVER chez les démos IC (spread 82
   points) contre XAGUSD chez le maître (11) — les quatre copies argent ont pris le stop à 61,807 sur un pic que le maître
   (stop 61,804, plus haut 61,776) n'a pas vu. Le maître exporte son spread ; à l'ouverture d'une copie, le stop du suiveur

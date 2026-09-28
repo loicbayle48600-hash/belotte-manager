@@ -132,3 +132,40 @@ def test_config_reelle_protege_a_0_16_r():
     cfg = yaml.safe_load(open("config/risk.yaml", encoding="utf-8"))["profit_management"]
     pmc = PMConfig.from_config(cfg)
     assert pmc.protect_profit_risk_ratio == 0.16 and pmc.protect_profit_money == 0
+
+
+def test_verrou_de_profit_le_stop_ne_redescend_pas_sous_35_dollars(broker, tmp_path):
+    """Demande utilisateur du 28/09 : « si ça monte à 40 $, je ne veux pas que ça redescende sous 35 $ ». Risque réel
+    300 $ (0,3 lot × 100 pips) : seuil 0,16 R = 48 $, verrou 0,14 R = 42 $ ; le stop se pose au verrou dès le seuil."""
+    pm, store = _pm(broker, tmp_path)
+    pm.cfg = PMConfig(protect_profit_risk_ratio=0.16, protect_profit_lock_ratio=0.14)
+    pos, plan = _buy(broker, store, sl_dist=0.0100)
+    spec = broker.symbol_info("EURUSD")
+    dist = pos.price_open - pos.sl
+    broker.set_price("EURUSD", pos.price_open + 0.20 * dist)     # seuil atteint (0,16 R)
+    acts = pm.manage(plan, broker.position(pos.ticket), spec, MarketContext(atr=0.0004, structure_ok=True))
+    sl = broker.position(pos.ticket).sl
+    assert plan.trailing_forced and sl >= pos.price_open + 0.14 * dist - 1e-9, acts
+    broker.set_price("EURUSD", pos.price_open + 0.9 * dist)      # ça monte : le suivi suit, jamais sous le verrou
+    pm.manage(plan, broker.position(pos.ticket), spec, MarketContext(atr=0.0004, structure_ok=True))
+    assert broker.position(pos.ticket).sl >= sl
+
+
+def test_verrou_trop_pres_du_prix_stop_au_plus_pres(broker, tmp_path):
+    """Seuil à 0,16 R mais broker exigeant 20 points : à +0,165 R le verrou (0,14 R) est à 2,5 pips du prix, trop près.
+    Plutôt que d'attendre, le stop se pose au plus près accepté, en profit."""
+    pm, store = _pm(broker, tmp_path)
+    pm.cfg = PMConfig(protect_profit_risk_ratio=0.16, protect_profit_lock_ratio=0.14)
+    pos, plan = _buy(broker, store, sl_dist=0.0100)
+    spec = broker.symbol_info("EURUSD")
+    dist = pos.price_open - pos.sl
+    broker.set_price("EURUSD", pos.price_open + 0.165 * dist)
+    acts = pm.manage(plan, broker.position(pos.ticket), spec, MarketContext(atr=0.0004, structure_ok=True))
+    sl = broker.position(pos.ticket).sl
+    assert plan.trailing_forced and pos.price_open < sl < pos.price_open + 0.14 * dist, acts
+
+
+def test_config_reelle_verrou_0_14_r():
+    import yaml
+    cfg = yaml.safe_load(open("config/risk.yaml", encoding="utf-8"))["profit_management"]
+    assert PMConfig.from_config(cfg).protect_profit_lock_ratio == 0.14
