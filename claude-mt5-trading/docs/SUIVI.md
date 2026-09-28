@@ -468,6 +468,14 @@ n'utilise PAS Fable (retiré de TIER_A le 2026-09-23) : le quota Fable est rése
   d'un ordre en attente n'est pas branchée : un tel candidat d'agent LIVE est refusé avant revue (« SHADOW seulement »).
   Reste à faire pour le réel : gate sur le prix de l'ordre, gestionnaire des ordres (durée de vie, annulation, une attente
   par symbole, adoption de la position), copie des positions une fois ouvertes.
+- **Boost des tests en ombre (28/09 au soir, demande utilisateur « continue les tests en shadow, booste-les »)**. Bilan
+  à 22 h : 154 agents SHADOW, 293 trades d'ombre clos, 57 ouverts ; meilleur CH157 +19,4 R sur 16 (+1,21 R/trade), puis
+  CH179, CH158, CH101, O01 ; pires CH135 −17 R, P20 −15,5 R, O03 −13,8 R ; 115 agents SHADOW sans aucun trade d'ombre
+  (challengers surtout) ; pipeline : 124 échouent au backtest, 27 l'ont passé, 4 jusqu'au Monte-Carlo ; les passages du
+  worker ne traitaient plus que 0 à 10 agents (file vide, nouvel essai à 24 h). Réglages : worker 40 agents par passage
+  toutes les 15 min (`research_interval_sec` 900), nouvel essai après 8 h, ombre 600 positions / 6 par agent. 15
+  challengers (CH201–CH215, paramètres ±20 %) des cinq meilleurs agents d'ombre déposés en SHADOW via
+  `state/agent_proposals.jsonl`. Aucun seuil de risque ni de validation touché (100 trades d'ombre toujours requis).
 - **Stop du suiveur élargi du surcroît de spread (28/09, décision utilisateur)** : SILVER chez les démos IC (spread 82
   points) contre XAGUSD chez le maître (11) — les quatre copies argent ont pris le stop à 61,807 sur un pic que le maître
   (stop 61,804, plus haut 61,776) n'a pas vu. Le maître exporte son spread ; à l'ouverture d'une copie, le stop du suiveur

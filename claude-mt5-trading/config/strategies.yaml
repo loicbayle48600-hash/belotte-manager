@@ -14,11 +14,13 @@ learning:
   # plafond de concentration, symbole déjà porté, créneaux de revue, plafond d'entrées) est suivi en papier (mode « paper »)
   # pour que l'agent accumule son échantillon ; jugement possible sur « live+paper »
   paper_trades_live_agents: true
-  research_worker_agents_per_cycle: 20
-  research_retry_hours: 24
+  # 2026-09-28 au soir, demande utilisateur (« continue les tests en shadow, booste-les ») : 20 → 40 agents par passage,
+  # nouvel essai après 8 h au lieu de 24 (les passages ne traitaient plus que 0 à 10 agents, la file était vide)
+  research_worker_agents_per_cycle: 40
+  research_retry_hours: 8
   # positions VIRTUELLES (aucun ordre) : 50 places ne suffisaient plus pour 115 agents SHADOW (2026-09-25)
-  shadow_max_open: 400
-  shadow_max_open_per_agent: 4
+  shadow_max_open: 600            # 400 → 600 le 2026-09-28 au soir (boost des tests en ombre, demande utilisateur)
+  shadow_max_open_per_agent: 6    # 4 → 6, même décision
   # verdict post-trade « spread élevé » aligné sur le gate 07b (2026-09-25)
   max_spread_sl_ratio: 0.20
   champion_challenger: true

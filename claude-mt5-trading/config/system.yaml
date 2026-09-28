@@ -27,7 +27,7 @@ scheduler:
   fast_scanner_interval_sec: 60
   news_interval_sec: 120
   calendar_interval_sec: 900
-  research_interval_sec: 1800    # 3600 -> 1800 le 2026-09-25 : 10 agents par passage au lieu de 20, charge plus courte
+  research_interval_sec: 900     # 3600 -> 1800 le 25/09, 1800 -> 900 le 28/09 au soir (boost des tests en ombre, demande utilisateur)
   timeframes: ["M5", "M15", "H1", "H4", "D1"]
 
 execution:
