@@ -90,6 +90,21 @@ def score(m: dict) -> float:
     return retrecie * math.sqrt(min(n, 200))
 
 
+def dedupe(finals: list[dict]) -> list[dict]:
+    """Un seul agent par (stratégie, TF, classe, sl_atr), le mieux classé. Premier passage réel du 28/09 : les 20 retenus
+    n'étaient que 6 configurations distinctes — avec la gestion de position (TP partiels à 1,5 R / 2,5 R, stop suiveur),
+    la cible finale `rr` ne change presque rien au résultat, et ses 4 variantes prenaient 4 places du classement."""
+    vus, out = set(), []
+    for r in finals:
+        c = r["config"]
+        cle = (c["strategy"], c["entry_tf"], c["asset_class"], c["sl_atr"])
+        if cle in vus:
+            continue
+        vus.add(cle)
+        out.append(r)
+    return out
+
+
 def proposal_spec(cfg: Config, agent_id: str, metrics: dict, wf: dict, status: str) -> dict:
     """Spécification d'agent (AgentSpec.to_dict) prête à être ajoutée au registre par l'orchestrateur."""
     return {"agent_id": agent_id, "family": "X", "name": cfg.name, "strategy": cfg.strategy, "markets": list(CLASSES[cfg.asset_class]),
@@ -260,7 +275,7 @@ def main(argv: Optional[list[str]] = None) -> int:  # pragma: no cover - process
         if w and survives_stage2(w):
             finals.append({**r, "wf": w})
     finals.sort(key=lambda r: -(score(r["metrics"]) * (0.5 + r["wf"]["robustness_ratio"])))
-    finals = finals[: args.top]
+    finals = dedupe(finals)[: args.top]
     reg = AgentRegistry(status_file=s.data_dir / "agent_status.json")
     ids = next_ids(set(reg.agents), len(finals))
     props = [proposal_spec(Config(**r["config"]), aid, r["metrics"], r["wf"], args.status) for r, aid in zip(finals, ids)]
@@ -271,7 +286,11 @@ def main(argv: Optional[list[str]] = None) -> int:  # pragma: no cover - process
     rapport = {"date": datetime.now(timezone.utc).isoformat(), "duree_sec": round(time.time() - t0), "configurations": len(configs),
                "survivants_etape_1": len(survivants), "retenus": len(finals), "propositions": props,
                "classement": [{"config": r["config"], "metrics": r["metrics"], "wf": r["wf"]} for r in finals],
-               "etape_1_top": [{"config": r["config"], "metrics": r["metrics"]} for r in survivants[:40]]}
+               "etape_1_top": [{"config": r["config"], "metrics": r["metrics"]} for r in survivants[:40]],
+               # toutes les survivantes avec leur walk-forward, y compris celles qui l'ont échoué (analyse a posteriori)
+               "etape_2": [{"config": r["config"], "metrics": r["metrics"],
+                            "wf": r2.get(tuple(sorted(r["config"].items())), {}).get("wf"),
+                            "erreur": r2.get(tuple(sorted(r["config"].items())), {}).get("error")} for r in survivants]}
     (s.home / "reports").mkdir(exist_ok=True)
     out = s.home / "reports" / f"optimizer_{datetime.now(timezone.utc).strftime('%Y-%m-%d_%H%M')}.json"
     out.write_text(json.dumps(rapport, ensure_ascii=False, indent=1, default=str), encoding="utf-8")

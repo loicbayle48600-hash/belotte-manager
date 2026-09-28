@@ -41,3 +41,17 @@ def test_orchestrateur_ajoute_les_propositions(tmp_path):
     (tmp_path / "agent_proposals.jsonl").write_text("\n".join(lignes), encoding="utf-8")
     assert o._apply_agent_proposals() == 1 and ajoutes == ["X02"]
     assert not (tmp_path / "agent_proposals.jsonl").exists()
+
+
+def test_dedupe_garde_le_mieux_classe_par_strategie_tf_classe_stop():
+    """28/09 : 20 retenus = 6 configurations distinctes, `rr` ne changeant presque rien avec la gestion de position."""
+    def r(strat, tf, cls, sl, rr):
+        return {"config": {"strategy": strat, "entry_tf": tf, "trend_tf": "D1", "sl_atr": sl, "rr": rr, "asset_class": cls}}
+    classes = [r("breakout_retest", "H4", "metals", 1.0, 1.5), r("breakout_retest", "H4", "metals", 1.0, 2.5),
+               r("breakout_retest", "H4", "metals", 1.5, 3.0), r("macd_momentum", "H4", "metals", 1.0, 1.5),
+               r("breakout_retest", "H1", "metals", 1.0, 1.5), r("breakout_retest", "H4", "forex", 1.0, 1.5)]
+    out = opt.dedupe(classes)
+    assert [(x["config"]["strategy"], x["config"]["entry_tf"], x["config"]["asset_class"], x["config"]["sl_atr"], x["config"]["rr"]) for x in out] == [
+        ("breakout_retest", "H4", "metals", 1.0, 1.5), ("breakout_retest", "H4", "metals", 1.5, 3.0),
+        ("macd_momentum", "H4", "metals", 1.0, 1.5), ("breakout_retest", "H1", "metals", 1.0, 1.5),
+        ("breakout_retest", "H4", "forex", 1.0, 1.5)]

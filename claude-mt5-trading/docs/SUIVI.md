@@ -371,9 +371,24 @@ n'utilise PAS Fable (retiré de TIER_A le 2026-09-23) : le quota Fable est rése
   `research/optimizer.py` — grille 12 stratégies × 4 unités de temps × 3 stops × 4 objectifs × 4 classes (2 304
   configurations), chacune jugée sur 2 à 4 symboles à la fois, avec la gestion réelle du bot ; tri large (PF ≥ 1,2,
   ≥ 40 trades, ≥ 0,10 R, DD ≤ 15 R) puis walk-forward anchoré 4 plis (robustesse ≥ 0,5, hors échantillon > 0).
-  Score = espérance rétrécie (n/(n+30)) × √n. Multiprocessing 20 cœurs, priorité normale (demande utilisateur).
-  Les retenus deviennent des propositions (`state/agent_proposals.jsonl`) que l'orchestrateur ajoute (famille X,
-  SHADOW par défaut, `--status LIVE` possible). GPU non utilisé : moteur barre par barre.
+  Score = espérance rétrécie (n/(n+30)) × √n. Multiprocessing 20 cœurs. L'utilisateur voulait une priorité
+  « moyenne » : essayée, elle portait les cycles du bot à 37–70 s et faisait dépasser le délai des revues IA ; les
+  calculs tournent en **priorité basse** (santé du bot d'abord, ils gardent les cœurs libres). GPU non utilisé :
+  moteur barre par barre. Les retenus deviennent des propositions (`state/agent_proposals.jsonl`) que l'orchestrateur
+  ajoute (famille X, SHADOW par défaut, `--status LIVE` possible).
+  - Lectures du terminal MT5 en douceur (`research/rates_cache.py`) : le premier essai (52 × 10 000 barres d'affilée)
+    a figé l'orchestrateur 7 minutes ; désormais cache disque `data/cache/rates`, pause 2 s, arrêt si le bot ne
+    boucle plus depuis 90 s.
+  - **Premier passage réel (28/09, 00:58 → 05:48, 4 h 52)** : 2 304 configurations, 0 erreur, 160 survivantes au tri
+    large, **20 retenues après walk-forward, toutes or/argent en H4 (tendance D1)** : `breakout_retest` (PF 1,37–1,41,
+    186–212 trades, robustesse WF 2,9–3,0, hors échantillon +0,26 à +0,37 R), `macd_momentum` (PF 2,37, 40 trades,
+    robustesse 2,7–2,8, HE +0,46 à +0,51 R), `ema_trend` (PF 2,04, 85 trades, robustesse 0,97, HE +0,38 R). Aucune
+    configuration forex, indices ou crypto, ni aucune en M15/H1, n'a passé le walk-forward.
+    Les 20 retenues n'étaient que **6 configurations distinctes** : avec la gestion de position (TP partiels, stop
+    suiveur), la cible finale `rr` ne change presque rien. Propositions réduites à la main à X01–X06 avant leur
+    application ; `dedupe()` ajouté à l'optimiseur (un agent par stratégie × TF × classe × stop) et le rapport garde
+    désormais toutes les survivantes avec leur walk-forward (`etape_2`). Rapport : `reports/optimizer_2026-09-28_0348.json`.
+    Coût : `liquidity_sweep` et `structure_bos` ≈ 100 s par backtest de 5 000 barres contre 13 s pour `ema_trend`.
 
 ## À FAIRE (lundi, avec Fable)
 
