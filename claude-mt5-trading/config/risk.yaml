@@ -88,12 +88,15 @@ profit_management:
   # suivre la taille des lots — 0,16 R = 100 $ pour les 625 $ risqués au réglage de référence (0,125 %), soit 40 $ avec
   # le risque temporaire de 0,05 % ; vaut aussi chez les suiveurs. À ce seuil : break-even (entrée + 0,05 R + commission)
   # et stop suiveur armés, quel que soit le R. `protect_profit_money` : seuil absolu optionnel (0 = non utilisé).
-  protect_profit_risk_ratio: 0.16
+  # 28/09 au soir, décision utilisateur « seuil plus haut » : 0,16 → 0,5 R. Mesuré de 18 h à 18 h 30 avec 0,16 R / verrou
+  # 0,14 R : 7 trades protégés sur 8 coupés entre +0,02 et +0,13 R sur un simple retour du prix, aucun n'a pu courir.
+  protect_profit_risk_ratio: 0.5
   protect_profit_money: 0
-  # « si ça monte à 40 $, je ne veux pas que ça redescende sous 35 $ » (28/09) : une fois la protection déclenchée, le
-  # stop verrouille 0,14 R (35 $ pour 250 $ risqués, 87,5 $ pour 625 $) et le suivi ne redescend jamais sous ce plancher.
-  # Si ce niveau est trop près du prix pour le broker, le stop se pose au plus près accepté, en profit.
-  protect_profit_lock_ratio: 0.14
+  # Verrou : le plus haut de 0,25 R (minimum) et de la MOITIÉ du meilleur profit atteint (monte avec le trade). Une fois
+  # à +0,5 R le trade ne peut plus finir en perte ; à +1,2 R il garde au moins 0,6 R. Si le niveau est trop près du prix
+  # pour le broker, le stop se pose au plus près accepté, et le bot ferme lui-même au marché sous le verrou.
+  protect_profit_lock_ratio: 0.25
+  protect_profit_lock_fraction: 0.5
   trailing_atr_multiplier: 1.5
   trailing_use_market_structure: true
   never_widen_stop: true

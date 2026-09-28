@@ -92,3 +92,36 @@ def test_verrou_tenu_par_le_stop_broker_pas_de_fermeture(broker, tmp_path):
     broker.set_price("EURUSD", pos.price_open + 0.45 * dist)           # léger repli, au-dessus du stop : rien
     acts = pm.manage(plan, broker.position(pos.ticket), spec, MarketContext(atr=0.0004, structure_ok=True))
     assert broker.position(pos.ticket) is not None and broker.position(pos.ticket).sl == sl and not any("fermeture" in a for a in acts)
+
+
+def test_verrou_a_la_moitie_du_meilleur_profit(broker, tmp_path):
+    """Décision utilisateur du 28/09 (« seuil plus haut ») : protection à +0,5 R, verrou = moitié du meilleur profit."""
+    pm, store = _pm(broker, tmp_path)
+    pm.cfg = PMConfig(protect_profit_risk_ratio=0.5, protect_profit_lock_ratio=0.25, protect_profit_lock_fraction=0.5)
+    t = broker.tick("EURUSD")
+    r = broker.order_send(OrderRequest("EURUSD", Side.BUY, 0.3, t.ask - 0.0100, magic=51000))
+    pos = broker.position(r.ticket)
+    plan = BotPositionPlan(pos.ticket, "EURUSD", "BUY", "B01", "c1", pos.price_open, pos.sl, pos.volume, 300.0, 0.3,
+                           opened_at=NOW.isoformat(), last_sl=pos.sl, regime="TRENDING")
+    store.state.bot_positions[str(pos.ticket)] = plan
+    dist = pos.price_open - pos.sl
+    spec = broker.symbol_info("EURUSD")
+    ctx = MarketContext(atr=0.0100, structure_ok=True)                 # ATR large : le suivi 1,5 ATR ne joue pas
+    _bid(broker, pos.ticket, pos.price_open + 0.3 * dist)              # +0,3 R : pas encore protégé
+    pm.manage(plan, broker.position(pos.ticket), spec, ctx)
+    assert not plan.trailing_forced
+    _bid(broker, pos.ticket, pos.price_open + 0.6 * dist)              # +0,6 R : protégé, verrou 0,30 R
+    pm.manage(plan, broker.position(pos.ticket), spec, ctx)
+    assert plan.trailing_forced and abs(broker.position(pos.ticket).sl - (pos.price_open + 0.30 * dist)) < 2 * spec.tick_size
+    _bid(broker, pos.ticket, pos.price_open + 1.2 * dist)              # +1,2 R : le verrou monte à 0,60 R
+    pm.manage(plan, broker.position(pos.ticket), spec, ctx)
+    assert abs(broker.position(pos.ticket).sl - (pos.price_open + 0.60 * dist)) < 2 * spec.tick_size
+    _bid(broker, pos.ticket, pos.price_open + 0.9 * dist)              # repli à +0,9 R : au-dessus du verrou, rien
+    acts = pm.manage(plan, broker.position(pos.ticket), spec, ctx)
+    assert broker.position(pos.ticket) is not None and not any("fermeture" in a for a in acts)
+
+
+def test_config_reelle_seuil_0_5_r_verrou_moitie():
+    import yaml
+    cfg = PMConfig.from_config(yaml.safe_load(open("config/risk.yaml", encoding="utf-8"))["profit_management"])
+    assert cfg.protect_profit_risk_ratio == 0.5 and cfg.protect_profit_lock_ratio == 0.25 and cfg.protect_profit_lock_fraction == 0.5

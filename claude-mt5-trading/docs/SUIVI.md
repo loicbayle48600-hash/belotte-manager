@@ -420,6 +420,10 @@ n'utilise PAS Fable (retiré de TIER_A le 2026-09-23) : le quota Fable est rése
   **Verrou** (« si ça monte à 40 $, pas sous 35 $ ») : `protect_profit_lock_ratio: 0.14` — une fois la protection
   déclenchée, le stop se pose à 0,14 R (35 $ pour 250 $ risqués) et le suivi ne redescend jamais sous ce plancher
   (`_floor_level`) ; niveau trop près du prix pour le broker → stop au plus près accepté, en profit, sans attendre.
+  **28/09 au soir, décision utilisateur « seuil plus haut »** : mesuré de 18 h à 18 h 30 avec 0,16 R / verrou 0,14 R, 7
+  trades protégés sur 8 coupés entre +0,02 et +0,13 R sur un simple retour du prix. Nouveau réglage : protection à
+  **0,5 R**, verrou = max(0,25 R, **moitié du meilleur profit atteint**) (`protect_profit_lock_fraction: 0.5`,
+  `_lock_r`) — le trade respire, et une fois à +0,5 R il ne peut plus finir en perte.
   **Verrou logiciel** : si le stop broker n'a pas pu être posé au verrou (distance minimale) et que le prix repasse
   sous 0,14 R, la position est fermée au marché (`profit_lock_exit`) ; le stop broker au plus près reste le filet.
   **Bouton break-even** (« les positions qui ont un gros profit : le stop juste sous le prix dès qu'on clique ») : le

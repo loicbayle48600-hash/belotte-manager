@@ -45,6 +45,9 @@ class PMConfig:
     # protection déclenchée, le stop verrouille cette fraction du risque initial (0,14 R = 35 $ pour 250 $ risqués) et
     # le suivi ne redescend jamais sous ce plancher. 0 = plancher au break-even seulement.
     protect_profit_lock_ratio: float = 0.0
+    # 2026-09-28 (« seuil plus haut, marge plus large ») : le verrou vaut aussi cette fraction du MEILLEUR profit atteint
+    # (0,5 = la moitié), s'il est plus haut que `protect_profit_lock_ratio` ; il monte donc avec le trade. 0 = désactivé.
+    protect_profit_lock_fraction: float = 0.0
     regime_overrides: dict | None = None
 
     @classmethod
@@ -237,7 +240,7 @@ class PositionManager:
         # 3b. verrou de profit LOGICIEL (2026-09-28, « si ça monte à 40 $, pas sous 35 $ ») : quand le stop broker n'a
         #     pas pu être posé au verrou (distance minimale du broker) et que le prix repasse sous le verrou, la position
         #     est fermée au marché — le stop broker, posé au plus près, reste le filet en cas de trou entre deux cycles
-        lock = float(cfg.protect_profit_lock_ratio or 0.0)
+        lock = self._lock_r(plan)
         if plan.trailing_forced and lock > 0 and plan.max_r >= max(lock, float(cfg.protect_profit_risk_ratio or 0.0)) and r < lock:
             verrou = plan.entry + side.sign * lock * abs(plan.entry - plan.initial_sl)
             stop_broker = pos.sl if pos.has_sl else plan.last_sl
@@ -245,7 +248,7 @@ class PositionManager:
                 res = self.broker.close_position(pos.ticket, comment="verrou de profit")
                 self.journal.event("profit_lock_exit", ticket=pos.ticket, symbol=pos.symbol, r=round(r, 3), verrou_r=lock,
                                    max_r=round(plan.max_r, 3), ok=bool(res.ok))
-                actions.append(f"verrou de profit : fermeture au marché à {r:.2f} R (verrou {lock} R)" if res.ok
+                actions.append(f"verrou de profit : fermeture au marché à {r:.2f} R (verrou {lock:.2f} R)" if res.ok
                                else f"verrou de profit : fermeture refusée ({getattr(res, 'comment', '')})")
                 if res.ok:
                     plan.notes.append("close_command:profit_lock")
@@ -337,11 +340,17 @@ class PositionManager:
         """Plancher du stop une fois le profit protégé : le break-even, ou plus haut, le verrou de profit
         (`protect_profit_lock_ratio` × risque initial) quand la protection a été déclenchée (`trailing_forced`)."""
         be = self._be_level(plan, side, spec)
-        lock = float(self.cfg.protect_profit_lock_ratio or 0.0)
+        lock = self._lock_r(plan)
         if not plan.trailing_forced or lock <= 0:
             return be
         verrou = plan.entry + side.sign * lock * abs(plan.entry - plan.initial_sl)
         return max(be, verrou) if side is Side.BUY else min(be, verrou)
+
+    def _lock_r(self, plan: BotPositionPlan) -> float:
+        """Verrou de profit en R : le plus haut du verrou fixe et de la fraction du meilleur profit atteint."""
+        fixe = float(self.cfg.protect_profit_lock_ratio or 0.0)
+        frac = float(self.cfg.protect_profit_lock_fraction or 0.0)
+        return max(fixe, frac * float(plan.max_r or 0.0))
 
     def _be_level(self, plan: BotPositionPlan, side: Side, spec: Optional[SymbolSpec]) -> float:
         """Niveau de break-even : entrée + offset (0,05 R) + commission ramenée en distance de prix.

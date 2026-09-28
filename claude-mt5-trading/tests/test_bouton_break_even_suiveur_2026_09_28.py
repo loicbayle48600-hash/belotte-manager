@@ -142,7 +142,7 @@ def test_config_reelle_protege_a_0_16_r():
     import yaml
     cfg = yaml.safe_load(open("config/risk.yaml", encoding="utf-8"))["profit_management"]
     pmc = PMConfig.from_config(cfg)
-    assert pmc.protect_profit_risk_ratio == 0.16 and pmc.protect_profit_money == 0
+    assert pmc.protect_profit_risk_ratio == 0.5 and pmc.protect_profit_money == 0     # 0,16 → 0,5 le 28/09 au soir
 
 
 def test_verrou_de_profit_le_stop_ne_redescend_pas_sous_35_dollars(broker, tmp_path):
@@ -179,7 +179,7 @@ def test_verrou_trop_pres_du_prix_stop_au_plus_pres(broker, tmp_path):
 def test_config_reelle_verrou_0_14_r():
     import yaml
     cfg = yaml.safe_load(open("config/risk.yaml", encoding="utf-8"))["profit_management"]
-    assert PMConfig.from_config(cfg).protect_profit_lock_ratio == 0.14
+    assert PMConfig.from_config(cfg).protect_profit_lock_ratio == 0.25                # 0,14 → 0,25 le 28/09 au soir
 
 
 def test_gros_profit_le_bouton_verrouille_le_profit_actuel(broker, tmp_path):
