@@ -167,11 +167,21 @@ class LearningStore:
             self.conn.commit()
         return int(cur.lastrowid)
 
+    @staticmethod
+    def _mode_clause(mode: Optional[str]) -> tuple[str, list]:
+        """``"live"`` / ``"shadow"`` / ``"paper"`` ; ``"live+paper"`` = trades réels + signaux papier des agents LIVE
+        (2026-09-28 : juger un agent sur tout ce qu'il a signalé) ; ``"all"`` ou None = sans filtre."""
+        if mode in (None, "all"):
+            return "1=1", []
+        if mode == "live+paper":
+            return "mode IN ('live', 'paper')", []
+        return "mode=?", [mode]
+
     def trades(self, agent_id: Optional[str] = None, mode: str = "live", limit: Optional[int] = None,
                since: Optional[str] = None) -> list[dict]:
         """``since`` (ISO) : uniquement les trades clôturés à partir de cet instant (ex. nouvelle période shadow après rollback)."""
-        sql = "SELECT * FROM trades WHERE mode=?"
-        args: list = [mode]
+        clause, args = self._mode_clause(mode)
+        sql = "SELECT * FROM trades WHERE " + clause
         if agent_id:
             sql += " AND agent_id=?"
             args.append(agent_id)

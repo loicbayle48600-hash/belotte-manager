@@ -12,6 +12,7 @@ peut forcer SAFE_MODE via state/watchdog.json.
 from __future__ import annotations
 
 import argparse
+import re
 import signal
 import sys
 from concurrent.futures import ThreadPoolExecutor
@@ -424,6 +425,40 @@ class Orchestrator:
         label, feats = risk_sentiment(rets)
         return {"risk_sentiment": label, **{k: v for k, v in feats.items() if not isinstance(v, dict)}}
 
+    #: contrôles du gate qui traduisent la CAPACITÉ du compte, pas la qualité du signal : un refus limité à ceux-ci
+    #: laisse le signal suivi en papier (2026-09-28). Les noms sont comparés sans leur préfixe numérique (« 14_ », « 15_ »).
+    CONTROLES_CAPACITE = frozenset({"daily_guard", "max_open_positions", "max_positions_per_symbol", "max_total_open_risk",
+                                    "daily_loss_internal", "daily_budget_incl_open_risk", "max_consecutive_losses",
+                                    "no_averaging_or_grid", "currency_factor_risk", "correlated_cluster_risk",
+                                    "asset_class_risk", "duplicate_idea", "existing_position", "daily_drawdown",
+                                    "overall_drawdown", "prop_max_lots", "prop_trade_idea", "prop_consistency",
+                                    "prop_hard_daily", "prop_hard_overall", "final_approval"})
+
+    @classmethod
+    def _refus_capacite(cls, refus) -> bool:
+        """Vrai si TOUS les contrôles refusés sont des contrôles de capacité (« 20_final_approval » ne compte pas seul :
+        il échoue aussi quand le score ou le RR manquent, ce qui est une question de qualité)."""
+        noms = [re.sub(r"^\d+[a-z]?_", "", str(r)) for r in refus]
+        return bool(noms) and all(n in cls.CONTROLES_CAPACITE for n in noms) and any(n != "final_approval" for n in noms)
+
+    def _papier(self, papier: list, now: datetime) -> int:
+        """Trades papier des agents LIVE (décision utilisateur 2026-09-28 : « accélérer les 40 trades ») : un signal que
+        le compte n'a pas pu prendre pour une raison de capacité est suivi comme une position d'ombre (mode « paper »),
+        au prix réel et jusqu'au SL/TP, pour que l'agent soit jugé sur tout ce qu'il a signalé. Jamais un signal refusé
+        pour sa qualité (revue, spread, stop, news), jamais une idée réellement exécutée."""
+        if not bool((self.s.learning or {}).get("paper_trades_live_agents", True)):
+            return 0
+        n = 0
+        for c, pourquoi in papier:
+            if c.idempotency_key in self.state.executed_keys:
+                continue
+            ouverts = self.shadow.open_from_candidates([c], now, mode="paper", reason=pourquoi)
+            if ouverts:
+                n += 1
+                self._journal_once("paper_trade", "paper:" + c.idempotency_key, pourquoi, agent_id=c.agent_id, symbol=c.symbol,
+                                   side=c.side.value, entry=c.entry, sl=c.sl, reason=pourquoi, candidate_id=c.id)
+        return n
+
     def _symbol_currencies(self, sym: str) -> list[str]:
         spec = self.broker.symbol_info(sym)
         return [spec.currency_base, spec.currency_profit] if spec else []
@@ -443,6 +478,7 @@ class Orchestrator:
         # contient jamais, l'ancien `out.get("macro")` recalculait donc la même chose à chaque scan.
         macro = macro if macro is not None else self._macro_context()
         reviewed: list[TradeCandidate] = []
+        papier: list[tuple[TradeCandidate, str]] = []     # signaux LIVE non pris pour une raison de capacité (→ papier)
         entries_ok, entries_reason = st.entries_allowed()
         llm_batch: list[TradeCandidate] = []
         # heartbeat persisté avant la revue (appels LLM potentiellement longs) pour ne pas être déclaré mort par le watchdog
@@ -485,6 +521,13 @@ class Orchestrator:
                 # verdict déterministe seul : aucun appel LLM quand le gate refusera de toute façon (mode/verrous/
                 # symbole déjà porté) ou au-delà des N meilleurs candidats
                 c.verdict, c.review = det.verdict, det.to_dict()
+                if det.verdict is not Verdict.REJECT and not getattr(det, "hard", False):
+                    if not entries_ok:
+                        papier.append((c, f"entrées verrouillées : {entries_reason}"))
+                    elif deja_porte:
+                        papier.append((c, f"position déjà ouverte sur {c.symbol}"))
+                    elif llm_worthy:
+                        papier.append((c, f"au-delà des {self._max_llm_reviews()} revues IA du cycle"))
                 if self.review.llm is not None and (llm_worthy or not entries_ok or deja_porte):
                     if not entries_ok:
                         c.review["llm_skipped"] = entries_reason
@@ -524,9 +567,10 @@ class Orchestrator:
         except Exception:  # noqa: BLE001
             corr = None
         for c in reviewed:
-            if entries >= MAX_ENTRIES_PER_CYCLE:
-                break
             if c.verdict is not Verdict.APPROVE:
+                continue
+            if entries >= MAX_ENTRIES_PER_CYCLE:
+                papier.append((c, "plafond d'entrées du cycle"))
                 continue
             gate_res, req = self._gate(c, now, corr)
             refus = sorted(ch.name for ch in gate_res.checks if not ch.ok)
@@ -536,6 +580,8 @@ class Orchestrator:
                                tp=(c.tp_plan[-1] if c.tp_plan else None), atr=getattr(c, "atr", None),
                                reason=gate_res.reason, checks=[ch.__dict__ for ch in gate_res.checks])
             if not gate_res.approved or req is None:
+                if not gate_res.approved and self._refus_capacite(refus):
+                    papier.append((c, "gate : " + ", ".join(refus)))
                 continue
             # Le risque transmis à l'exécuteur est celui du gate (dimensionné sur le tick, `GateResult`) :
             # un second `risk.size()` sur `c.entry` — le prix du scan — donnait un `risk_money` différent
@@ -571,6 +617,8 @@ class Orchestrator:
                 if plan is not None:
                     plan.candidate = self.candidates_cache[str(outcome.position.ticket)]
         out["entries"] = entries
+        if papier:
+            out["papier"] = self._papier(papier, now)
         return out
 
     def _gate(self, c: TradeCandidate, now: datetime, corr):

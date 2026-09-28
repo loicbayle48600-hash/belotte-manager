@@ -31,6 +31,8 @@ class ShadowPosition:
     max_r: float = 0.0
     min_r: float = 0.0
     bar_time: str = ""
+    mode: str = "shadow"       # "shadow" (agents SHADOW/CANDIDATE) ou "paper" (signal d'un agent LIVE non exécuté, 2026-09-28)
+    reason: str = ""           # mode "paper" : pourquoi le signal n'a pas été exécuté (verrou, plafond, créneaux…)
 
 
 class ShadowTrader:
@@ -67,7 +69,11 @@ class ShadowTrader:
         tmp.write_text(payload, encoding="utf-8")
         os.replace(tmp, self.file)
 
-    def open_from_candidates(self, cands: list[TradeCandidate], now: Optional[datetime] = None) -> list[ShadowPosition]:
+    def open_from_candidates(self, cands: list[TradeCandidate], now: Optional[datetime] = None, mode: str = "shadow",
+                             reason: str = "") -> list[ShadowPosition]:
+        """``mode="paper"`` (2026-09-28, décision utilisateur) : signal d'un agent LIVE que le compte n'a pas pu prendre
+        (verrou de pertes, plafond de concentration, symbole déjà porté, créneaux de revue…), suivi en papier pour que
+        l'agent accumule son échantillon au rythme de ses signaux et non de la capacité du compte."""
         now = now or utcnow()
         out = []
         for c in cands:
@@ -79,7 +85,8 @@ class ShadowTrader:
                 continue
             p = ShadowPosition(id=f"sh_{c.id}", agent_id=c.agent_id, symbol=c.symbol, side=c.side.value, entry=c.entry, sl=c.sl,
                                tp=c.tp_plan[-1] if c.tp_plan else c.entry + c.side.sign * 2.5 * c.sl_distance,
-                               opened_at=now.isoformat(), regime=c.regime.value, session=c.session, setup_score=c.setup_score, bar_time=c.bar_time)
+                               opened_at=now.isoformat(), regime=c.regime.value, session=c.session, setup_score=c.setup_score, bar_time=c.bar_time,
+                               mode=mode, reason=reason)
             self.positions[p.id] = p
             self.executed[c.idempotency_key] = None
             out.append(p)
@@ -134,8 +141,9 @@ class ShadowTrader:
             r = side.sign * (exit_px - p.entry) / dist
             rec = TradeRecord(ticket=0, agent_id=p.agent_id, symbol=p.symbol, side=p.side, entry=p.entry, sl=p.sl, risk_money=self.risk_money,
                               risk_percent=0.0, result_r=round(r, 4), pnl=round(r * self.risk_money, 2), opened_at=p.opened_at,
-                              closed_at=now.isoformat(), mode="shadow", regime=p.regime, session=p.session, tp=[p.tp],
-                              features={"setup_score": p.setup_score}, mae_r=round(-min(0.0, p.min_r), 3), mfe_r=round(max(0.0, p.max_r), 3),
+                              closed_at=now.isoformat(), mode=p.mode or "shadow", regime=p.regime, session=p.session, tp=[p.tp],
+                              features={"setup_score": p.setup_score, **({"paper_reason": p.reason} if p.reason else {})},
+                              mae_r=round(-min(0.0, p.min_r), 3), mfe_r=round(max(0.0, p.max_r), 3),
                               exit_reason=reason, candidate_id=p.id)
             self.store.record_trade(rec)
             closed.append(rec)

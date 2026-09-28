@@ -393,6 +393,20 @@ n'utilise PAS Fable (retiré de TIER_A le 2026-09-23) : le quota Fable est rése
     rendait plus la main sans trace. Les files (statuts du worker, propositions de l'optimiseur) sont maintenant traitées
     dans la boucle principale (`_apply_research_files`) ; un fil encore occupé à l'échéance suivante est journalisé avec
     sa pile d'appels (« cycle de recherche toujours en cours »). X01–X06 ajoutés au registre le 28/09 à 15 h 12.
+- **Accélérer les 40 trades par agent (28/09, décision utilisateur « 1 et 2 »)**. Constat : 180 trades live en 8 jours sur
+  43 agents, aucun à 40 (C06 : 20) ; rythme tombé à 1–8 par jour ; 188 candidats refusés le 28/09 par le seul verrou
+  « 3 pertes consécutives » (entrées fermées de 03 h 50 à 09 h 08), puis plafonds de concentration et « 1 position par
+  symbole ». Les créneaux ne manquent pas (6 positions sur 30).
+  1. **Trades papier des agents LIVE** (`orchestrator._papier`, `shadow` mode « paper ») : un signal LIVE non pris pour une
+     raison de CAPACITÉ (entrées verrouillées, symbole déjà porté, au-delà des N revues IA, plafond d'entrées du cycle,
+     gate refusé uniquement sur des contrôles de capacité — `CONTROLES_CAPACITE`) est suivi en papier au prix réel jusqu'au
+     SL/TP, raison conservée (`features.paper_reason`, événement `paper_trade`). Jamais un refus de qualité (revue, spread,
+     stop, news), jamais une idée exécutée. `store.trades(mode="live+paper")` pour juger un agent sur tout ce qu'il a
+     signalé ; la dégradation / suspension automatique reste sur le live (à changer sur demande).
+  2. **TEMPORAIRE, à remettre à la fin de la période de test** : `risk_per_trade_percent` 0,125 → **0,05 %**,
+     `max_consecutive_losses` 3 → **5**. Plafonds de concentration inchangés en % d'equity (même argent exposé par
+     cluster / devise / classe, composé de plus de tickets — comme le mode test du 23/09) ; budget total 1 % inchangé,
+     soit 20 positions au plus. Score requis inchangé (65).
 - **Stop du suiveur élargi du surcroît de spread (28/09, décision utilisateur)** : SILVER chez les démos IC (spread 82
   points) contre XAGUSD chez le maître (11) — les quatre copies argent ont pris le stop à 61,807 sur un pic que le maître
   (stop 61,804, plus haut 61,776) n'a pas vu. Le maître exporte son spread ; à l'ouverture d'une copie, le stop du suiveur

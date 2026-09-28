@@ -20,13 +20,20 @@ risk:
   # 0.125 → 0.25 le 2026-09-24, décision utilisateur (option « Modéré ») : risque ouvert total et perte jour
   # interne portés à 2 %, plafonds de concentration et paliers après profit doublés (ratio constant). Reste
   # sous les règles FOXX (2 % par idée, 4 % par jour, 8 % au total) avec une marge de moitié.
-  risk_per_trade_percent: 0.125  # 628 $ sur 500 000 $ — demande utilisateur 2026-09-25 (plafonds de concentration calibrés pour 0.125)
+  # 2026-09-28, TEMPORAIRE (décision utilisateur : « accélérer les 40 trades ») : 0,125 → 0,05 % (250 $ sur 500 000 $).
+  # Plus de petites positions pour le même budget de perte total (1 %) ; les plafonds de concentration restent inchangés
+  # EN % D'EQUITY (même argent exposé par cluster / devise / classe, composé de plus de tickets). À remettre à 0,125 à la
+  # fin de la période de test — voir docs/SUIVI.md.
+  risk_per_trade_percent: 0.05
   max_risk_per_trade_percent: 0.35
   max_daily_loss_internal_percent: 1.0  # retour à l'état du 23/09 (demande utilisateur 2026-09-25)
   max_total_open_risk_percent: 1.0  # retour à l'état du 23/09 (demande utilisateur 2026-09-25)
   max_open_positions: 30
   max_positions_per_symbol: 1
-  max_consecutive_losses: 3
+  # 2026-09-28, TEMPORAIRE (même décision) : 3 → 5. Le verrou à 3 pertes a fermé les entrées de 03 h 50 à 09 h 08 le
+  # 28/09 (188 candidats refusés) ; avec des positions 2,5 fois plus petites, 5 pertes d'affilée coûtent 0,25 % au lieu
+  # de 0,375 %. À remettre à 3 à la fin de la période de test.
+  max_consecutive_losses: 5
   # Plancher de risque utile, en fraction de risk_per_trade_percent (0.2 = 20 % de la cible, soit 0,025 %).
   # Sous ce seuil, volume_max du broker a raboté la position au point qu'elle ne peut plus peser : le
   # 2026-09-21, XRPUSD a été pris deux fois à 11,52 $ et 12,10 $ de risque sur 500 000 $ tout en consommant

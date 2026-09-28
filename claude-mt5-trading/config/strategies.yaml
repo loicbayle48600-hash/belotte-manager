@@ -10,6 +10,10 @@ learning:
   # 2026-09-27 : la recherche tourne dans un processus séparé (research/worker.py, priorité basse) : plus aucune charge
   # dans la boucle de trading ; 20 agents par passage (toutes les 30 min) au lieu de 5
   research_external: true
+  # 2026-09-28 (décision utilisateur) : un signal d'agent LIVE non pris pour une raison de CAPACITÉ (verrou de pertes,
+  # plafond de concentration, symbole déjà porté, créneaux de revue, plafond d'entrées) est suivi en papier (mode « paper »)
+  # pour que l'agent accumule son échantillon ; jugement possible sur « live+paper »
+  paper_trades_live_agents: true
   research_worker_agents_per_cycle: 20
   research_retry_hours: 24
   # positions VIRTUELLES (aucun ordre) : 50 places ne suffisaient plus pour 115 agents SHADOW (2026-09-25)

@@ -100,7 +100,7 @@ def test_daily_loss_locks_new_trades(settings):
 
 def test_consecutive_losses_lock(settings):
     st = make_state()
-    st.consecutive_losses = 3
+    st.consecutive_losses = int(settings.risk["max_consecutive_losses"])   # la valeur vient de config/risk.yaml (3, puis 5 en test le 28/09)
     assert not DailyGuard(settings.risk, settings.daily_profit).evaluate(st).entries_allowed
 
 
