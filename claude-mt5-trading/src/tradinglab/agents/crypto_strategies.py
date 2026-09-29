@@ -67,7 +67,7 @@ def rsi2_reversion(spec: AgentSpec, snap) -> Optional[TradeCandidate]:
     e, t, le, lt, atr, bt = c
     p = spec.params
     closed = e.iloc[:-1]
-    r2 = rsi(closed["close"].astype(float), 2)
+    r2 = closed["rsi2"] if "rsi2" in closed.columns else rsi(closed["close"].astype(float), 2)
     if len(r2) == 0 or pd.isna(r2.iloc[-1]):
         return None
     v = float(r2.iloc[-1])

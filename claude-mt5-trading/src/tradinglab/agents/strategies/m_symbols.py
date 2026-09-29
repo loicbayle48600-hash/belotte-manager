@@ -1430,7 +1430,7 @@ def strategy_m10(spec: AgentSpec, snap) -> Optional[TradeCandidate]:
     else:
         return None
     s = side.sign
-    r2 = rsi(closed["close"], 2)
+    r2 = closed["rsi2"] if "rsi2" in closed.columns else rsi(closed["close"], 2)
     if len(r2) < 3 or bool(r2.iloc[-3:].isna().any()):
         return None
     r_prev = float(r2.iloc[-2])

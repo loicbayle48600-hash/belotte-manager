@@ -275,6 +275,7 @@ def enrich(df: pd.DataFrame) -> pd.DataFrame:
     out["ema50"] = ema(close, 50)
     out["ema200"] = ema(close, 200)
     out["rsi14"] = rsi(close, 14)
+    out["rsi2"] = rsi(close, 2)          # 2026-09-29 : RSI(2) précalculé (rsi2_reversion le recalculait à chaque bougie)
     m, sg, h = macd(close)
     out["macd"], out["macd_signal"], out["macd_hist"] = m, sg, h
     out["atr14"] = atr(out, 14)
