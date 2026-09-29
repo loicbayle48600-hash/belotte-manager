@@ -45,3 +45,9 @@ def test_tache_sur_donnees_synthetiques():
     out = m._task(("EURUSD", "M15", "H1", "ema_trend", cfgs))
     assert len(out) == 6 and all(o is not None and o[0].shape == (8,) for o in out)
     assert sum(o[0][0] for o in out) > 0                                        # des trades en apprentissage
+
+
+def test_univers_complet():
+    u = m.univers_classes({"forex_majors": ["EURUSD"], "forex_minors": ["EURGBP", "AUDNZD"], "indices": ["US500"],
+                           "metals": [], "energies": ["XBRUSD"], "crypto": ["BTCUSD"]})
+    assert u == {"u_forex": ["EURUSD", "EURGBP", "AUDNZD"], "u_indices": ["US500"], "u_energies": ["XBRUSD"], "u_crypto": ["BTCUSD"]}

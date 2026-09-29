@@ -92,6 +92,15 @@ def grid(strategies: Optional[list] = None, classes: Optional[list] = None, time
     return out
 
 
+def univers_classes(markets: dict) -> dict:
+    """Classes « univers » : chaque groupe de config/markets.yaml avec TOUS ses symboles (forex majeures + mineures)."""
+    out = {"u_forex": list(markets.get("forex_majors", [])) + list(markets.get("forex_minors", []))}
+    for g in ("indices", "metals", "energies", "crypto"):
+        if markets.get(g):
+            out["u_" + g] = list(markets[g])
+    return {k: v for k, v in out.items() if v}
+
+
 def seuil_multiple(m: int) -> float:
     """t-stat minimal pour M essais : √(2 ln M) (borne de l'espérance du maximum de M gaussiennes)."""
     return math.sqrt(2.0 * math.log(max(m, 2)))
@@ -214,6 +223,8 @@ def main(argv: Optional[list[str]] = None) -> int:  # pragma: no cover - process
     ap.add_argument("--classes", default="")
     ap.add_argument("--strategies", default="")
     ap.add_argument("--max-configs", type=int, default=0)
+    # 2026-09-29, demande utilisateur : « toutes les paires et tous les marchés disponibles »
+    ap.add_argument("--univers", action="store_true", help="toutes les classes et tous les symboles de config/markets.yaml")
     args = ap.parse_args(argv)
     s = load_settings()
     load_dotenv(s.home / ".env")
@@ -223,7 +234,12 @@ def main(argv: Optional[list[str]] = None) -> int:  # pragma: no cover - process
         print("terminal indisponible")
         return 1
     t0 = time.time()
-    classes = [c for c in args.classes.split(",") if c] or list(opt.CLASSES)
+    if args.univers:
+        for nom, syms in univers_classes(s.markets).items():
+            opt.CLASSES_ALL[nom] = syms
+        classes = list(univers_classes(s.markets))
+    else:
+        classes = [c for c in args.classes.split(",") if c] or list(opt.CLASSES)
     strategies = [x for x in args.strategies.split(",") if x] or None
     configs = grid(strategies, classes)
     if args.max_configs:
