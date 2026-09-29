@@ -476,6 +476,12 @@ n'utilise PAS Fable (retiré de TIER_A le 2026-09-23) : le quota Fable est rése
   toutes les 15 min (`research_interval_sec` 900), nouvel essai après 8 h, ombre 600 positions / 6 par agent. 15
   challengers (CH201–CH215, paramètres ±20 %) des cinq meilleurs agents d'ombre déposés en SHADOW via
   `state/agent_proposals.jsonl`. Aucun seuil de risque ni de validation touché (100 trades d'ombre toujours requis).
+- **29/09 matin** : (1) agents d'annonce vérifiés sur la décision RBA (04h30 UTC) — K03 (news_follow) 6 positions d'ombre à
+  04h35, K05 (news_range_break) 6 à 04h45, K04 (news_fade) 4 à 05h10–05h20 : le déclencheur fonctionne, le silence des
+  8 jours venait de l'absence d'annonce HIGH depuis le 26/09 ; à juger sur leurs résultats d'ombre. (2) **Rapport de
+  17 h NY réparé** : `_copy_gaps` appelait `.get` sur des `BotPositionPlan` → « rapport quotidien impossible » les 27 et
+  28/09 (test de régression ajouté). (3) Nuit : SAFE_MODE 41 s à 23h11 (cotations figées 62 s au rollover, retour AUTO
+  automatique) ; 11 trades clos −343 $ (8 gagnants dont 7 protégés, 3 stops pleins) ; ordres Q : 5 remplis, 2 expirés.
 - **Stop du suiveur élargi du surcroît de spread (28/09, décision utilisateur)** : SILVER chez les démos IC (spread 82
   points) contre XAGUSD chez le maître (11) — les quatre copies argent ont pris le stop à 61,807 sur un pic que le maître
   (stop 61,804, plus haut 61,776) n'a pas vu. Le maître exporte son spread ; à l'ouverture d'une copie, le stop du suiveur

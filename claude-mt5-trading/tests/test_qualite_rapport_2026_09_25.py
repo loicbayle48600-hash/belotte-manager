@@ -92,3 +92,23 @@ def test_telegram_rapport_du_jour_toujours_envoye():
     from tradinglab.monitoring.telegram_notifier import ALWAYS_KINDS, format_event
     assert "report_day" in ALWAYS_KINDS
     assert "Rapport du jour" in format_event({"kind": "report_day", "text": "x"})
+
+
+def test_ecarts_de_copie_avec_de_vrais_plans_de_position(tmp_path):
+    """27–28/09 : `_copy_gaps` appelait `.get` sur des BotPositionPlan → le rapport de 17 h NY échouait chaque soir."""
+    from datetime import datetime, timezone
+    from types import SimpleNamespace
+
+    from tradinglab.core.state import BotPositionPlan
+    from tradinglab.orchestration.orchestrator import Orchestrator
+
+    from tradinglab.core.journal import Journal
+
+    o = Orchestrator.__new__(Orchestrator)
+    o.s = SimpleNamespace(logs_dir=tmp_path)
+    o.journal = Journal(tmp_path, component="t")
+    o.state = SimpleNamespace(bot_positions={"1": BotPositionPlan(1, "XAUUSD", "SELL", "B02", "c1", 4165.0, 4180.0, 1.0, 250.0, 0.05),
+                                             "2": BotPositionPlan(2, "US500", "BUY", "E05", "c2", 6700.0, 6680.0, 1.0, 250.0, 0.05)})
+    debut = datetime(2026, 9, 28, 21, 0, tzinfo=timezone.utc)
+    ecarts = o._copy_gaps("demo 1", {"positions": [{"symbol": "GOLD"}]}, debut, debut)
+    assert any("US500" in e and "XAUUSD" in e for e in ecarts)

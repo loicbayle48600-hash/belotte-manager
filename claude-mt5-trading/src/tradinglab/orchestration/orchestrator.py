@@ -810,7 +810,9 @@ class Orchestrator:
 
         ecarts: list = []
         tenues = {str(p.get("symbol")) for p in (statut.get("positions") or [])}
-        maitre = {str(p.get("symbol")) for p in self.state.bot_positions.values()}
+        # `bot_positions` contient des BotPositionPlan, pas des dicts : `.get` faisait échouer tout le rapport de 17 h NY
+        # (« rapport quotidien impossible », 27 et 28/09)
+        maitre = {str(getattr(p, "symbol", None) or (p.get("symbol") if isinstance(p, dict) else "")) for p in self.state.bot_positions.values()}
         manquants = sorted(maitre - tenues)
         if manquants:
             ecarts.append("positions du maître non portées : " + ", ".join(manquants))
