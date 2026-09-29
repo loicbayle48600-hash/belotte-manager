@@ -52,6 +52,7 @@ def resample(df: pd.DataFrame, tf: str) -> pd.DataFrame:
 # et le régime ne dépendent que des données : clé = empreinte des données (taille, dates, octets des prix).
 _ENRICH_CACHE: dict = {}
 _REGIME_CACHE: dict = {}
+_SESSION_CACHE: dict = {}
 _CACHE_MAX = 48
 
 
@@ -157,10 +158,14 @@ def make_signal_fn(spec: AgentSpec, symbol_spec: SymbolSpec, entry_tf: str = "M1
         cut = pd.DatetimeIndex(times) + entry_delta - trend_delta
         nc = np.asarray(cache["t_times"].searchsorted(cut, side="right"), dtype=np.int64)
         i = np.arange(n)
-        sess_ok = np.zeros(n, dtype=bool)
-        for k, ts in enumerate(times):
-            ss = current_session(ts.to_pydatetime())
-            sess_ok[k] = ss.value in spec.sessions or ss is Session.OFF
+        skey = _data_key(e_full, "sess")
+        vals = _SESSION_CACHE.get(skey)
+        if vals is None:                           # session de chaque bougie : même calcul pour toutes les configurations
+            vals = np.array([current_session(ts.to_pydatetime()).value for ts in times], dtype=object)
+            if len(_SESSION_CACHE) >= _CACHE_MAX:
+                _SESSION_CACHE.pop(next(iter(_SESSION_CACHE)))
+            _SESSION_CACHE[skey] = vals
+        sess_ok = np.isin(vals, list(spec.sessions)) | (vals == Session.OFF.value)
         base = (i + 1 >= MIN_ENTRY_BARS) & sess_ok & (nc >= MIN_TREND_BARS) & (nc + 1 >= 60) & (i + 2 >= 60)
         if check_regime:
             reg_ok = {}
