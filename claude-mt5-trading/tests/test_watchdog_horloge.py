@@ -178,9 +178,23 @@ def test_tous_les_marches_geles_declenche_safe_mode(settings, home, monkeypatch)
     broker = _BrokerTicks(["EURUSD", "BTCUSD"], {"EURUSD": 150_000.0, "BTCUSD": 90_000.0})
     wd = _wd(settings, home, broker)
     rep = wd.check_once()
+    assert rep.data_fresh is False and rep.safe_mode_request is False     # 1er constat : à confirmer (2026-09-29)
+    wd._stale_since -= wd.stale_confirm_sec + 1                           # figé depuis plus de 30 s
+    rep = wd.check_once()
     assert rep.data_fresh is False
     assert any("données périmées" in r for r in rep.reasons)
     assert rep.safe_mode_request is True
+
+
+def test_gel_passager_ne_declenche_pas_safe_mode(settings, home, monkeypatch):
+    """28/09 23h11 : toutes les cotations figées 62 s sur UN contrôle, puis reprise → aucune alerte."""
+    monkeypatch.setitem(settings.raw["markets"], "crypto", ["BTCUSD"])
+    broker = _BrokerTicks(["EURUSD", "BTCUSD"], {"EURUSD": 62.0, "BTCUSD": 62.0})
+    wd = _wd(settings, home, broker)
+    assert wd.check_once().safe_mode_request is False
+    broker.ages = {"EURUSD": 1.0, "BTCUSD": 1.0}                          # reprise 15 s plus tard
+    rep = wd.check_once()
+    assert rep.safe_mode_request is False and rep.data_fresh is True and wd._stale_since is None
 
 
 def test_tick_indisponible_compte_comme_gele(settings, home, monkeypatch):
@@ -190,6 +204,9 @@ def test_tick_indisponible_compte_comme_gele(settings, home, monkeypatch):
     rep = wd.check_once()
     assert rep.data_fresh is None and rep.safe_mode_request is False   # tolérance de démarrage : inconnu (2026-09-27)
     wd._started_mono -= wd.STARTUP_GRACE_SEC + 1                        # tolérance écoulée : flux figé
+    rep = wd.check_once()
+    assert rep.data_fresh is False and rep.safe_mode_request is False     # à confirmer
+    wd._stale_since -= wd.stale_confirm_sec + 1
     rep = wd.check_once()
     assert rep.data_fresh is False and rep.safe_mode_request is True
 

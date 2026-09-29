@@ -84,6 +84,11 @@ class Watchdog:
         self.max_tick_age = float(settings.system.get("data_max_age_sec", 30))
         self._running = True
         self._disconnect_streak = 0               # contrôles consécutifs sans connexion (débounce SAFE_MODE)
+        # 2026-09-29 (demande utilisateur) : le 28/09 à 23h11, UN contrôle a vu toutes les cotations figées depuis 62 s
+        # (cryptos comprises) puis tout est revenu en 15 s : gel passager du terminal → SAFE_MODE 41 s pour rien. Le
+        # flux n'est déclaré figé qu'après `stale_confirm_sec` de contrôles périmés consécutifs.
+        self.stale_confirm_sec = float(settings.system.get("stale_confirm_sec", 30))
+        self._stale_since: Optional[float] = None
 
     def stop(self) -> None:
         self._running = False
@@ -229,6 +234,13 @@ class Watchdog:
                 plus_frais = min(ages.values()) if ages else None
                 rep.data_fresh = (plus_frais <= self.max_tick_age) if plus_frais is not None else None
                 if rep.data_fresh is False:
+                    if self._stale_since is None:
+                        self._stale_since = time.monotonic()
+                    confirme = (time.monotonic() - self._stale_since) >= self.stale_confirm_sec
+                else:
+                    self._stale_since = None
+                    confirme = False
+                if rep.data_fresh is False and confirme:
                     # Aucun marché suivi ne cote : flux réellement figé → SAFE_MODE demandé.
                     detail = ", ".join(f"{s}: {a:.0f}s" if a != float("inf") else f"{s}: indisponible"
                                        for s, a in sorted(ages.items(), key=lambda kv: kv[1]))

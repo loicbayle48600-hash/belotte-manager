@@ -517,6 +517,10 @@ n'utilise PAS Fable (retiré de TIER_A le 2026-09-23) : le quota Fable est rése
   (tests/test_fastsig_2026_09_29.py, 208 tests). Gains, une configuration sur 5 000 bougies : structure_bos 9,5 s →
   0,06 s, rsi_divergence 12,3 → 0,05, bollinger_mr 10,6 → 0,04 ; ~100× une fois les indicateurs en cache. Les stratégies
   propres des agents (E05, B02…) gardent le screener ; `make_signal_fn(..., fast=False)` force l'ancien chemin.
+- **29/09, alerte « données périmées — aucun marché suivi ne cote » (demande utilisateur)** : le 28/09 à 23h11, un
+  seul contrôle a vu toutes les cotations figées depuis 62 s (cryptos comprises), revenues 15 s plus tard → SAFE_MODE
+  41 s. Le watchdog exige désormais `system.stale_confirm_sec` (30 s) de contrôles périmés consécutifs avant l'alerte
+  et le SAFE_MODE ; un flux réellement mort est toujours détecté (tests).
 - **Stop du suiveur élargi du surcroît de spread (28/09, décision utilisateur)** : SILVER chez les démos IC (spread 82
   points) contre XAGUSD chez le maître (11) — les quatre copies argent ont pris le stop à 61,807 sur un pic que le maître
   (stop 61,804, plus haut 61,776) n'a pas vu. Le maître exporte son spread ; à l'ouverture d'une copie, le stop du suiveur
