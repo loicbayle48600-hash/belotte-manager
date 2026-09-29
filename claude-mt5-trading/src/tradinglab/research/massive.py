@@ -284,6 +284,28 @@ def _task_gpu(args) -> list:
         return _task(args)
 
 
+def _task_marche(args) -> list:
+    """Un marché (symbole, unité de temps) avec TOUTES ses stratégies : le processus ne reçoit que cet historique
+    (2026-09-30 : chaque processus gardait les 365 historiques en mémoire, 5,6 Go pour 12 processus) et vide ses caches
+    ensuite. Renvoie une liste de sorties par sous-tâche (stratégie)."""
+    sym, entry_tf, df, ss, cost, device, sous = args
+    _DATA.clear()
+    _SPECS.clear()
+    _COSTS.clear()
+    _SESS.clear()
+    _DATA[(sym, entry_tf)] = df
+    _SPECS[sym] = ss
+    _COSTS[sym] = cost
+    fn = _task_gpu if device == "gpu" else _task
+    try:
+        return [fn((sym, entry_tf, trend_tf, strategy, cfgs)) for trend_tf, strategy, cfgs in sous]
+    finally:
+        from . import adapters as _ad
+        for cache in (_ad._ENRICH_CACHE, _ad._REGIME_CACHE, _ad._SESSION_CACHE, _ad._CTX_CACHE):
+            cache.clear()
+        _DATA.clear()
+
+
 # ------------------------------------------------------------------------------------------------ pilotage
 def select(configs: list[dict], results: dict, min_trades: int = 60) -> tuple[list, dict]:
     """Applique les garde-fous 2 à 4. `results[i]` = (lignes apprentissage, lignes contrôle) par symbole."""
@@ -380,15 +402,26 @@ def main(argv: Optional[list[str]] = None) -> int:  # pragma: no cover - process
     for i, cfg in enumerate(configs):
         for sym in opt.CLASSES_ALL[cfg["asset_class"]]:
             groupes.setdefault((sym, cfg["entry_tf"], cfg["trend_tf"], cfg["strategy"]), []).append(i)
-    taches = [(k[0], k[1], k[2], k[3], [configs[i] for i in idx]) for k, idx in groupes.items()]
-    cles = list(groupes.values())
+    # une tâche par marché (symbole, unité de temps) : l'historique n'est envoyé qu'au processus qui le traite
+    par_marche: dict = {}
+    for k, idx in groupes.items():
+        par_marche.setdefault((k[0], k[1]), []).append((k[2], k[3], idx))
+    taches, cles = [], []
+    for (sym, tf), lst in par_marche.items():
+        df = data.get((sym, tf))
+        if df is None or sym not in specs:
+            continue
+        taches.append((sym, tf, df, specs[sym], costs[sym], args.device, [(t, st, [configs[i] for i in idx]) for t, st, idx in lst]))
+        cles.append([idx for _, _, idx in lst])
     mgmt = dict(s.profit_management) if bool(bt.get("use_position_management", True)) else None
     results: dict = {}
-    with mp.Pool(processes=args.workers, initializer=_init, initargs=(data, specs, costs, mgmt), maxtasksperchild=20) as pool:
-        for idx, res in zip(cles, pool.imap(_task_gpu if args.device == "gpu" else _task, taches, chunksize=1)):
-            for i, r in zip(idx, res):
-                if r is not None:
-                    results.setdefault(i, []).append(r)
+    del data                                        # les historiques partent avec les tâches, un par processus
+    with mp.Pool(processes=args.workers, initializer=_init, initargs=({}, {}, {}, mgmt), maxtasksperchild=20) as pool:
+        for idx_marche, res_marche in zip(cles, pool.imap(_task_marche, taches, chunksize=1)):
+            for idx, res in zip(idx_marche, res_marche):
+                for i, r in zip(idx, res):
+                    if r is not None:
+                        results.setdefault(i, []).append(r)
     retenues, etapes = select(configs, results)
     retenues = retenues[: args.top]
     reg = AgentRegistry(status_file=s.data_dir / "agent_status.json")

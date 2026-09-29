@@ -94,3 +94,18 @@ def test_tache_gpu_egale_tache_cpu():
     for x, y in zip(a, b):
         assert np.allclose(x[0], y[0], rtol=1e-9, atol=1e-9) and np.allclose(x[1], y[1], rtol=1e-9, atol=1e-9)
     assert sum(x[0][0] for x in a) > 0
+
+
+def test_tache_par_marche_egale_taches_separees():
+    """Une tâche par marché (historique envoyé au seul processus qui le traite) = tâches par stratégie."""
+    df = _synth(2500, 4)
+    cost = BTCosts(spread_points=10, slippage_points=3, point=SPEC_SYM.point, tick_value=1.0, tick_size=SPEC_SYM.tick_size)
+    m._init({("EURUSD", "M15"): df}, {"EURUSD": SPEC_SYM}, {"EURUSD": cost}, None)
+    c1 = m.grid(["ema_trend"], ["forex"], [("M15", "H1")])[:8]
+    c2 = m.grid(["bollinger_mr"], ["forex"], [("M15", "H1")])[:8]
+    sep = [m._task(("EURUSD", "M15", "H1", "ema_trend", c1)), m._task(("EURUSD", "M15", "H1", "bollinger_mr", c2))]
+    m._init({}, {}, {}, None)
+    grp = m._task_marche(("EURUSD", "M15", df, SPEC_SYM, cost, "cpu", [("H1", "ema_trend", c1), ("H1", "bollinger_mr", c2)]))
+    for a, b in zip(sep, grp):
+        for x, y in zip(a, b):
+            assert np.array_equal(x[0], y[0]) and np.array_equal(x[1], y[1])
