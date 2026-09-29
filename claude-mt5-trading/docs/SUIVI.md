@@ -529,6 +529,14 @@ n'utilise PAS Fable (retiré de TIER_A le 2026-09-23) : le quota Fable est rése
   CPU, paquet = appels séparés sur CPU et GPU, sorties GPU = CPU). Paquet de 24 configurations sur 20 000 bougies :
   12–25 ms CPU → 0,7–4 ms GPU. Premier passage (20 640 configurations, 4 familles) : aucune retenue (1 significative,
   échouée au contrôle).
+- **30/09, grand passage de la recherche en masse** (73 marchés, 5 variantes de session, 129 000 configurations, 12 cœurs,
+  1 h 31 de calcul après 45 min de lecture des historiques) : seuil t ≥ 4,85 ; 279 significatives, 279 avec plateau, 235
+  confirmées sur la période jamais vue. Les 20 premières sont TOUTES la même idée : **exhaustion (rsi_ext 25), forex 28
+  paires, session de New York, M5 et M15** — ex. M15 stop 0,8 ATR : apprentissage 327 trades +0,42 R PF 2,24 (t 6,6),
+  contrôle 161 trades +0,55 R PF 2,82. Vérifié avec le spread médian RÉEL de chaque paire + commission : résultat
+  identique (+0,57 R, PF 2,97 au contrôle). Propositions réduites à 8 distinctes (unité de temps × stop) : X35–X42 en
+  SHADOW, sessions NEWYORK, `forex_short_term_ok` (exception accordée le 29/09). Rapport : reports/massive_2026-09-29_2328.json.
+  À noter : E03 (exhaustion LIVE, rsi_ext 20, toutes sessions) n'a qu'un trade réel.
 - **Stop du suiveur élargi du surcroît de spread (28/09, décision utilisateur)** : SILVER chez les démos IC (spread 82
   points) contre XAGUSD chez le maître (11) — les quatre copies argent ont pris le stop à 61,807 sur un pic que le maître
   (stop 61,804, plus haut 61,776) n'a pas vu. Le maître exporte son spread ; à l'ouverture d'une copie, le stop du suiveur
