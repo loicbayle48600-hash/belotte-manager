@@ -4,6 +4,10 @@ Jumeaux exacts de mtf_trend_pullback, ema_pullback, macd_momentum, atr_expansion
 (src/tradinglab/agents/screeners.py). Le score et les textes n'influencent pas le Signal (aucun de ces screeners ne
 filtre sur le score) : seules les conditions qui décident sens / entrée / stop / rr sont reproduites.
 Équivalence bougie par bougie : tests/test_fastsig_2026_09_29.py.
+
+Portage 3090 (2026-09-29) : calculs dans `ctx.xp` (numpy ou cupy) ; `sl_atr` / `rr` peuvent être des colonnes (P, 1)
+(paquets de configurations). Les parties qui ne dépendent que des données (décalages, moyennes glissantes, percentiles)
+sont calculées une fois en numpy, mises en cache dans ctx._sw puis copiées sur la carte (tests/test_fastsig_gpu_*).
 """
 from __future__ import annotations
 
@@ -13,36 +17,45 @@ from numpy.lib.stride_tricks import sliding_window_view
 from .fastsig import FastCtx, build, register_fast, structure_sl, trend_of
 
 
-def _lt_trend(ctx: FastCtx) -> np.ndarray:
+def _lt_trend(ctx: FastCtx):
     return trend_of(ctx.tcol("close"), ctx.tcol("ema20"), ctx.tcol("ema50"), ctx.tcol("ema200"))
 
 
-def _prev(a: np.ndarray) -> np.ndarray:
+def _prev_np(a: np.ndarray) -> np.ndarray:
     """Valeur de la ligne i-1 (e.iloc[-3] dans le screener)."""
     out = np.full(len(a), np.nan)
     out[1:] = a[:-1]
     return out
 
 
-def _py_min(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+def _prev(ctx: FastCtx, c: str):
+    """Colonne c décalée d'une ligne (données seules : numpy, cache, puis xp)."""
+    key = ("g1_prev", c)
+    if key not in ctx._sw:
+        ctx._sw[key] = _prev_np(ctx.ncol(c))
+    return ctx.dev(ctx._sw[key], key)
+
+
+def _py_min(xp, a, b):
     """min(a, b) de Python : b seulement si b < a (NaN compris comme en Python)."""
-    return np.where(b < a, b, a)
+    return xp.where(b < a, b, a)
 
 
-def _py_max(a: np.ndarray, b: np.ndarray) -> np.ndarray:
-    return np.where(b > a, b, a)
+def _py_max(xp, a, b):
+    return xp.where(b > a, b, a)
 
 
 # ------------------------------------------------------------------------------------------------ pullback de tendance
 def _pullback(ctx: FastCtx, p: dict, lo: float, hi: float):
+    xp = ctx.xp
     tt = _lt_trend(ctx)
     low, high, close = ctx.col("low"), ctx.col("high"), ctx.col("close")
     e20, rsi = ctx.col("ema20"), ctx.col("rsi14")
     buy_t = (low <= e20) & (e20 <= close)
     sell_t = (high >= e20) & (e20 >= close)
-    touched = np.where(tt > 0, buy_t, sell_t)
-    ok = ctx.base & (tt != 0) & touched & (lo <= rsi) & (rsi <= hi)
-    side = np.where(ok, tt, 0)
+    touched = xp.where(tt > 0, buy_t, sell_t)
+    ok = ctx.base_x & (tt != 0) & touched & (lo <= rsi) & (rsi <= hi)
+    side = xp.where(ok, tt, 0)
     sl = structure_sl(ctx, side, close, ctx.col("atr14"), p.get("sl_atr", 1.2))
     return build(side, close, sl, p.get("rr", 2.0))
 
@@ -61,14 +74,15 @@ def ema_pullback(ctx: FastCtx, p: dict):
 # ------------------------------------------------------------------------------------------------ MACD
 @register_fast("macd_momentum", [{}, {"sl_atr": 1.0, "rr": 3.0}])
 def macd_momentum(ctx: FastCtx, p: dict):
+    xp = ctx.xp
     m, s = ctx.col("macd"), ctx.col("macd_signal")
-    pm, ps = _prev(m), _prev(s)
-    valid = ~np.isnan(m) & ~np.isnan(s) & ~np.isnan(pm) & ~np.isnan(ps)
+    pm, ps = _prev(ctx, "macd"), _prev(ctx, "macd_signal")
+    valid = ~xp.isnan(m) & ~xp.isnan(s) & ~xp.isnan(pm) & ~xp.isnan(ps)
     tt = _lt_trend(ctx)
     buy = (pm <= ps) & (m > s) & (tt == 1)
     sell = ~buy & (pm >= ps) & (m < s) & (tt == -1)
-    ok = ctx.base & valid
-    side = np.where(ok & buy, 1, np.where(ok & sell, -1, 0))
+    ok = ctx.base_x & valid
+    side = xp.where(ok & buy, 1, xp.where(ok & sell, -1, 0))
     close = ctx.col("close")
     sl = structure_sl(ctx, side, close, ctx.col("atr14"), p.get("sl_atr", 1.5))
     return build(side, close, sl, p.get("rr", 2.0))
@@ -99,19 +113,27 @@ def _mean_prev29(a: np.ndarray) -> np.ndarray:
     return out
 
 
+def _atr_ma(ctx: FastCtx):
+    key = ("g1_atr_ma29",)
+    if key not in ctx._sw:
+        ctx._sw[key] = _mean_prev29(ctx.ncol("atr14"))
+    return ctx.dev(ctx._sw[key], key)
+
+
 @register_fast("atr_expansion", [{}, {"atr_ratio": 1.1, "sl_atr": 1.6, "rr": 3.0}, {"atr_ratio": 1.5}])
 def atr_expansion(ctx: FastCtx, p: dict):
+    xp = ctx.xp
     atr = ctx.col("atr14")
-    atr_ma = _mean_prev29(atr)
+    atr_ma = _atr_ma(ctx)
     with np.errstate(invalid="ignore"):
         refus_ma = (atr_ma == 0) | (atr < p.get("atr_ratio", 1.3) * atr_ma)
         mom = ctx.col("mom10")
-        refus_mom = np.isnan(mom) | (np.abs(mom) < 0.5 * atr)
-    side0 = np.where(mom > 0, 1, -1)
+        refus_mom = xp.isnan(mom) | (xp.abs(mom) < 0.5 * atr)
+    side0 = xp.where(mom > 0, 1, -1)
     tt = _lt_trend(ctx)
-    tr_ok = np.where(side0 > 0, tt != -1, tt != 1)
-    ok = ctx.base & ~refus_ma & ~refus_mom & tr_ok
-    side = np.where(ok, side0, 0)
+    tr_ok = xp.where(side0 > 0, tt != -1, tt != 1)
+    ok = ctx.base_x & ~refus_ma & ~refus_mom & tr_ok
+    side = xp.where(ok, side0, 0)
     close = ctx.col("close")
     sl = structure_sl(ctx, side, close, atr, p.get("sl_atr", 1.2))
     return build(side, close, sl, p.get("rr", 2.0))
@@ -141,16 +163,25 @@ def _bw_percentile(bw: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     return enough, pct
 
 
+def _compression_ok(ctx: FastCtx):
+    """assez de données ET pas (pct > 25) — ne dépend que des données."""
+    key = ("g1_bw_ok",)
+    if key not in ctx._sw:
+        enough, pct = _bw_percentile(ctx.ncol("bb_width"))
+        with np.errstate(invalid="ignore"):
+            ctx._sw[key] = enough & ~(pct > 25)
+    return ctx.dev(ctx._sw[key], key)
+
+
 @register_fast("compression_expansion", [{}, {"sl_atr": 2.0, "rr": 2.0}])
 def compression_expansion(ctx: FastCtx, p: dict):
-    enough, pct = _bw_percentile(ctx.col("bb_width"))
+    xp = ctx.xp
     close = ctx.col("close")
     up, lo = ctx.col("bb_up"), ctx.col("bb_low")
-    with np.errstate(invalid="ignore"):
-        ok = ctx.base & enough & ~(pct > 25)
+    ok = ctx.base_x & _compression_ok(ctx)
     buy = close > up
     sell = ~buy & (close < lo)
-    side = np.where(ok & buy, 1, np.where(ok & sell, -1, 0))
+    side = xp.where(ok & buy, 1, xp.where(ok & sell, -1, 0))
     sl = structure_sl(ctx, side, close, ctx.col("atr14"), p.get("sl_atr", 1.0))
     return build(side, close, sl, p.get("rr", 2.5))
 
@@ -158,15 +189,16 @@ def compression_expansion(ctx: FastCtx, p: dict):
 # ------------------------------------------------------------------------------------------------ retour dans les bandes
 @register_fast("bollinger_mr", [{}, {"rsi_lo": 20, "rsi_hi": 80, "sl_atr": 1.2, "rr": 2.0}, {"rsi_lo": 40, "rsi_hi": 60}])
 def bollinger_mr(ctx: FastCtx, p: dict):
+    xp = ctx.xp
     close, rsi, atr = ctx.col("close"), ctx.col("rsi14"), ctx.col("atr14")
     low, high = ctx.col("low"), ctx.col("high")
     up, bl = ctx.col("bb_up"), ctx.col("bb_low")
-    pc, pbl, pbu = _prev(close), _prev(bl), _prev(up)
-    pl, ph = _prev(low), _prev(high)
-    ok = ctx.base & ~(ctx.col("adx14") > 25)
+    pc, pbl, pbu = _prev(ctx, "close"), _prev(ctx, "bb_low"), _prev(ctx, "bb_up")
+    pl, ph = _prev(ctx, "low"), _prev(ctx, "high")
+    ok = ctx.base_x & ~(ctx.col("adx14") > 25)
     buy = (pc < pbl) & (close > bl) & (rsi <= p.get("rsi_lo", 30) + 10)
     sell = ~buy & (pc > pbu) & (close < up) & (rsi >= p.get("rsi_hi", 70) - 10)
-    side = np.where(ok & buy, 1, np.where(ok & sell, -1, 0))
+    side = xp.where(ok & buy, 1, xp.where(ok & sell, -1, 0))
     sla = p.get("sl_atr", 0.8)
-    sl = np.where(side > 0, _py_min(pl, low) - sla * atr, _py_max(ph, high) + sla * atr)
+    sl = xp.where(side > 0, _py_min(xp, pl, low) - sla * atr, _py_max(xp, ph, high) + sla * atr)
     return build(side, close, sl, p.get("rr", 1.5))

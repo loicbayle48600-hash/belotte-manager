@@ -4,6 +4,10 @@ Jumeaux EXACTS des screeners breakout_retest, liquidity_sweep, structure_bos, ch
 (agents/screeners.py). Pivots : `swing_points` (3/3) calculé une fois sur tout l'historique ; pour un préfixe de m lignes,
 les pivots confirmés sont ceux d'index j <= m - 4 (identiques à ceux du préfixe : la condition d'un pivot ne lit que
 les 3 barres avant et après lui). À la bougie i, `closed` = lignes 0..i (m = i + 1).
+
+Portage 3090 (2026-09-29) : tout ce qui ne dépend que des données (derniers pivots, étiquettes de structure, fenêtres
+glissantes) est calculé en numpy une fois par contexte (ctx._sw) puis passé sur la carte ; la logique de chaque
+stratégie tourne dans `ctx.xp` (numpy ou cupy) et accepte `sl_atr` / `rr` en colonnes (P, 1) → P configurations.
 """
 from __future__ import annotations
 
@@ -65,132 +69,151 @@ def _prev(x: np.ndarray) -> np.ndarray:
     return out
 
 
+def _data(ctx: FastCtx, key: tuple, fn):
+    """Tableau ne dépendant que des données : calculé en numpy une fois (ctx._sw), renvoyé dans ctx.xp."""
+    k = ("g2",) + key
+    if k not in ctx._sw:
+        ctx._sw[k] = fn()
+    return ctx.dev(ctx._sw[k], k)
+
+
+def _last_pair(ctx: FastCtx, off: int, m: int = 0, which: str = "e"):
+    """(prix haut, prix bas) du dernier pivot (rang m) d'index <= i - off, dans ctx.xp."""
+    sh, sl = _pivots(ctx, which)
+    lim = np.arange(ctx.n) - off
+    return (_data(ctx, ("lh", off, m, which), lambda: _last(sh, lim, m)[0]),
+            _data(ctx, ("ll", off, m, which), lambda: _last(sl, lim, m)[0]))
+
+
+def _where_flag(xp, flag: bool, cond, n: int):
+    """`(not flag) | cond` sans mélanger un booléen Python et un tableau de la carte."""
+    return cond if flag else xp.ones(n, dtype=bool)
+
+
 # ------------------------------------------------------------------------------------------------ stratégies
 @register_fast("breakout_retest", [{}, {"sl_atr": 1.5, "rr": 3.0}])
 def breakout_retest(ctx: FastCtx, p: dict):
-    n = ctx.n
-    sh, sl = _pivots(ctx)
-    lim = np.arange(n) - 9                                    # swing_points(closed.iloc[:-6]) : m = i - 5
-    lh, _ = _last(sh, lim)
-    ll, _ = _last(sl, lim)
+    xp = ctx.xp
+    lh, ll = _last_pair(ctx, 9)                               # swing_points(closed.iloc[:-6]) : m = i - 5
     close, low, high, atr = ctx.col("close"), ctx.col("low"), ctx.col("high"), ctx.col("atr14")
-    rmax = _roll(close, 5, 5, np.max)                         # recent = closed.iloc[-6:-1] = lignes i-5 .. i-1
-    rmin = _roll(close, 5, 5, np.min)
-    ok = ctx.base & ~np.isnan(lh) & ~np.isnan(ll)
+    nclose = ctx.ncol("close")
+    rmax = _data(ctx, ("rmax5",), lambda: _roll(nclose, 5, 5, np.max))    # recent = lignes i-5 .. i-1
+    rmin = _data(ctx, ("rmin5",), lambda: _roll(nclose, 5, 5, np.min))
+    ok = ctx.base_x & ~xp.isnan(lh) & ~xp.isnan(ll)
     buy = ok & (rmax > lh) & (low <= lh + 0.2 * atr) & (close > lh)
     sell = ok & ~buy & (rmin < ll) & (high >= ll - 0.2 * atr) & (close < ll)
-    side = np.where(buy, 1, np.where(sell, -1, 0))
+    side = xp.where(buy, 1, xp.where(sell, -1, 0))
     k = p.get("sl_atr", 1.0)
-    stop = np.where(buy, lh - k * atr, ll + k * atr)
+    stop = xp.where(buy, lh - k * atr, ll + k * atr)
     return build(side, close, stop, p.get("rr", 2.5))
 
 
 @register_fast("failed_breakout", [{}, {"sl_atr": 1.2, "rr": 3.0}])
 def failed_breakout(ctx: FastCtx, p: dict):
-    n = ctx.n
-    sh, sl = _pivots(ctx)
-    lim = np.arange(n) - 6                                    # swing_points(closed.iloc[:-3]) : m = i - 2
-    lh, _ = _last(sh, lim)
-    ll, _ = _last(sl, lim)
+    xp = ctx.xp
+    lh, ll = _last_pair(ctx, 6)                               # swing_points(closed.iloc[:-3]) : m = i - 2
     close, low, high, atr = ctx.col("close"), ctx.col("low"), ctx.col("high"), ctx.col("atr14")
-    pc, ph, pl = _prev(close), _prev(high), _prev(low)        # prev = e.iloc[-3] = ligne i-1
-    ok = ctx.base & ~np.isnan(lh) & ~np.isnan(ll)
+    pc = _data(ctx, ("prev", "close"), lambda: _prev(ctx.ncol("close")))    # prev = e.iloc[-3] = ligne i-1
+    ph = _data(ctx, ("prev", "high"), lambda: _prev(ctx.ncol("high")))
+    pl = _data(ctx, ("prev", "low"), lambda: _prev(ctx.ncol("low")))
+    ok = ctx.base_x & ~xp.isnan(lh) & ~xp.isnan(ll)
     sell = ok & (pc > lh) & (close < lh)
     buy = ok & ~sell & (pc < ll) & (close > ll)
     k = p.get("sl_atr", 0.8) * atr * 0.5
     # max(a, b) Python = a sauf si b > a (mêmes valeurs qu'np.maximum hors NaN)
-    stop = np.where(sell, np.where(high > ph, high, ph) + k, np.where(low < pl, low, pl) - k)
-    side = np.where(sell, -1, np.where(buy, 1, 0))
+    stop = xp.where(sell, xp.where(high > ph, high, ph) + k, xp.where(low < pl, low, pl) - k)
+    side = xp.where(sell, -1, xp.where(buy, 1, 0))
     return build(side, close, stop, p.get("rr", 2.0))
 
 
 @register_fast("liquidity_sweep", [{}, {"with_trend": True, "sl_atr": 1.0}])
 def liquidity_sweep(ctx: FastCtx, p: dict):
-    n = ctx.n
-    sh, sl = _pivots(ctx)
-    lim = np.arange(n) - 4                                    # swing_points(closed.iloc[:-1]) : m = i
-    lh, _ = _last(sh, lim)
-    ll, _ = _last(sl, lim)
+    xp = ctx.xp
+    lh, ll = _last_pair(ctx, 4)                               # swing_points(closed.iloc[:-1]) : m = i
     close, low, high, atr = ctx.col("close"), ctx.col("low"), ctx.col("high"), ctx.col("atr14")
     tr = trend_of(ctx.tcol("close"), ctx.tcol("ema20"), ctx.tcol("ema50"), ctx.tcol("ema200"))
     wt = bool(p.get("with_trend"))
-    ok = ctx.base & ~np.isnan(lh) & ~np.isnan(ll)
-    buy = ok & (low < ll) & (close > ll) & ((not wt) | (tr == 1))
-    sell = ok & ~buy & (high > lh) & (close < lh) & ((not wt) | (tr == -1))
+    ok = ctx.base_x & ~xp.isnan(lh) & ~xp.isnan(ll)
+    buy = ok & (low < ll) & (close > ll) & _where_flag(xp, wt, tr == 1, ctx.n)
+    sell = ok & ~buy & (high > lh) & (close < lh) & _where_flag(xp, wt, tr == -1, ctx.n)
     k = p.get("sl_atr", 0.8) * atr * 0.5
-    stop = np.where(buy, low - k, high + k)
-    side = np.where(buy, 1, np.where(sell, -1, 0))
+    stop = xp.where(buy, low - k, high + k)
+    side = xp.where(buy, 1, xp.where(sell, -1, 0))
     return build(side, close, stop, p.get("rr", 2.0))
 
 
 @register_fast("structure_bos", [{}, {"direction": "UP", "require_ema": True}, {"require_mtf": True, "sl_atr": 1.5}])
 def structure_bos(ctx: FastCtx, p: dict):
-    n = ctx.n
+    xp = ctx.xp
     sh, sl = _pivots(ctx)
-    lim = np.arange(n) - 3                                    # closed : m = i + 1
-    lab = _label(sh, sl, lim)
-    lh, _ = _last(sh, lim)
-    ll, _ = _last(sl, lim)
+    lim = np.arange(ctx.n) - 3                                # closed : m = i + 1
+    lab = _data(ctx, ("lab", 3), lambda: _label(sh, sl, lim))
+    lh, ll = _last_pair(ctx, 3)
     close, atr = ctx.col("close"), ctx.col("atr14")
     want = p.get("direction")
-    ok = ctx.base & ~np.isnan(lh) & ~np.isnan(ll)
-    buy = ok & (lab == 1) & (close > lh) & (want != "DOWN")
-    sell = ok & ~buy & (lab == -1) & (close < ll) & (want != "UP")
-    side = np.where(buy, 1, np.where(sell, -1, 0))
-    stop = np.where(buy, ll - 0.2 * atr, lh + 0.2 * atr)
-    trop = np.abs(close - stop) > 3 * atr
-    stop = np.where(trop, close - side * p.get("sl_atr", 1.2) * atr, stop)
+    ok = ctx.base_x & ~xp.isnan(lh) & ~xp.isnan(ll)
+    buy = ok & (lab == 1) & (close > lh)
+    if want == "DOWN":
+        buy = buy & False
+    sell = ok & ~buy & (lab == -1) & (close < ll)
+    if want == "UP":
+        sell = sell & False
+    side = xp.where(buy, 1, xp.where(sell, -1, 0))
+    stop = xp.where(buy, ll - 0.2 * atr, lh + 0.2 * atr)
+    trop = xp.abs(close - stop) > 3 * atr
+    stop = xp.where(trop, close - side * p.get("sl_atr", 1.2) * atr, stop)
     if p.get("require_ema"):
-        side = np.where(trend_of(close, ctx.col("ema20"), ctx.col("ema50"), ctx.col("ema200")) == 0, 0, side)
+        side = xp.where(trend_of(close, ctx.col("ema20"), ctx.col("ema50"), ctx.col("ema200")) == 0, 0, side)
     if p.get("require_mtf"):
         tsh, tsl = _pivots(ctx, "t")
-        tlab = _label(tsh, tsl, ctx.lt_idx - 3)             # structure_label(t.iloc[:-1]) = cadre de tendance clôturé
-        side = np.where(tlab != lab, 0, side)
+        tlab = _data(ctx, ("tlab",), lambda: _label(tsh, tsl, ctx.lt_idx - 3))   # structure_label(t.iloc[:-1])
+        side = xp.where(tlab != lab, 0, side)
     return build(side, close, stop, p.get("rr", 2.0))
 
 
 @register_fast("choch", [{}, {"sl_atr": 2.0, "rr": 3.0}])
 def choch(ctx: FastCtx, p: dict):
-    n = ctx.n
+    xp = ctx.xp
     sh, sl = _pivots(ctx)
-    lab = _label(sh, sl, np.arange(n) - 4)                    # structure_label(closed.iloc[:-1]) : m = i
-    lim = np.arange(n) - 3
-    lh, _ = _last(sh, lim)
-    ll, _ = _last(sl, lim)
+    lim4 = np.arange(ctx.n) - 4
+    lab = _data(ctx, ("lab", 4), lambda: _label(sh, sl, lim4))   # structure_label(closed.iloc[:-1]) : m = i
+    lh, ll = _last_pair(ctx, 3)
     close, atr = ctx.col("close"), ctx.col("atr14")
-    ok = ctx.base & ~np.isnan(lh) & ~np.isnan(ll)
+    ok = ctx.base_x & ~xp.isnan(lh) & ~xp.isnan(ll)
     buy = ok & (lab == -1) & (close > lh)
     sell = ok & ~buy & (lab == 1) & (close < ll)
-    side = np.where(buy, 1, np.where(sell, -1, 0))
-    stop = np.where(buy, ll - 0.2 * atr, lh + 0.2 * atr)
-    trop = np.abs(close - stop) > 3 * atr
-    stop = np.where(trop, close - side * p.get("sl_atr", 1.0) * atr, stop)
+    side = xp.where(buy, 1, xp.where(sell, -1, 0))
+    stop = xp.where(buy, ll - 0.2 * atr, lh + 0.2 * atr)
+    trop = xp.abs(close - stop) > 3 * atr
+    stop = xp.where(trop, close - side * p.get("sl_atr", 1.0) * atr, stop)
     return build(side, close, stop, p.get("rr", 2.0))
 
 
 @register_fast("fib_pullback", [{}, {"tol_atr": 0.5, "levels": [0.382, 0.5, 0.618], "sl_atr": 1.5}])
 def fib_pullback(ctx: FastCtx, p: dict):
-    n = ctx.n
+    xp = ctx.xp
     sh, sl = _pivots(ctx)
-    lim = np.arange(n) - 3
-    hi, hix = _last(sh, lim)
-    lo, lix = _last(sl, lim)
+    lim = np.arange(ctx.n) - 3
+    hi = _data(ctx, ("fib_hi",), lambda: _last(sh, lim)[0])
+    hix = _data(ctx, ("fib_hix",), lambda: _last(sh, lim)[1])
+    lo = _data(ctx, ("fib_lo",), lambda: _last(sl, lim)[0])
+    lix = _data(ctx, ("fib_lix",), lambda: _last(sl, lim)[1])
     close, opn, low, high, atr = ctx.col("close"), ctx.col("open"), ctx.col("low"), ctx.col("high"), ctx.col("atr14")
     tr = trend_of(ctx.tcol("close"), ctx.tcol("ema20"), ctx.tcol("ema50"), ctx.tcol("ema200"))
     tol = p.get("tol_atr", 0.3) * atr
     levels = p.get("levels", [0.5, 0.618])
-    ok = ctx.base & ~np.isnan(hi) & ~np.isnan(lo)
+    ok = ctx.base_x & ~xp.isnan(hi) & ~xp.isnan(lo)
     up = ok & (tr == 1) & (hix > lix)
     dn = ok & (tr == -1) & (lix > hix)
-    touch_up = np.zeros(n, dtype=bool)
-    touch_dn = np.zeros(n, dtype=bool)
+    touch_up = xp.zeros(ctx.n, dtype=bool)
+    touch_dn = xp.zeros(ctx.n, dtype=bool)
     for f in levels:
-        touch_up |= np.abs(low - (hi - (hi - lo) * f)) <= tol
-        touch_dn |= np.abs(high - (lo + (hi - lo) * f)) <= tol
+        touch_up |= xp.abs(low - (hi - (hi - lo) * f)) <= tol
+        touch_dn |= xp.abs(high - (lo + (hi - lo) * f)) <= tol
     buy = up & touch_up & (close > opn)
     sell = dn & touch_dn & (close < opn)
     k = p.get("sl_atr", 1.0)
-    stop_b = np.where(close - lo < 3 * atr, lo - 0.2 * atr, close - k * atr)
-    stop_s = np.where(hi - close < 3 * atr, hi + 0.2 * atr, close + k * atr)
-    side = np.where(buy, 1, np.where(sell, -1, 0))
-    return build(side, close, np.where(buy, stop_b, stop_s), p.get("rr", 2.5))
+    stop_b = xp.where(close - lo < 3 * atr, lo - 0.2 * atr, close - k * atr)
+    stop_s = xp.where(hi - close < 3 * atr, hi + 0.2 * atr, close + k * atr)
+    side = xp.where(buy, 1, xp.where(sell, -1, 0))
+    return build(side, close, xp.where(buy, stop_b, stop_s), p.get("rr", 2.5))

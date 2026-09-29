@@ -521,6 +521,14 @@ n'utilise PAS Fable (retiré de TIER_A le 2026-09-23) : le quota Fable est rése
   seul contrôle a vu toutes les cotations figées depuis 62 s (cryptos comprises), revenues 15 s plus tard → SAFE_MODE
   41 s. Le watchdog exige désormais `system.stale_confirm_sec` (30 s) de contrôles périmés consécutifs avant l'alerte
   et le SAFE_MODE ; un flux réellement mort est toujours détecté (tests).
+- **29–30/09, recherche sur la 3090 (demande utilisateur « portage GPU, fais tout »)** : CUDA (numba-cuda, cupy-cuda12x)
+  dans le venv ; simulation compilée (`backtest/gpu_sim.py`, CPU Numba + noyau CUDA, métriques identiques à run_backtest) ;
+  signaux par PAQUETS (`sl_atr`, `rr` en colonnes) sur numpy ou cupy pour les 18 stratégies (`fastsig`, `FastCtx.on(xp)`),
+  parties « données » en numpy mises en cache ; recherche en masse `research/massive.py --device gpu --univers --sessions`
+  (73 marchés, 5 variantes de session, période de contrôle 30 %, seuil √(2 ln M), plateau). 308 tests verts (équivalence
+  CPU, paquet = appels séparés sur CPU et GPU, sorties GPU = CPU). Paquet de 24 configurations sur 20 000 bougies :
+  12–25 ms CPU → 0,7–4 ms GPU. Premier passage (20 640 configurations, 4 familles) : aucune retenue (1 significative,
+  échouée au contrôle).
 - **Stop du suiveur élargi du surcroît de spread (28/09, décision utilisateur)** : SILVER chez les démos IC (spread 82
   points) contre XAGUSD chez le maître (11) — les quatre copies argent ont pris le stop à 61,807 sur un pic que le maître
   (stop 61,804, plus haut 61,776) n'a pas vu. Le maître exporte son spread ; à l'ouverture d'une copie, le stop du suiveur
