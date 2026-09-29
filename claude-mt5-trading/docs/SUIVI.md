@@ -498,6 +498,11 @@ n'utilise PAS Fable (retiré de TIER_A le 2026-09-23) : le quota Fable est rése
   exige un stop ≥ 0,75 ATR H1 hors crypto (`min_sl_atr_ratio_by_class`) et un coût ≤ 20 % du stop — un stop M1 sur
   indices / or serait refusé ; seule la crypto passerait tel quel.
   Optimiseur étendu aux 19 stratégies et au M5 (RR réduit à 2,0 : 1 140 configurations), relancé en priorité basse.
+  **Résultat (29/09, 14h51 → 18h10)** : 151 survivantes au tri large, 20 retenues ; 8 écartées (déjà au registre — les
+  X01–X06 d'hier retrouvés — ou résultats identiques pour un autre stop) ; **12 nouvelles X23–X34 en SHADOW** :
+  breakout_retest M15 crypto, donchian D1 métaux, ema_pullback H4 métaux (×3), rsi_divergence H1 métaux, ema_trend H4
+  métaux (stops 1,5 et 2), compression_expansion H4 indices, structure_bos D1 métaux, failed_breakout D1 crypto (×2).
+  Toujours aucune configuration forex ni M5 retenue ; les métaux H4 dominent. Rapport : reports/optimizer_2026-09-29_1610.json.
 - **Stop du suiveur élargi du surcroît de spread (28/09, décision utilisateur)** : SILVER chez les démos IC (spread 82
   points) contre XAGUSD chez le maître (11) — les quatre copies argent ont pris le stop à 61,807 sur un pic que le maître
   (stop 61,804, plus haut 61,776) n'a pas vu. Le maître exporte son spread ; à l'ouverture d'une copie, le stop du suiveur
