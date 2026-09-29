@@ -69,6 +69,7 @@ def _build(spec: AgentSpec, snap, side: Side, entry: float, sl: float, rr: float
         agent_id=spec.agent_id, agent_version=spec.version, setup_score=round(score, 1), data_quality=snap.data_quality,
         spread_points=snap.spread_points, rr=round(abs(tp_final - entry) / dist, 2), invalidation=invalidation,
         arguments_for=pros, arguments_against=cons, atr=atr, session=snap.session.value, bar_time=bar_time,
+        spread_price=float(snap.spread_points or 0) * float(getattr(snap.spec, "point", 0.0) or 0.0) if snap.spec else 0.0,
     )
 
 

@@ -106,7 +106,8 @@ class Orchestrator:
         tfs = settings.scheduler.get("timeframes", ["M5", "M15", "H1", "H4", "D1"])
         self.feed = MarketDataFeed(broker, tfs, bars=max(300, int(settings.system.get("min_bars_required", 250)) + 50),
                                    max_tick_age_sec=int(settings.system.get("data_max_age_sec", 30)),
-                                   min_bars=int(settings.system.get("min_bars_required", 250)))
+                                   min_bars=int(settings.system.get("min_bars_required", 250)),
+                                   extra_timeframes=settings.system.get("extra_timeframes") or {})
         self.registry = AgentRegistry(status_file=settings.data_dir / "agent_status.json", journal=self.journal)
         self.router_ = MarketRouter(self.registry, settings.markets)
         self.model_router = ModelRouter(settings.models)
@@ -666,7 +667,9 @@ class Orchestrator:
         bot_pos = list(st.bot_positions.values())
         ex = self.s.execution
         max_sp = max_spread_points_for(spec.asset_class if spec else "", ex.get("max_spread_points", {}))
-        ctx = GateContext(risk_by_class=dict((self.s.risk or {}).get("risk_per_trade_by_class") or {}), candidate=c, state=st, account=self.broker.account_info(), spec=spec, tick=tick,
+        _ag = self.registry.get(c.agent_id) if getattr(self, "registry", None) is not None else None
+        ctx = GateContext(agent_risk_factor=float((getattr(_ag, "params", None) or {}).get("risk_factor", 1.0) or 1.0),
+                          risk_by_class=dict((self.s.risk or {}).get("risk_per_trade_by_class") or {}), candidate=c, state=st, account=self.broker.account_info(), spec=spec, tick=tick,
                           atr=snap.atr_h1 if snap else 0.0, data_quality=snap.data_quality if snap else "NO_DATA",
                           market_open=forex_market_open(now) if (spec and spec.asset_class == "forex") else True,
                           news_check=nc, correlations=corr, now=now, watchdog_alive=wd_alive,

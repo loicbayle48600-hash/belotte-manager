@@ -37,6 +37,9 @@ STRATEGIES: dict[str, dict] = {
     "atr_expansion": {"atr_ratio": 1.3}, "breakout_retest": {}, "liquidity_sweep": {"with_trend": True},
     "sr_rejection": {"tol_atr": 0.3, "with_trend": True}, "structure_bos": {}, "macd_momentum": {},
     "failed_breakout": {}, "rsi_divergence": {}, "donchian_breakout": {"lookback": 20},
+    # 2026-09-29, demande utilisateur (« toutes les stratégies sur tous les agents ») : les 7 stratégies génériques restantes
+    "choch": {}, "compression_expansion": {}, "daily_hl_breakout": {}, "ema_pullback": {}, "exhaustion": {},
+    "fib_pullback": {}, "rsi2_reversion": {},
 }
 TREND = [Regime.TRENDING.value, Regime.RISK_ON.value, Regime.RISK_OFF.value, Regime.BREAKOUT.value]
 RANGE = [Regime.RANGING.value, Regime.LOW_VOLATILITY.value]
@@ -45,13 +48,14 @@ ALL = [r.value for r in Regime if r is not Regime.NEWS_SHOCK]
 REGIMES = {"ema_trend": TREND, "mtf_trend_pullback": TREND, "bollinger_mr": RANGE, "atr_expansion": BREAK,
            "breakout_retest": BREAK, "liquidity_sweep": ALL, "sr_rejection": TREND + RANGE, "structure_bos": TREND + [Regime.UNCERTAIN.value],
            "macd_momentum": TREND, "failed_breakout": RANGE + [Regime.UNCERTAIN.value], "rsi_divergence": RANGE + [Regime.UNCERTAIN.value],
-           "donchian_breakout": ALL}
-TIMEFRAMES = [("M15", "H1"), ("H1", "H4"), ("H4", "D1"), ("D1", "D1")]
+           "donchian_breakout": ALL, "choch": TREND + RANGE, "compression_expansion": BREAK, "daily_hl_breakout": BREAK,
+           "ema_pullback": TREND, "exhaustion": RANGE + [Regime.UNCERTAIN.value], "fib_pullback": TREND, "rsi2_reversion": ALL}
+TIMEFRAMES = [("M5", "H1"), ("M15", "H1"), ("H1", "H4"), ("H4", "D1"), ("D1", "D1")]   # M5 ajouté le 29/09
 SL_ATR = [1.0, 1.5, 2.0]
-RR = [1.5, 2.0, 2.5, 3.0]
+RR = [2.0]   # 29/09 : avec la gestion de position, la cible finale ne change presque rien (20 retenus = 6 distincts le 28/09)
 CLASSES = {"forex": ["EURUSD", "GBPUSD", "USDJPY", "AUDUSD"], "indices": ["US500", "USTEC", "DE40"],
            "metals": ["XAUUSD", "XAGUSD"], "crypto": ["BTCUSD", "ETHUSD", "SOLUSD"]}
-BARS = {"M15": 5000, "H1": 5000, "H4": 5000, "D1": 3000}   # 2026-09-28 : 10 000 barres × 52 lectures bloquaient le terminal
+BARS = {"M5": 5000, "M15": 5000, "H1": 5000, "H4": 5000, "D1": 3000}   # 2026-09-28 : 10 000 barres × 52 lectures bloquaient le terminal
 SESSIONS = ["ASIA", "LONDON", "NEWYORK", "OVERLAP_LDN_NY"]
 
 

@@ -365,6 +365,25 @@ def default_agents() -> list[AgentSpec]:  # noqa: C901 - registre déclaratif
         A.append(_a(f"Q{i:02d}", "Q", nm, st, mk, ["ASIA", "LONDON", "NEWYORK", "OVERLAP_LDN_NY"], tfs, rg, prm,
                     model_tier_role="technical_analysis", status=AgentStatus.SHADOW.value,
                     description="Jumeau « ordre en attente » (SHADOW) : même stratégie, entrée sur ordre limite/stop"))
+    # ---------------- S. SCALPING M1 EN MICRO-POSITIONS (SHADOW, demande utilisateur 2026-09-29) ----------------
+    # « Des agents en micro-positions en M1, positions ouvertes au moins 1 min (règle FOXX) », puis « toutes les
+    # stratégies sur tous les agents ». Chaque stratégie générique (hors annonces / week-end) × {crypto, indices + or},
+    # entrée M1, tendance M15, risque au quart du réglage (risk_factor 0,25). Le M1 n'est chargé que pour ces symboles
+    # (`system.extra_timeframes`). L'ombre déduit le spread d'entrée (cost_r) : sans lui le M1 paraîtrait gagnant.
+    M1_CRYPTO = ["BTCUSD", "ETHUSD"]
+    M1_INDICES = ["US500", "USTEC", "DE40", "XAUUSD"]
+    STRAT_M1 = ["atr_expansion", "bollinger_mr", "breakout_retest", "choch", "compression_expansion", "daily_hl_breakout",
+                "donchian_breakout", "ema_pullback", "ema_trend", "exhaustion", "failed_breakout", "fib_pullback",
+                "liquidity_sweep", "macd_momentum", "mtf_trend_pullback", "rsi2_reversion", "rsi_divergence",
+                "sr_rejection", "structure_bos"]
+    k = 1
+    for nom_m, mk, sess in (("crypto", M1_CRYPTO, ALL_SESSIONS), ("indices_or", M1_INDICES, ["LONDON", "NEWYORK", "OVERLAP_LDN_NY"])):
+        for st in STRAT_M1:
+            A.append(_a(f"S{k:02d}", "S", f"m1_{st}_{nom_m}", st, mk, sess, tf("M1", "M15"), ALL_REGIMES,
+                        {"sl_atr": 1.5, "rr": 1.5, "risk_factor": 0.25}, model_tier_role="technical_analysis",
+                        status=AgentStatus.SHADOW.value,
+                        description="Scalping M1 en micro-position (SHADOW) : un quart du risque, 1 min minimum en position"))
+            k += 1
     # Chaque agent générateur possède SA PROPRE stratégie (clé = agent_id, module agents/strategies/*) ;
     # le screener générique historique reste en repli (base_strategy) tant que la stratégie propre n'existe pas.
     for a in A:

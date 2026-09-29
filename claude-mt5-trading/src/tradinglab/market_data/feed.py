@@ -81,9 +81,12 @@ class MarketDataFeed:
     """
 
     def __init__(self, broker: BrokerAdapter, timeframes: list[str], bars: int = 300, max_tick_age_sec: int = 30,
-                 min_bars: int = 250):
+                 min_bars: int = 250, extra_timeframes: Optional[dict] = None):
         self.broker = broker
         self.timeframes = [tf.upper() for tf in timeframes]
+        # 2026-09-29 (agents M1, demande utilisateur) : unités de temps chargées pour QUELQUES symboles seulement —
+        # le M1 sur les 73 symboles ferait 73 lectures du terminal par minute
+        self.extra_timeframes = {str(tf).upper(): set(syms or []) for tf, syms in (extra_timeframes or {}).items()}
         self.bars = int(bars)
         self.max_tick_age_sec = int(max_tick_age_sec)
         self.min_bars = int(min_bars)
@@ -134,6 +137,9 @@ class MarketDataFeed:
             raise ValueError(f"symbole inconnu du broker : {symbol}")
         tick = self.broker.tick(symbol)
         frames: dict[str, pd.DataFrame] = {tf: self.frame(symbol, tf, now) for tf in self.timeframes}
+        for tf, syms in self.extra_timeframes.items():
+            if symbol in syms and tf not in frames:
+                frames[tf] = self.frame(symbol, tf, now)
         bar_times: dict[str, str] = {}
         bar_counts: dict[str, int] = {}
         for tf, df in frames.items():

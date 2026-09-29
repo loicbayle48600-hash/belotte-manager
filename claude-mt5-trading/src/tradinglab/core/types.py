@@ -334,6 +334,7 @@ class TradeCandidate:
     # 2026-09-28 (décision utilisateur, jumeaux SHADOW) : entrée sur ORDRE EN ATTENTE au lieu du marché — "LIMIT" (retour
     # au niveau : achat sous le prix / vente au-dessus) ou "STOP" (confirmation : achat au-dessus / vente en dessous),
     # au prix `order_price`, annulé après `expiry_bars` barres de l'unité d'entrée. "MARKET" = comportement d'origine.
+    spread_price: float = 0.0       # spread à la création, en prix (2026-09-29, coût d'ombre des entrées M1)
     entry_kind: str = "MARKET"
     order_price: float = 0.0
     expiry_bars: int = 0

@@ -19,6 +19,9 @@ system:
   heartbeat_max_age_sec: 45      # au-delà, le watchdog considère l'orchestrateur mort
   data_max_age_sec: 60           # fraîcheur maximale d'un tick pour autoriser une entrée — 30→60 le 2026-09-22 sur accord utilisateur : sur le flux DEMO, EURUSD passe 31-43 s sans tick la nuit et le watchdog battait (SAFE_MODE/AUTO toutes les ~10 min)
   min_bars_required: 250
+  # 2026-09-29 (agents M1, famille S) : unités de temps chargées pour quelques symboles seulement (1 lecture / min chacun)
+  extra_timeframes:
+    M1: [BTCUSD, ETHUSD, US500, USTEC, DE40, XAUUSD]
   timezone_local: "Europe/Paris"
 
 scheduler:

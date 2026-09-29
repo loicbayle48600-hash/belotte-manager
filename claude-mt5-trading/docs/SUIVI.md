@@ -488,6 +488,16 @@ n'utilise PAS Fable (retiré de TIER_A le 2026-09-23) : le quota Fable est rése
 - **29/09, demande utilisateur « des X en M5, M15, H1 et D1 »** : X07–X22 en SHADOW, déclinaisons de X01, X02
   (breakout_retest), X03 (macd_momentum) et X06 (ema_trend) sur or/argent en M5 (tendance H1), M15 (H1), H1 (H4) et D1.
   Réserve : l'optimiseur du 28/09 n'avait rien retenu en M15/H1 (M5 absent de sa grille) ; le pipeline tranchera.
+- **29/09, agents M1 en micro-positions (demande utilisateur, puis « toutes les stratégies sur tous les agents »)** :
+  famille S, S01–S38 en SHADOW = 19 stratégies génériques (hors annonces / week-end) × {crypto BTC/ETH, indices US500 /
+  USTEC / DE40 + or}, entrée M1, tendance M15, `risk_factor: 0.25` (micro-position : un quart du risque, appliqué par le
+  gate via `GateContext.agent_risk_factor`). M1 chargé pour ces 6 symboles seulement (`system.extra_timeframes`).
+  Règle FOXX « plus d'une minute » : le gestionnaire ne fait plus aucun TP partiel ni sortie du verrou avant 60 s
+  (`PositionManager.MIN_HOLD_SEC`) ; le stop broker reste actif. L'ombre déduit le spread d'entrée des trades M1
+  (`ShadowPosition.cost_r`), sinon le scalping paraîtrait gagnant. Limite connue pour un passage en réel : le gate
+  exige un stop ≥ 0,75 ATR H1 hors crypto (`min_sl_atr_ratio_by_class`) et un coût ≤ 20 % du stop — un stop M1 sur
+  indices / or serait refusé ; seule la crypto passerait tel quel.
+  Optimiseur étendu aux 19 stratégies et au M5 (RR réduit à 2,0 : 1 140 configurations), relancé en priorité basse.
 - **Stop du suiveur élargi du surcroît de spread (28/09, décision utilisateur)** : SILVER chez les démos IC (spread 82
   points) contre XAGUSD chez le maître (11) — les quatre copies argent ont pris le stop à 61,807 sur un pic que le maître
   (stop 61,804, plus haut 61,776) n'a pas vu. Le maître exporte son spread ; à l'ouverture d'une copie, le stop du suiveur

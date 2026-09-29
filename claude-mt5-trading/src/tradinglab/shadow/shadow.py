@@ -41,6 +41,7 @@ class ShadowPosition:
     order_price: float = 0.0
     pending: bool = False      # ordre non encore rempli
     expires_at: str = ""       # annulation de l'ordre après `expiry_bars` barres de l'unité d'entrée
+    cost_r: float = 0.0        # 2026-09-29 : spread d'entrée en R, déduit du résultat (entrées M1 : le spread y pèse lourd)
 
 
 class ShadowTrader:
@@ -102,13 +103,29 @@ class ShadowTrader:
                                opened_at=now.isoformat(), regime=c.regime.value, session=c.session, setup_score=c.setup_score, bar_time=c.bar_time,
                                mode=mode, reason=reason, key=c.idempotency_key,
                                entry_kind=kind if attente else "MARKET", order_price=float(getattr(c, "order_price", 0.0) or 0.0) if attente else 0.0,
-                               pending=attente, expires_at=expire)
+                               pending=attente, expires_at=expire,
+                               cost_r=self._cost_r(c))
             self.positions[p.id] = p
             self.executed[c.idempotency_key] = None
             out.append(p)
         if out:
             self._save()
         return out
+
+    @staticmethod
+    def _cost_r(c) -> float:
+        """Spread à l'entrée en fraction du risque, pour les entrées M1 seulement (l'historique des autres unités de temps
+        reste comparable) : sans cela un scalping M1 paraîtrait gagnant en ombre et perdant en réel."""
+        tfs = list(getattr(c, "timeframes", None) or [])
+        if not tfs or str(tfs[0]).upper() != "M1":
+            return 0.0
+        dist = abs(float(c.entry) - float(c.sl))
+        pt = float(getattr(c, "point", 0.0) or 0.0) or float(getattr(c, "spread_price", 0.0) or 0.0)
+        sp = float(getattr(c, "spread_points", 0) or 0)
+        if dist <= 0 or sp <= 0:
+            return 0.0
+        prix = float(getattr(c, "spread_price", 0.0) or 0.0) or sp * (pt or 0.0)
+        return round(prix / dist, 4) if prix > 0 else 0.0
 
     def forget(self, key: str) -> int:
         """Retire les positions d'ombre nées de ce signal (2026-09-28 : un signal mis en papier au cycle N — « au-delà des
@@ -189,7 +206,7 @@ class ShadowTrader:
                 exit_px, reason = float(df["close"].iloc[-2]), "timeout"
             if exit_px is None:
                 continue
-            r = side.sign * (exit_px - p.entry) / dist
+            r = side.sign * (exit_px - p.entry) / dist - float(p.cost_r or 0.0)
             rec = TradeRecord(ticket=0, agent_id=p.agent_id, symbol=p.symbol, side=p.side, entry=p.entry, sl=p.sl, risk_money=self.risk_money,
                               risk_percent=0.0, result_r=round(r, 4), pnl=round(r * self.risk_money, 2), opened_at=p.opened_at,
                               closed_at=now.isoformat(), mode=p.mode or "shadow", regime=p.regime, session=p.session, tp=[p.tp],

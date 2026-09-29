@@ -186,7 +186,10 @@ class PositionManager:
             return actions
 
         # 2. TP partiels
-        if not plan.tp1_done and r >= cfg.tp1_r:
+        # règle FOXX « maintenir les positions plus d'une minute » (2026-09-29, agents M1) : aucun TP partiel ni sortie
+        # du verrou avant 60 s ; le stop broker reste actif (il peut, lui, être touché plus tôt)
+        jeune = self._age_sec(plan) < self.MIN_HOLD_SEC
+        if not plan.tp1_done and r >= cfg.tp1_r and not jeune:
             vol = round_volume_down(plan.initial_volume * cfg.tp1_close_percent / 100.0, spec)
             if vol >= spec.volume_min and vol < pos.volume:
                 res = self.broker.close_position(pos.ticket, vol, comment="TLAB TP1")
@@ -203,7 +206,7 @@ class PositionManager:
                                        provenance="CALCULATED")
             else:
                 plan.tp1_done = True  # volume trop petit pour un partiel : on passe
-        if plan.tp1_done and not plan.tp2_done and r >= cfg.tp2_r:
+        if plan.tp1_done and not plan.tp2_done and r >= cfg.tp2_r and not jeune:
             vol = round_volume_down(plan.initial_volume * cfg.tp2_close_percent / 100.0, spec)
             if vol >= spec.volume_min and vol < pos.volume:
                 res = self.broker.close_position(pos.ticket, vol, comment="TLAB TP2")
@@ -243,7 +246,7 @@ class PositionManager:
         #     pas pu être posé au verrou (distance minimale du broker) et que le prix repasse sous le verrou, la position
         #     est fermée au marché — le stop broker, posé au plus près, reste le filet en cas de trou entre deux cycles
         lock = self._lock_r(plan, cfg)
-        if plan.trailing_forced and lock > 0 and plan.max_r >= max(lock, float(cfg.protect_profit_risk_ratio or 0.0)) and r < lock:
+        if plan.trailing_forced and lock > 0 and plan.max_r >= max(lock, float(cfg.protect_profit_risk_ratio or 0.0)) and r < lock and not jeune:
             verrou = plan.entry + side.sign * lock * abs(plan.entry - plan.initial_sl)
             stop_broker = pos.sl if pos.has_sl else plan.last_sl
             if not stop_broker or not is_tighter_or_equal(side, stop_broker, verrou):
@@ -351,6 +354,18 @@ class PositionManager:
     commission_per_lot = None
     #: commission ramenée en distance de prix (spec, prix) -> float ; prioritaire sur `commission_per_lot` (crypto)
     commission_price = None
+
+    MIN_HOLD_SEC = 60.0
+
+    @staticmethod
+    def _age_sec(plan: BotPositionPlan) -> float:
+        try:
+            t = datetime.fromisoformat(str(plan.opened_at))
+            if t.tzinfo is None:
+                t = t.replace(tzinfo=timezone.utc)
+            return (datetime.now(timezone.utc) - t).total_seconds()
+        except (TypeError, ValueError):
+            return float("inf")
 
     def _floor_level(self, plan: BotPositionPlan, side: Side, spec: Optional[SymbolSpec], cfg: Optional[PMConfig] = None) -> float:
         """Plancher du stop une fois le profit protégé : le break-even, ou plus haut, le verrou de profit
