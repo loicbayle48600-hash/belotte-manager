@@ -1,6 +1,8 @@
 # Dépendances runtime (Windows + Linux). MetaTrader5 n'existe que sur Windows x64.
 pyyaml>=6.0
 numpy>=1.26
+numba>=0.60              # simulation en masse compilée (backtest/gpu_sim.py, 2026-09-29)
+numba-cuda[cu12]        # optionnel : simulation sur carte graphique NVIDIA (repli processeur sinon)
 pandas>=2.1
 anthropic>=0.40
 mcp>=1.0
