@@ -120,7 +120,8 @@ def proposal_spec(cfg: Config, agent_id: str, metrics: dict, wf: dict, status: s
     """Spécification d'agent (AgentSpec.to_dict) prête à être ajoutée au registre par l'orchestrateur."""
     return {"agent_id": agent_id, "family": "X", "name": cfg.name, "strategy": cfg.strategy, "markets": list(CLASSES_ALL[cfg.asset_class]),
             "sessions": list(SESSIONS), "timeframes": {"entry": cfg.entry_tf, "trend": cfg.trend_tf}, "regimes": list(REGIMES[cfg.strategy]),
-            "params": cfg.params(), "status": status, "version": "1.0", "model_tier_role": "technical_analysis",
+            "params": {**cfg.params(), **({"forex_short_term_ok": True} if cfg.asset_class.startswith("forex") and cfg.entry_tf in ("M1", "M5", "M15") else {})},
+            "status": status, "version": "1.0", "model_tier_role": "technical_analysis",
             "news_sensitive": False, "cost_budget_usd": 0.5,
             "description": (f"Optimiseur {datetime.now(timezone.utc).date().isoformat()} : PF {metrics.get('profit_factor', 0):.2f}, "
                             f"{metrics.get('sample_size', 0)} trades, {metrics.get('expectancy_r', 0):+.2f} R, walk-forward "

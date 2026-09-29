@@ -503,6 +503,12 @@ n'utilise PAS Fable (retiré de TIER_A le 2026-09-23) : le quota Fable est rése
   breakout_retest M15 crypto, donchian D1 métaux, ema_pullback H4 métaux (×3), rsi_divergence H1 métaux, ema_trend H4
   métaux (stops 1,5 et 2), compression_expansion H4 indices, structure_bos D1 métaux, failed_breakout D1 crypto (×2).
   Toujours aucune configuration forex ni M5 retenue ; les métaux H4 dominent. Rapport : reports/optimizer_2026-09-29_1610.json.
+- **29/09, recherche forex M5 (demande utilisateur)** : optimiseur en mode ciblé (`--classes forex8 --timeframes
+  M5:H1,M5:M15 --sl-atr 1,1.5,2,3 --bars M5=20000`) : 8 paires, ~70 jours de M5, 19 stratégies, 152 configurations.
+  **Décision utilisateur « oui, lève »** : les configurations forex M1/M5/M15 retenues par le walk-forward de l'optimiseur
+  portent `params.forex_short_term_ok` et ne sont PAS mises en papier seulement (`_forex_court_terme`) ; elles naissent
+  quand même en SHADOW et ne passent LIVE que sur décision. Le passage lancé à 18h20 utilise l'ancien code : le drapeau
+  sera ajouté à ses propositions à la main.
 - **Stop du suiveur élargi du surcroît de spread (28/09, décision utilisateur)** : SILVER chez les démos IC (spread 82
   points) contre XAGUSD chez le maître (11) — les quatre copies argent ont pris le stop à 61,807 sur un pic que le maître
   (stop 61,804, plus haut 61,776) n'a pas vu. Le maître exporte son spread ; à l'ouverture d'une copie, le stop du suiveur

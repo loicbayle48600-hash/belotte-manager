@@ -146,3 +146,15 @@ def test_reglages_du_28_09_soir():
     assert ex["forex_blocked_hours_utc"] == []            # décision utilisateur 28/09 au soir : le forex garde le droit de trader à ces heures
     deg = yaml.safe_load(open("config/strategies.yaml", encoding="utf-8"))["learning"]["degradation"]
     assert deg["trades_mode"] == "live+paper"
+
+
+def test_exception_forex_court_terme_par_agent():
+    """29/09, décision utilisateur : les configurations forex M5 validées par l'optimiseur ne vont pas en papier."""
+    from tradinglab.research import optimizer as opt
+    o = _orch_forex(12)
+    o.registry = SimpleNamespace(get=lambda aid: SimpleNamespace(params={"forex_short_term_ok": True}) if aid == "X50" else None)
+    assert not o._forex_court_terme(_cand(agent="X50", symbol="EURUSD", tfs=("M5", "H1")))
+    assert o._forex_court_terme(_cand(agent="B01", symbol="EURUSD", tfs=("M5", "H1")))
+    p = opt.proposal_spec(opt.Config("ema_trend", "M5", "H1", 1.5, 2.0, "forex8"), "X50", {}, {}, "SHADOW")
+    assert p["params"]["forex_short_term_ok"] is True and p["status"] == "SHADOW"
+    assert "forex_short_term_ok" not in opt.proposal_spec(opt.Config("ema_trend", "H4", "D1", 1.5, 2.0, "metals"), "X51", {}, {}, "SHADOW")["params"]

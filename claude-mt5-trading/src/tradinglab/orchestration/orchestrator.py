@@ -1261,6 +1261,11 @@ class Orchestrator:
         """Candidat forex dont l'unité de temps d'entrée est M1/M5/M15 (2026-09-28 : papier seulement)."""
         if not bool(self.s.execution.get("forex_short_term_paper_only", False)):
             return False
+        # exception par agent (2026-09-29, décision utilisateur « oui, lève ») : les configurations forex court terme
+        # validées par le walk-forward de l'optimiseur portent `forex_short_term_ok` et tradent normalement
+        ag = self.registry.get(c.agent_id) if getattr(self, "registry", None) is not None else None
+        if ag is not None and bool((ag.params or {}).get("forex_short_term_ok", False)):
+            return False
         spec = self.broker.symbol_info(c.symbol)
         if spec is None or getattr(spec, "asset_class", "") != "forex":
             return False
