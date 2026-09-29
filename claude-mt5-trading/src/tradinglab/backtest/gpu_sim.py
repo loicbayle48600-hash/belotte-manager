@@ -240,3 +240,22 @@ def metrics_from(out_row) -> dict:
     return {"sample_size": n, "trades": n, "wins": int(wins), "losses": int(losses), "win_rate": wins / n,
             "profit_factor": float(pf), "expectancy_r": float(mean), "total_r": float(sr),
             "max_drawdown_r": float(out_row[7]), "sharpe": float(mean / std * math.sqrt(n)) if std > 1e-12 else 0.0}
+
+
+def simulate_device(opens, highs, lows, closes, atr, side, sl, tp, spread: float, slip: float, mgmt: Optional[dict],
+                    warmup: int = 200, start: int = 0, end: Optional[int] = None) -> np.ndarray:
+    """Comme `simulate`, mais les tableaux sont DÉJÀ sur la carte (cupy) : aucun aller-retour, seules les métriques
+    (P × N_OUT) reviennent au processeur. (2026-09-29, recherche en masse sur la 3090)"""
+    import cupy as cp
+    k = _kernel()
+    if k is None:
+        raise RuntimeError("CUDA indisponible")
+    side = cp.ascontiguousarray(side, dtype=cp.int8)
+    sl = cp.ascontiguousarray(sl, dtype=cp.float64)
+    tp = cp.ascontiguousarray(tp, dtype=cp.float64)
+    end = int(opens.shape[0]) if end is None else int(end)
+    out = cp.zeros((side.shape[0], N_OUT), dtype=cp.float64)
+    mg = cp.asarray(mgmt_vector(mgmt))
+    k[(side.shape[0] + 127) // 128, 128](opens, highs, lows, closes, atr, side, sl, tp, int(warmup), int(start), end,
+                                          spread / 2.0, slip, mg, out)
+    return cp.asnumpy(out)

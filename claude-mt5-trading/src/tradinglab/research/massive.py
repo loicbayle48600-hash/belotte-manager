@@ -209,6 +209,81 @@ def _task(args) -> list:
     return [(appr[k], ctrl[k]) for k in range(len(cfgs))]
 
 
+def _task_gpu(args) -> list:
+    """Même résultat que `_task`, calculé sur la 3090 par PAQUETS : pour chaque réglage clé (paramètres hors stop et
+    cible), tous les couples (sl_atr, rr) en un appel de la stratégie, variantes de session par masque, simulation sur la
+    carte. Repli automatique sur `_task` si la stratégie n'est pas encore portée sur la carte."""
+    import cupy as cp
+    from ..agents.registry import AgentSpec
+    from ..backtest import fastsig, gpu_sim
+    from ..backtest.engine import _atr_causal
+    from ..core.clock import current_session
+    from .adapters import make_signal_fn
+    sym, entry_tf, trend_tf, strategy, cfgs = args
+    df = _DATA.get((sym, entry_tf))
+    ss = _SPECS.get(sym)
+    if df is None or ss is None or len(df) < 600:
+        return [None] * len(cfgs)
+    try:
+        spec = AgentSpec(agent_id="MASS", family="X", name="mass", strategy=strategy, markets=[sym],
+                         sessions=list(opt.SESSIONS), timeframes={"entry": entry_tf, "trend": trend_tf},
+                         regimes=list(opt.REGIMES.get(strategy, opt.ALL)), params=dict(cfgs[0]["params"]), base_strategy=strategy)
+        f = make_signal_fn(spec, ss, entry_tf)
+        f.prepare(df)
+        ctx = f.fast_ctx()
+        if ctx is None:
+            return _task(args)
+        g = ctx.on(cp)
+        n = len(df)
+        cut = int(n * (1 - HOLDOUT))
+        h_np, l_np, c_np = (df[k].to_numpy(dtype=float) for k in ("high", "low", "close"))
+        o, h, l, c = (cp.asarray(df[k].to_numpy(dtype=float)) for k in ("open", "high", "low", "close"))
+        atr = cp.asarray(_atr_causal(h_np, l_np, c_np))
+        skey = (sym, entry_tf)
+        if skey not in _SESS:
+            _SESS[skey] = np.array([current_session(t.to_pydatetime()).value for t in df["time"]], dtype=object)
+        sess = _SESS[skey]
+        masques: dict = {}
+        cost = _COSTS[sym]
+        groupes: dict = {}
+        for j, cfg in enumerate(cfgs):
+            cle = json.dumps(sorted((k, v) for k, v in cfg["params"].items() if k not in ("sl_atr", "rr")), default=str)
+            groupes.setdefault(cle, []).append(j)
+        out: list = [None] * len(cfgs)
+        for cle, idx in groupes.items():
+            base = {k: v for k, v in cfgs[idx[0]]["params"].items() if k not in ("sl_atr", "rr")}
+            paires = sorted({(cfgs[j]["params"]["sl_atr"], cfgs[j]["params"]["rr"]) for j in idx})
+            col = {pr: k for k, pr in enumerate(paires)}
+            sl_c = cp.asarray([pr[0] for pr in paires], dtype=cp.float64)[:, None]
+            rr_c = cp.asarray([pr[1] for pr in paires], dtype=cp.float64)[:, None]
+            s_, sl_, tp_ = fastsig.FAST[strategy](g, {**base, "sl_atr": sl_c, "rr": rr_c})
+            P = len(paires)
+            s_ = cp.broadcast_to(s_, (P, n))
+            sl_ = cp.broadcast_to(sl_, (P, n))
+            tp_ = cp.broadcast_to(tp_, (P, n))
+            lignes_s, lignes_sl, lignes_tp = [], [], []
+            for j in idx:
+                k = col[(cfgs[j]["params"]["sl_atr"], cfgs[j]["params"]["rr"])]
+                ses = cfgs[j].get("sessions")
+                sd = s_[k]
+                if ses:
+                    mk = tuple(ses)
+                    if mk not in masques:
+                        masques[mk] = cp.asarray(np.isin(sess, ses) | (sess == "OFF"))
+                    sd = cp.where(masques[mk], sd, 0).astype(cp.int8)
+                lignes_s.append(sd)
+                lignes_sl.append(sl_[k])
+                lignes_tp.append(tp_[k])
+            S, SL, TP = cp.stack(lignes_s), cp.stack(lignes_sl), cp.stack(lignes_tp)
+            appr = gpu_sim.simulate_device(o, h, l, c, atr, S, SL, TP, cost.spread, cost.slippage, _MGMT, warmup=200, start=0, end=cut)
+            ctrl = gpu_sim.simulate_device(o, h, l, c, atr, S, SL, TP, cost.spread, cost.slippage, _MGMT, warmup=0, start=cut, end=n)
+            for r, j in enumerate(idx):
+                out[j] = (appr[r], ctrl[r])
+        return out
+    except Exception:  # noqa: BLE001 - stratégie pas encore portée sur la carte : calcul processeur, même résultat
+        return _task(args)
+
+
 # ------------------------------------------------------------------------------------------------ pilotage
 def select(configs: list[dict], results: dict, min_trades: int = 60) -> tuple[list, dict]:
     """Applique les garde-fous 2 à 4. `results[i]` = (lignes apprentissage, lignes contrôle) par symbole."""
@@ -256,6 +331,7 @@ def main(argv: Optional[list[str]] = None) -> int:  # pragma: no cover - process
     # 2026-09-29, demande utilisateur : « toutes les paires et tous les marchés disponibles »
     ap.add_argument("--univers", action="store_true", help="toutes les classes et tous les symboles de config/markets.yaml")
     ap.add_argument("--sessions", action="store_true", help="décliner chaque configuration par session (Asie, Londres, NY, chevauchement)")
+    ap.add_argument("--device", default="cpu", choices=["cpu", "gpu"], help="gpu : signaux et simulation sur la carte (3090)")
     args = ap.parse_args(argv)
     s = load_settings()
     load_dotenv(s.home / ".env")
@@ -309,7 +385,7 @@ def main(argv: Optional[list[str]] = None) -> int:  # pragma: no cover - process
     mgmt = dict(s.profit_management) if bool(bt.get("use_position_management", True)) else None
     results: dict = {}
     with mp.Pool(processes=args.workers, initializer=_init, initargs=(data, specs, costs, mgmt), maxtasksperchild=20) as pool:
-        for idx, res in zip(cles, pool.imap(_task, taches, chunksize=1)):
+        for idx, res in zip(cles, pool.imap(_task_gpu if args.device == "gpu" else _task, taches, chunksize=1)):
             for i, r in zip(idx, res):
                 if r is not None:
                     results.setdefault(i, []).append(r)

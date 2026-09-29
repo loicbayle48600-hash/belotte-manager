@@ -75,3 +75,22 @@ def test_grille_par_session():
             {"EURUSD": BTCosts(spread_points=10, slippage_points=3, point=SPEC_SYM.point, tick_value=1.0, tick_size=SPEC_SYM.tick_size)}, None)
     out = m._task(("EURUSD", "M15", "H1", "ema_trend", g[:10]))
     assert len(out) == 10 and out[0][0][0] >= max(o[0][0] for o in out[1:5])     # toutes sessions ≥ chaque session
+
+
+def test_tache_gpu_egale_tache_cpu():
+    """Même sorties (apprentissage et contrôle) sur la 3090 par paquets que sur le processeur config par config."""
+    import pytest
+    cp = pytest.importorskip("cupy")
+    try:
+        cp.cuda.runtime.getDeviceCount()
+    except Exception:  # noqa: BLE001
+        pytest.skip("pas de GPU")
+    m._init({("EURUSD", "M15"): _synth(3000, 4)}, {"EURUSD": SPEC_SYM},
+            {"EURUSD": BTCosts(spread_points=10, slippage_points=3, point=SPEC_SYM.point, tick_value=1.0, tick_size=SPEC_SYM.tick_size)},
+            {"trailing_start_r": 1.05})
+    cfgs = m.grid(["ema_trend"], ["forex"], [("M15", "H1")], sessions=m.SESSION_VARIANTS)[:60]
+    a = m._task(("EURUSD", "M15", "H1", "ema_trend", cfgs))
+    b = m._task_gpu(("EURUSD", "M15", "H1", "ema_trend", cfgs))
+    for x, y in zip(a, b):
+        assert np.allclose(x[0], y[0], rtol=1e-9, atol=1e-9) and np.allclose(x[1], y[1], rtol=1e-9, atol=1e-9)
+    assert sum(x[0][0] for x in a) > 0
