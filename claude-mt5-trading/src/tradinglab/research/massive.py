@@ -230,6 +230,9 @@ def select(configs: list[dict], results: dict, min_trades: int = 60) -> tuple[li
     s3 = [x for x in s2 if x[2]["n"] >= 15 and x[2]["exp"] > 0 and x[2]["pf"] >= 1.1]
     etapes["controle"] = len(s3)
     s3.sort(key=lambda x: -(x[2]["exp"] * math.sqrt(min(x[2]["n"], 200)) + x[1]["t"] * 0.1))
+    # les 50 meilleures sur l'apprentissage, retenues ou non (où est-on passé près ?)
+    etapes["top50"] = [{"config": c, "apprentissage": a, "controle": k}
+                       for c, a, k in sorted([x for x in rows if x[1]["n"] >= min_trades], key=lambda x: -x[1]["t"])[:50]]
     return s3, etapes
 
 
@@ -336,8 +339,9 @@ def main(argv: Optional[list[str]] = None) -> int:  # pragma: no cover - process
     out = s.home / "reports" / f"massive_{datetime.now(timezone.utc).strftime('%Y-%m-%d_%H%M')}.json"
     out.parent.mkdir(exist_ok=True)
     out.write_text(json.dumps(rapport, ensure_ascii=False, indent=1, default=str), encoding="utf-8")
-    journal.event("massive_done", **etapes, retenues=len(props), rapport=str(out), duree_sec=rapport["duree_sec"])
-    print(f"{etapes} → {len(props)} propositions ({out})")
+    resume = {k: v for k, v in etapes.items() if k != "top50"}
+    journal.event("massive_done", **resume, retenues=len(props), rapport=str(out), duree_sec=rapport["duree_sec"])
+    print(f"{resume} → {len(props)} propositions ({out})")
     return 0
 
 
