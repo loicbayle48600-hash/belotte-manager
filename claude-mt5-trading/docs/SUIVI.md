@@ -509,6 +509,14 @@ n'utilise PAS Fable (retiré de TIER_A le 2026-09-23) : le quota Fable est rése
   portent `params.forex_short_term_ok` et ne sont PAS mises en papier seulement (`_forex_court_terme`) ; elles naissent
   quand même en SHADOW et ne passent LIVE que sur décision. Le passage lancé à 18h20 utilise l'ancien code : le drapeau
   sera ajouté à ses propositions à la main.
+- **29/09, accélération des backtests (demande utilisateur, « puis le GPU si c'est mieux »)** : (1) `swing_points`
+  vectorisé (60 % du temps) ; (2) session testée d'abord, cadre de tendance et régime mis en cache ; (3) RSI(2) précalculé ;
+  (4) **signaux vectorisés** `backtest/fastsig.py` + `fastsig_g1/g2/g3.py` : 18 stratégies génériques sur 19 (daily_hl_breakout
+  garde le chemin lent) calculent en une fois le signal de chaque bougie ; `run_backtest` lit `signal_fn.signal_at(i)` ;
+  caches par processus des indicateurs et du régime. Équivalence EXACTE bougie par bougie et trades identiques
+  (tests/test_fastsig_2026_09_29.py, 208 tests). Gains, une configuration sur 5 000 bougies : structure_bos 9,5 s →
+  0,06 s, rsi_divergence 12,3 → 0,05, bollinger_mr 10,6 → 0,04 ; ~100× une fois les indicateurs en cache. Les stratégies
+  propres des agents (E05, B02…) gardent le screener ; `make_signal_fn(..., fast=False)` force l'ancien chemin.
 - **Stop du suiveur élargi du surcroît de spread (28/09, décision utilisateur)** : SILVER chez les démos IC (spread 82
   points) contre XAGUSD chez le maître (11) — les quatre copies argent ont pris le stop à 61,807 sur un pic que le maître
   (stop 61,804, plus haut 61,776) n'a pas vu. Le maître exporte son spread ; à l'ouverture d'une copie, le stop du suiveur
