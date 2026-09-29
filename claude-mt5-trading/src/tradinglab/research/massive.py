@@ -57,6 +57,10 @@ KEY_PARAMS: dict[str, dict[str, list]] = {
 TIMEFRAMES = [("M5", "H1"), ("M15", "H1"), ("H1", "H4"), ("H4", "D1"), ("D1", "D1")]
 BARS = {"M5": 20000, "M15": 20000, "H1": 20000, "H4": 8000, "D1": 3000}
 HOLDOUT = 0.30
+#: 2026-09-29, demande utilisateur (« des agents spécialisés par marché : Londres, Asie, US… ») : chaque configuration est
+#: aussi déclinée par session. Le filtre de session est le PREMIER du screener et ne dépend que de l'heure : la variante
+#: se déduit exactement des signaux « toutes sessions » en effaçant ceux hors session (le week-end, OFF, reste permis).
+SESSION_VARIANTS = [None, ["ASIA"], ["LONDON"], ["NEWYORK"], ["OVERLAP_LDN_NY"]]
 N_OUT = 8
 
 
@@ -80,7 +84,8 @@ def expand(strategy: str) -> list[dict]:
     return out
 
 
-def grid(strategies: Optional[list] = None, classes: Optional[list] = None, timeframes: Optional[list] = None) -> list[dict]:
+def grid(strategies: Optional[list] = None, classes: Optional[list] = None, timeframes: Optional[list] = None,
+         sessions: Optional[list] = None) -> list[dict]:
     """Liste des configurations : {strategy, entry_tf, trend_tf, asset_class, params}."""
     from ..backtest import fastsig
     out = []
@@ -88,7 +93,8 @@ def grid(strategies: Optional[list] = None, classes: Optional[list] = None, time
         for (e, t) in (timeframes or TIMEFRAMES):
             for c in (classes or list(opt.CLASSES)):
                 for prm in expand(st):
-                    out.append({"strategy": st, "entry_tf": e, "trend_tf": t, "asset_class": c, "params": prm})
+                    for ses in (sessions if sessions is not None else [None]):
+                        out.append({"strategy": st, "entry_tf": e, "trend_tf": t, "asset_class": c, "params": prm, "sessions": ses})
     return out
 
 
@@ -133,7 +139,8 @@ def plateau_ok(cfg: dict, index: dict, min_voisins: int = 2) -> bool:
 
 
 def _key(cfg: dict, params: dict) -> str:
-    return json.dumps([cfg["strategy"], cfg["entry_tf"], cfg["trend_tf"], cfg["asset_class"], sorted(params.items())], default=str)
+    return json.dumps([cfg["strategy"], cfg["entry_tf"], cfg["trend_tf"], cfg["asset_class"], cfg.get("sessions"),
+                       sorted(params.items())], default=str)
 
 
 # ------------------------------------------------------------------------------------------------ calcul (processus fils)
@@ -141,11 +148,13 @@ _DATA: dict = {}
 _SPECS: dict = {}
 _COSTS: dict = {}
 _MGMT: Optional[dict] = None
+_SESS: dict = {}
 
 
 def _init(data, specs, costs, mgmt):
     global _DATA, _SPECS, _COSTS, _MGMT
     _DATA, _SPECS, _COSTS, _MGMT = data, specs, costs, mgmt
+    _SESS.clear()                                          # sessions par bougie : propres à ces données
 
 
 def _task(args) -> list:
@@ -163,8 +172,22 @@ def _task(args) -> list:
     atr = _atr_causal(h, l, c)
     n = len(df)
     cut = int(n * (1 - HOLDOUT))
+    from ..core.clock import current_session
+    skey = (sym, entry_tf)
+    if skey not in _SESS:
+        _SESS[skey] = np.array([current_session(t.to_pydatetime()).value for t in df["time"]], dtype=object)
+    sess = _SESS[skey]
     sides, sls, tps = [], [], []
+    calcules: dict = {}
     for cfg in cfgs:
+        pk = json.dumps(sorted(cfg["params"].items()), default=str)
+        if pk in calcules:                                  # même paramètres, autre session : signaux déjà calculés
+            s0, a0, b0 = calcules[pk]
+            ses = cfg.get("sessions")
+            if ses:
+                s0 = np.where(np.isin(sess, ses) | (sess == "OFF"), s0, 0).astype(np.int8)
+            sides.append(s0); sls.append(a0); tps.append(b0)
+            continue
         spec = AgentSpec(agent_id="MASS", family="X", name="mass", strategy=strategy, markets=[sym],
                          sessions=list(opt.SESSIONS), timeframes={"entry": entry_tf, "trend": trend_tf},
                          regimes=list(opt.REGIMES.get(strategy, opt.ALL)), params=dict(cfg["params"]), base_strategy=strategy)
@@ -172,9 +195,13 @@ def _task(args) -> list:
         f.prepare(df)
         fa = f.fast_arrays()
         if fa is None:
-            sides.append(np.zeros(n, dtype=np.int8)); sls.append(np.full(n, np.nan)); tps.append(np.full(n, np.nan))
-        else:
-            sides.append(fa[0]); sls.append(fa[1]); tps.append(fa[2])
+            fa = (np.zeros(n, dtype=np.int8), np.full(n, np.nan), np.full(n, np.nan))
+        calcules[pk] = fa
+        s0 = fa[0]
+        ses = cfg.get("sessions")
+        if ses:
+            s0 = np.where(np.isin(sess, ses) | (sess == "OFF"), s0, 0).astype(np.int8)
+        sides.append(s0); sls.append(fa[1]); tps.append(fa[2])
     side, sl, tp = np.stack(sides), np.stack(sls), np.stack(tps)
     cost = _COSTS[sym]
     appr = gpu_sim.simulate(o, h, l, c, atr, side, sl, tp, cost.spread, cost.slippage, _MGMT, warmup=200, start=0, end=cut, device="cpu")
@@ -225,6 +252,7 @@ def main(argv: Optional[list[str]] = None) -> int:  # pragma: no cover - process
     ap.add_argument("--max-configs", type=int, default=0)
     # 2026-09-29, demande utilisateur : « toutes les paires et tous les marchés disponibles »
     ap.add_argument("--univers", action="store_true", help="toutes les classes et tous les symboles de config/markets.yaml")
+    ap.add_argument("--sessions", action="store_true", help="décliner chaque configuration par session (Asie, Londres, NY, chevauchement)")
     args = ap.parse_args(argv)
     s = load_settings()
     load_dotenv(s.home / ".env")
@@ -241,7 +269,7 @@ def main(argv: Optional[list[str]] = None) -> int:  # pragma: no cover - process
     else:
         classes = [c for c in args.classes.split(",") if c] or list(opt.CLASSES)
     strategies = [x for x in args.strategies.split(",") if x] or None
-    configs = grid(strategies, classes)
+    configs = grid(strategies, classes, sessions=SESSION_VARIANTS if args.sessions else None)
     if args.max_configs:
         configs = configs[: args.max_configs]
     voulus = sorted({sym for c in classes for sym in opt.CLASSES_ALL[c]})
@@ -292,6 +320,9 @@ def main(argv: Optional[list[str]] = None) -> int:  # pragma: no cover - process
         p = opt.proposal_spec(c, aid, {"profit_factor": a["pf"], "sample_size": a["n"], "expectancy_r": a["exp"]},
                               {"robustness_ratio": 0.0, "oos_expectancy_r": k["exp"]}, "SHADOW")
         p["params"] = {**p["params"], **cfg["params"]}
+        if cfg.get("sessions"):
+            p["sessions"] = list(cfg["sessions"])
+            p["name"] = p["name"] + "_" + "_".join(x.lower() for x in cfg["sessions"])
         p["description"] = (f"Recherche en masse {datetime.now(timezone.utc).date()} : apprentissage {a['n']} trades, "
                             f"{a['exp']:+.2f} R, PF {a['pf']:.2f}, t {a['t']:.1f} ; contrôle jamais vu {k['n']} trades, "
                             f"{k['exp']:+.2f} R, PF {k['pf']:.2f}")

@@ -51,3 +51,27 @@ def test_univers_complet():
     u = m.univers_classes({"forex_majors": ["EURUSD"], "forex_minors": ["EURGBP", "AUDNZD"], "indices": ["US500"],
                            "metals": [], "energies": ["XBRUSD"], "crypto": ["BTCUSD"]})
     assert u == {"u_forex": ["EURUSD", "EURGBP", "AUDNZD"], "u_indices": ["US500"], "u_energies": ["XBRUSD"], "u_crypto": ["BTCUSD"]}
+
+
+def test_variante_de_session_identique_au_filtre_de_l_agent():
+    """Effacer les signaux hors session = agent restreint à la session (exactement)."""
+    from tradinglab.core.clock import current_session
+    from tradinglab.research.adapters import make_signal_fn
+    from test_fastsig_2026_09_29 import _spec
+    df = _synth(2500, 6)
+    sess = np.array([current_session(t.to_pydatetime()).value for t in df["time"]], dtype=object)
+    for st in ("ema_trend", "bollinger_mr", "structure_bos"):
+        tout = make_signal_fn(_spec(st, {}, "M15", "H1"), SPEC_SYM, "M15"); tout.prepare(df)
+        for ses in (["LONDON"], ["ASIA"], ["OVERLAP_LDN_NY"]):
+            seul = make_signal_fn(_spec(st, {}, "M15", "H1", sessions=ses), SPEC_SYM, "M15"); seul.prepare(df)
+            masque = np.where(np.isin(sess, ses) | (sess == "OFF"), tout.fast_arrays()[0], 0)
+            assert np.array_equal(masque, seul.fast_arrays()[0]), (st, ses)
+
+
+def test_grille_par_session():
+    g = m.grid(["ema_trend"], ["forex"], [("M15", "H1")], sessions=m.SESSION_VARIANTS)
+    assert len(g) == 4 * len(m.SL_ATR) * len(m.RR) * 5 and {str(c["sessions"]) for c in g} == {str(v) for v in m.SESSION_VARIANTS}
+    m._init({("EURUSD", "M15"): _synth(2500, 4)}, {"EURUSD": SPEC_SYM},
+            {"EURUSD": BTCosts(spread_points=10, slippage_points=3, point=SPEC_SYM.point, tick_value=1.0, tick_size=SPEC_SYM.tick_size)}, None)
+    out = m._task(("EURUSD", "M15", "H1", "ema_trend", g[:10]))
+    assert len(out) == 10 and out[0][0][0] >= max(o[0][0] for o in out[1:5])     # toutes sessions ≥ chaque session
