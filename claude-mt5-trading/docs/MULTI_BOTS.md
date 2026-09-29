@@ -27,21 +27,20 @@ worker de recherche et un seul optimiseur à la fois (voir §7).
 
 ## 2. Créer un nouveau bot (une fois)
 
-1. **Copier le dossier** (bot arrêté ou non, peu importe) :
+1. **Créer le dossier** avec le script (copie le code, les agents et leur historique, donne un numéro magique propre,
+   désactive le copy trading, prépare `.env.a_remplir`, crée l'environnement Python) :
    ```powershell
-   robocopy C:\Claude-MT5-Trading\claude-mt5-trading C:\Claude-MT5-Trading\bot-ftmo /E /XD .venv logs state archives reports data\cache __pycache__
+   cd C:\Claude-MT5-Trading\claude-mt5-trading
+   .\scripts\new_bot.ps1 -Nom bot-ftmo -Magic 51100
    ```
-   Puis recréer l'environnement Python dans le nouveau dossier :
-   ```powershell
-   cd C:\Claude-MT5-Trading\bot-ftmo
-   .\scripts\install_windows.ps1
-   ```
+   Numéros magiques : 51100, 51200, 51300… (51000 = le laboratoire).
 2. **Installer un terminal MT5 portable dédié** dans `C:\Claude-MT5-Trading\mt5-bot-ftmo\`, s'y connecter une fois à la main
    avec le compte de la prop firm, activer « Trading algorithmique ».
-3. **Remplir `.env`** du nouveau dossier (toi seul — jamais Claude) : `MT5_LOGIN`, `MT5_PASSWORD`, `MT5_SERVER`,
-   `MT5_TERMINAL_PATH` (le terminal du point 2), `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` (un groupe par bot, conseillé).
-4. **Paramétrer** (§3), puis **reprendre les agents** (§4).
-5. **Premier lancement en PAPER**, puis AUTO sur ta demande (§5).
+3. **Compléter `.env.a_remplir` puis le renommer en `.env`** (toi seul — jamais Claude) : `MT5_LOGIN`, `MT5_PASSWORD`,
+   `MT5_SERVER`, `MT5_TERMINAL_PATH` (le terminal du point 2), `DASHBOARD_PORT` (8766, 8767…), `TRADINGLAB_NO_RESEARCH=1`,
+   `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` (un groupe par bot, conseillé).
+4. **Paramétrer** (§3) — surtout `account_expected` et les règles de la prop firm.
+5. **Premier lancement en SAFE** (aucune entrée), puis AUTO sur ta décision (§5).
 
 ---
 
@@ -53,7 +52,7 @@ worker de recherche et un seul optimiseur à la fois (voir §7).
 | `account_expected` (login, serveur, DEMO/REAL) | `config/system.yaml` | Le bot refuse de trader sur un autre compte |
 | Profil de la prop firm | `config/prop_firms.yaml` | Perte jour / totale, cohérence, week-end, annonces, lots max, durée minimale |
 | `risk_per_trade_percent`, plafonds | `config/risk.yaml` | À caler sur la taille du compte et la perte max de la firm |
-| Port du tableau de bord (8765, 8766…) | `scripts/start_all.ps1` (voir §8) | Deux tableaux de bord ne peuvent pas écouter le même port |
+| Port du tableau de bord (8765, 8766…) | `DASHBOARD_PORT` dans `.env` | Deux tableaux de bord ne peuvent pas écouter le même port |
 | Nom de la tâche de démarrage auto | `register_autostart.ps1 -TaskName ...` | Une tâche Windows par bot |
 | `copy_trading.enabled` | `config/copy_trading.yaml` | `false` sur les nouveaux bots (sauf si tu veux des suiveurs) |
 
@@ -86,7 +85,7 @@ Toutes les commandes se lancent **depuis le dossier du bot** :
 
 ```powershell
 cd C:\Claude-MT5-Trading\bot-ftmo
-.\scripts\start_all.ps1 -Mode PAPER     # premier lancement : aucun ordre réel
+.\scripts\start_all.ps1 -Mode SAFE      # premier lancement : aucune entrée
 .\scripts\start_all.ps1 -Mode AUTO      # trading, seulement quand tu l'as décidé
 .\scripts\stop_all.ps1                  # arrêt propre (PAUSE puis arrêt des processus de CE bot)
 .venv\Scripts\python.exe -m tradinglab.api.cli STATUS     # état
@@ -119,20 +118,18 @@ suivant, sans redémarrage).
 ## 7. Charge du PC
 
 - Le worker de recherche (backtests) et l'optimiseur tournent **uniquement au laboratoire** : dans les autres bots,
-  mettre `learning.research_external: true` et **ne pas** lancer de worker (option `-NoResearch` à ajouter, §8).
+  mettre `TRADINGLAB_NO_RESEARCH=1` dans leur `.env` (ou lancer `start_all.ps1 -NoResearch`).
 - Un seul optimiseur à la fois sur le PC, toujours en priorité basse.
 - Les suites de tests : jamais pendant qu'un bot a des positions ouvertes sensibles, toujours en priorité basse.
 
 ---
 
-## 8. Adaptations du code à faire AVANT le 2ᵉ bot (à me demander)
+## 8. Ce qui a été adapté pour le multi-bots (29/09)
 
-Aujourd'hui le code suppose un seul bot par PC. Trois points à corriger avant de lancer le deuxième :
-
-1. **Port du tableau de bord** : `start_all.ps1` lance toujours le port 8765 → ajouter `-DashboardPort`.
-2. **Détection des processus** : `start_all.ps1` reconnaît ses composants à leur ligne de commande
-   (`tradinglab.dashboards.server`…), identique pour tous les bots → un bot pourrait croire l'autre déjà lancé.
-   À restreindre au dossier du bot (`TRADINGLAB_HOME`).
-3. **Option `-NoResearch`** pour ne pas lancer de worker de recherche dans les bots d'exécution.
-
-Environ une heure de travail avec les tests. Dis « prépare le multi-bots » et je le fais.
+- `start_all.ps1 -DashboardPort 8766` (ou `DASHBOARD_PORT` dans `.env`) : un port de tableau de bord par bot.
+- `start_all.ps1 -NoResearch` (ou `TRADINGLAB_NO_RESEARCH=1`) : pas de worker de recherche dans les bots d'exécution.
+- Terminal MT5 : avec `MT5_TERMINAL_PATH`, `start_all` ne regarde que CE terminal (un autre bot ou un suiveur ouvert ne le
+  trompe plus) et le lance en mode portable s'il n'est pas dans Program Files.
+- Détection des processus : `start_all` / `stop_all` s'appuient sur `state\pids.json` et sur le `.venv` du dossier — chaque
+  bot a les siens, un bot n'arrête jamais les processus d'un autre.
+- `scripts\new_bot.ps1` : création d'un bot en une commande (§2).

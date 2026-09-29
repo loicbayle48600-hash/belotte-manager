@@ -38,7 +38,11 @@ param(
     [string]$ProjectDir = '',
     [ValidateSet('SAFE', 'AUTO')]
     [string]$Mode = 'SAFE',
-    [switch]$NoDashboard
+    [switch]$NoDashboard,
+    # 2026-09-29, multi-bots (docs/MULTI_BOTS.md) : port du tableau de bord (défaut : DASHBOARD_PORT du .env, sinon 8765)
+    [int]$DashboardPort = 0,
+    # bots d'exécution : pas de worker de recherche (défaut : TRADINGLAB_NO_RESEARCH=1 dans le .env)
+    [switch]$NoResearch
 )
 
 $ErrorActionPreference = 'Continue'
@@ -322,13 +326,18 @@ if ($env:TRADINGLAB_BROKER -eq 'mock') {
     }
     $running = @()
     try { $running = @(Get-CimInstance -ClassName Win32_Process -Filter "Name='terminal64.exe'" -ErrorAction Stop) } catch { }
+    # multi-bots (2026-09-29) : avec MT5_TERMINAL_PATH, seul CE terminal compte — un autre bot ou un suiveur ouvert ne
+    # doit pas faire croire que le terminal de ce bot tourne déjà
+    if ($env:MT5_TERMINAL_PATH -and $mt5Path) { $running = @($running | Where-Object { $_.ExecutablePath -eq $mt5Path }) }
     if ($running.Count -gt 0) {
         Write-TlLog ("MetaTrader 5 déjà en cours (PID {0})." -f (($running | ForEach-Object { $_.ProcessId }) -join ', ')) 'OK'
     } elseif ($mt5Path) {
         Write-TlLog "Démarrage de MetaTrader 5 : $mt5Path"
         try {
             Enable-AlgoTrading -Exe $mt5Path
-            Start-Process -FilePath $mt5Path -WorkingDirectory (Split-Path -Parent $mt5Path) | Out-Null
+            $portable = -not ($mt5Path -like "$env:ProgramFiles*")
+            if ($portable) { Start-Process -FilePath $mt5Path -ArgumentList '/portable' -WorkingDirectory (Split-Path -Parent $mt5Path) | Out-Null }
+            else { Start-Process -FilePath $mt5Path -WorkingDirectory (Split-Path -Parent $mt5Path) | Out-Null }
             Write-TlLog "Attente de $MT5StartWaitSec s pour l'initialisation du terminal..."
             Start-Sleep -Seconds $MT5StartWaitSec
             Write-TlLog 'Rappel : le compte DEMO doit être connecté dans MT5 et le trading algorithmique activé (action humaine la première fois).' 'WARN'
@@ -362,16 +371,20 @@ $entries = @()
 
 $components = @(
     @{ Name = 'watchdog';     Pattern = 'tradinglab.monitoring.watchdog';          Args = @('-m', 'tradinglab.monitoring.watchdog') },
-    @{ Name = 'orchestrator'; Pattern = 'tradinglab.orchestration.orchestrator';   Args = @('-m', 'tradinglab.orchestration.orchestrator', '--mode', $Mode) },
-    # 2026-09-27 : backtests des agents non-LIVE dans un processus séparé, en priorité basse (voir research/worker.py)
-    @{ Name = 'research';     Pattern = 'tradinglab.research.worker';              Args = @('-m', 'tradinglab.research.worker') }
+    @{ Name = 'orchestrator'; Pattern = 'tradinglab.orchestration.orchestrator';   Args = @('-m', 'tradinglab.orchestration.orchestrator', '--mode', $Mode) }
 )
+# 2026-09-27 : backtests des agents non-LIVE dans un processus séparé, en priorité basse (voir research/worker.py).
+# Multi-bots : la recherche ne tourne qu'au laboratoire (-NoResearch ou TRADINGLAB_NO_RESEARCH=1 dans les autres bots).
+if (-not ($NoResearch -or $env:TRADINGLAB_NO_RESEARCH -eq '1')) {
+    $components += @{ Name = 'research'; Pattern = 'tradinglab.research.worker'; Args = @('-m', 'tradinglab.research.worker') }
+} else { Write-TlLog 'Recherche désactivée pour ce bot (bot d''exécution).' }
+if ($DashboardPort -le 0) { $DashboardPort = if ($env:DASHBOARD_PORT) { [int]$env:DASHBOARD_PORT } else { 8765 } }
 if (-not $NoDashboard) {
     # --host 0.0.0.0 (2026-09-22, demande utilisateur : accès depuis le téléphone via le LAN/VPN Tailscale).
     # Depuis le 2026-09-22 le dashboard est authentifié (DASHBOARD_AUTH_USER/PASSWORD, cookie 30 j) et servi en
     # HTTPS (DASHBOARD_TLS) : c'est ce qui autorise l'exposition sur tradingdu48.ddns.net:8765. Sans jeton ni
     # TLS, ne JAMAIS rediriger le port 8765 sur la box.
-    $components += @{ Name = 'dashboard'; Pattern = 'tradinglab.dashboards.server'; Args = @('-m', 'tradinglab.dashboards.server', '--host', '0.0.0.0') }
+    $components += @{ Name = 'dashboard'; Pattern = 'tradinglab.dashboards.server'; Args = @('-m', 'tradinglab.dashboards.server', '--host', '0.0.0.0', '--port', "$DashboardPort") }
 }
 # Notifieur Telegram : démarré seulement si le jeton ET le chat sont renseignés dans .env.
 # Processus séparé : un envoi réseau dans la boucle mettrait le heartbeat (45 s) en danger.
