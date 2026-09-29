@@ -485,6 +485,9 @@ n'utilise PAS Fable (retiré de TIER_A le 2026-09-23) : le quota Fable est rése
 - **29/09, décision utilisateur (« je valide »)** : **CH157 → LIVE** (variante d'E01, 20 trades d'ombre, 10 gagnants,
   +15,4 R, +0,77 R/trade) ; P20 (−20,5 R/24), CH135 (−18 R/30), O03 (−13,8 R/30), CH137 (−8 R/8) SUSPENDED. Suivant sur
   la liste : CH158 (+7,3 R/25), non promu.
+- **29/09, demande utilisateur « des X en M5, M15, H1 et D1 »** : X07–X22 en SHADOW, déclinaisons de X01, X02
+  (breakout_retest), X03 (macd_momentum) et X06 (ema_trend) sur or/argent en M5 (tendance H1), M15 (H1), H1 (H4) et D1.
+  Réserve : l'optimiseur du 28/09 n'avait rien retenu en M15/H1 (M5 absent de sa grille) ; le pipeline tranchera.
 - **Stop du suiveur élargi du surcroît de spread (28/09, décision utilisateur)** : SILVER chez les démos IC (spread 82
   points) contre XAGUSD chez le maître (11) — les quatre copies argent ont pris le stop à 61,807 sur un pic que le maître
   (stop 61,804, plus haut 61,776) n'a pas vu. Le maître exporte son spread ; à l'ouverture d'une copie, le stop du suiveur
