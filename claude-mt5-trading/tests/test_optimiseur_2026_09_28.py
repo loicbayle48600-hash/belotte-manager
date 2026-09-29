@@ -55,3 +55,10 @@ def test_dedupe_garde_le_mieux_classe_par_strategie_tf_classe_stop():
         ("breakout_retest", "H4", "metals", 1.0, 1.5), ("breakout_retest", "H4", "metals", 1.5, 3.0),
         ("macd_momentum", "H4", "metals", 1.0, 1.5), ("breakout_retest", "H1", "metals", 1.0, 1.5),
         ("breakout_retest", "H4", "forex", 1.0, 1.5)]
+
+
+def test_grille_ciblee_forex_m5():
+    """29/09, demande utilisateur « trouve-moi du M5 pour le forex » : grille ciblée sur 8 paires, M5, 4 stops."""
+    g = opt.grid(0, ["forex8"], [("M5", "H1"), ("M5", "M15")], [1.0, 1.5, 2.0, 3.0], [2.0])
+    assert len(g) == len(opt.STRATEGIES) * 2 * 4 and {c.asset_class for c in g} == {"forex8"}
+    assert len(opt.CLASSES_ALL["forex8"]) == 8 and "forex8" not in opt.CLASSES      # jamais dans la grille par défaut

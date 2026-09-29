@@ -55,6 +55,10 @@ SL_ATR = [1.0, 1.5, 2.0]
 RR = [2.0]   # 29/09 : avec la gestion de position, la cible finale ne change presque rien (20 retenus = 6 distincts le 28/09)
 CLASSES = {"forex": ["EURUSD", "GBPUSD", "USDJPY", "AUDUSD"], "indices": ["US500", "USTEC", "DE40"],
            "metals": ["XAUUSD", "XAGUSD"], "crypto": ["BTCUSD", "ETHUSD", "SOLUSD"]}
+# classes proposables en ciblage seulement (--classes) — 2026-09-29, recherche forex M5 : 8 paires au lieu de 4 pour avoir
+# assez de trades sur un historique M5 forcément court
+CLASSES_EXTRA = {"forex8": ["EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "USDCAD", "USDCHF", "NZDUSD", "EURJPY"]}
+CLASSES_ALL = {**CLASSES, **CLASSES_EXTRA}
 BARS = {"M5": 5000, "M15": 5000, "H1": 5000, "H4": 5000, "D1": 3000}   # 2026-09-28 : 10 000 barres × 52 lectures bloquaient le terminal
 SESSIONS = ["ASIA", "LONDON", "NEWYORK", "OVERLAP_LDN_NY"]
 
@@ -76,8 +80,11 @@ class Config:
         return {**STRATEGIES[self.strategy], "sl_atr": self.sl_atr, "rr": self.rr}
 
 
-def grid(max_configs: int = 0) -> list[Config]:
-    out = [Config(s, e, t, sl, rr, c) for s in STRATEGIES for (e, t) in TIMEFRAMES for sl in SL_ATR for rr in RR for c in CLASSES]
+def grid(max_configs: int = 0, classes: Optional[list] = None, timeframes: Optional[list] = None,
+         sl_atr: Optional[list] = None, rr: Optional[list] = None) -> list[Config]:
+    """Grille complète, ou CIBLÉE (2026-09-29) : classes, paires d'unités de temps, stops et cibles au choix."""
+    out = [Config(s, e, t, sl, r, c) for s in STRATEGIES for (e, t) in (timeframes or TIMEFRAMES) for sl in (sl_atr or SL_ATR)
+           for r in (rr or RR) for c in (classes or list(CLASSES))]
     return out[:max_configs] if max_configs else out
 
 
@@ -111,7 +118,7 @@ def dedupe(finals: list[dict]) -> list[dict]:
 
 def proposal_spec(cfg: Config, agent_id: str, metrics: dict, wf: dict, status: str) -> dict:
     """Spécification d'agent (AgentSpec.to_dict) prête à être ajoutée au registre par l'orchestrateur."""
-    return {"agent_id": agent_id, "family": "X", "name": cfg.name, "strategy": cfg.strategy, "markets": list(CLASSES[cfg.asset_class]),
+    return {"agent_id": agent_id, "family": "X", "name": cfg.name, "strategy": cfg.strategy, "markets": list(CLASSES_ALL[cfg.asset_class]),
             "sessions": list(SESSIONS), "timeframes": {"entry": cfg.entry_tf, "trend": cfg.trend_tf}, "regimes": list(REGIMES[cfg.strategy]),
             "params": cfg.params(), "status": status, "version": "1.0", "model_tier_role": "technical_analysis",
             "news_sensitive": False, "cost_budget_usd": 0.5,
@@ -139,7 +146,7 @@ def _init_worker(data: dict, specs: dict, costs: dict, mgmt: Optional[dict]) -> 
 
 def _spec_for(cfg: Config, agent_id: str = "OPT"):
     from ..agents.registry import AgentSpec
-    return AgentSpec(agent_id=agent_id, family="X", name=cfg.name, strategy=cfg.strategy, markets=list(CLASSES[cfg.asset_class]),
+    return AgentSpec(agent_id=agent_id, family="X", name=cfg.name, strategy=cfg.strategy, markets=list(CLASSES_ALL[cfg.asset_class]),
                      sessions=list(SESSIONS), timeframes={"entry": cfg.entry_tf, "trend": cfg.trend_tf},
                      regimes=list(REGIMES[cfg.strategy]), params=cfg.params(), base_strategy=cfg.strategy)
 
@@ -151,7 +158,7 @@ def eval_stage1(cfg: Config) -> dict:
 
     trades = []
     spec = _spec_for(cfg)
-    for sym in CLASSES[cfg.asset_class]:
+    for sym in CLASSES_ALL[cfg.asset_class]:
         df = _DATA.get((sym, cfg.entry_tf))
         ss = _SPECS.get(sym)
         if df is None or ss is None or len(df) < 300:
@@ -177,7 +184,7 @@ def eval_stage2(cfg: Config) -> dict:
             grille.append({**base, k: v * 1.2})
             grille.append({**base, k: v * 0.8})
     oos, ratios = [], []
-    for sym in CLASSES[cfg.asset_class]:
+    for sym in CLASSES_ALL[cfg.asset_class]:
         df = _DATA.get((sym, cfg.entry_tf))
         ss = _SPECS.get(sym)
         if df is None or ss is None or len(df) < 600:
@@ -226,6 +233,12 @@ def main(argv: Optional[list[str]] = None) -> int:  # pragma: no cover - process
     ap.add_argument("--max-configs", type=int, default=0)
     ap.add_argument("--top", type=int, default=20)
     ap.add_argument("--status", default="SHADOW", choices=["SHADOW", "LIVE"])
+    # ciblage (2026-09-29, recherche forex M5)
+    ap.add_argument("--classes", default="", help="ex. forex8 ou forex,metals")
+    ap.add_argument("--timeframes", default="", help="ex. M5:H1,M5:M15")
+    ap.add_argument("--sl-atr", default="", help="ex. 1,1.5,2,3")
+    ap.add_argument("--rr", default="", help="ex. 1.5,2")
+    ap.add_argument("--bars", default="", help="ex. M5=20000")
     args = ap.parse_args(argv)
     s = load_settings()
     load_dotenv(s.home / ".env")
@@ -235,7 +248,17 @@ def main(argv: Optional[list[str]] = None) -> int:  # pragma: no cover - process
         print("terminal indisponible")
         return 1
     t0 = time.time()
-    voulus = sorted({sym for syms in CLASSES.values() for sym in syms})
+    classes = [c for c in args.classes.split(",") if c] or None
+    tf_pairs = [tuple(x.split(":")) for x in args.timeframes.split(",") if x] or None
+    sls = [float(x) for x in args.sl_atr.split(",") if x] or None
+    rrs = [float(x) for x in args.rr.split(",") if x] or None
+    bars = dict(BARS)
+    for x in (b for b in args.bars.split(",") if b):
+        k, v = x.split("=")
+        bars[k.upper()] = int(v)
+    if tf_pairs:                        # la tendance est rééchantillonnée depuis l'unité d'entrée : seule celle-ci est lue
+        bars = {tf: n for tf, n in bars.items() if tf in {e for e, _ in tf_pairs}}
+    voulus = sorted({sym for c in (classes or list(CLASSES)) for sym in CLASSES_ALL[c]})
     reels = resolve_symbols(voulus, broker.symbols())
     data, specs, costs = {}, {}, {}
     bt = s.backtest
@@ -251,7 +274,7 @@ def main(argv: Optional[list[str]] = None) -> int:  # pragma: no cover - process
         costs[sym] = BTCosts(spread_points=int(bt.get("default_spread_points", ss.spread_points or 12)),
                              commission_per_lot=float(bt.get("commission_per_lot", 0.0)), slippage_points=int(bt.get("slippage_points", 3)),
                              point=ss.point, tick_value=ss.tick_value, tick_size=ss.tick_size)
-        for tf, n in BARS.items():
+        for tf, n in bars.items():
             try:
                 df = load_rates(broker, reel, tf, n, s.data_dir / "cache" / "rates", pause_sec=2.0,
                                 state_file=s.state_dir / "system_state.json")
@@ -262,7 +285,7 @@ def main(argv: Optional[list[str]] = None) -> int:  # pragma: no cover - process
             if df is not None and len(df):
                 data[(sym, tf)] = df
     journal.event("optimizer_start", symboles=sorted(specs), jeux_de_donnees=len(data), workers=args.workers)
-    configs = grid(args.max_configs)
+    configs = grid(args.max_configs, classes, tf_pairs, sls, rrs)
     seuils = s.learning
     mgmt = dict(s.profit_management) if bool(bt.get("use_position_management", True)) else None
     with mp.Pool(processes=args.workers, initializer=_init_worker, initargs=(data, specs, costs, mgmt), maxtasksperchild=50) as pool:
