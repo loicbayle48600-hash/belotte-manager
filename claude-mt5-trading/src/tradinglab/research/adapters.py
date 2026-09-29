@@ -11,13 +11,14 @@ from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from typing import Callable, Optional
 
+import numpy as np
 import pandas as pd
 
 from ..agents.registry import AgentSpec
 from ..agents.screeners import run_screener
 from ..backtest.engine import Signal
 from ..core.clock import current_session
-from ..core.types import Regime, Session, SymbolSpec
+from ..core.types import Regime, Session, Side, SymbolSpec
 from ..market_data.indicators import enrich
 from ..market_data.regime import MIN_BARS as MIN_TREND_BARS, classify_regime
 
@@ -47,13 +48,50 @@ def resample(df: pd.DataFrame, tf: str) -> pd.DataFrame:
     return g
 
 
+# 2026-09-29 : caches par processus (optimiseur : des dizaines de configurations sur le même historique). Les indicateurs
+# et le régime ne dépendent que des données : clé = empreinte des données (taille, dates, octets des prix).
+_ENRICH_CACHE: dict = {}
+_REGIME_CACHE: dict = {}
+_CACHE_MAX = 48
+
+
+def _data_key(df: pd.DataFrame, tag: str):
+    if len(df) == 0:
+        return None
+    arr = np.ascontiguousarray(df[["open", "high", "low", "close"]].to_numpy(dtype=float))
+    return (tag, len(df), str(df["time"].iloc[0]), str(df["time"].iloc[-1]), hash(arr.tobytes()))
+
+
+def _enrich_cached(df: pd.DataFrame, tag: str) -> pd.DataFrame:
+    key = _data_key(df, tag)
+    if key is None:
+        return enrich(df)
+    hit = _ENRICH_CACHE.get(key)
+    if hit is None:
+        if len(_ENRICH_CACHE) >= _CACHE_MAX:
+            _ENRICH_CACHE.pop(next(iter(_ENRICH_CACHE)))
+        hit = _ENRICH_CACHE[key] = enrich(df)
+    return hit
+
+
+def _regime_value(t_full: pd.DataFrame, nc: int, tkey=None) -> str:
+    key = (tkey if tkey is not None else _data_key(t_full, "regime"), nc)
+    v = _REGIME_CACHE.get(key)
+    if v is None:
+        if len(_REGIME_CACHE) > 200_000:
+            _REGIME_CACHE.clear()
+        v = _REGIME_CACHE[key] = classify_regime(_with_forming_bar(t_full.iloc[:nc])).regime.value
+    return v
+
+
 def _with_forming_bar(df: pd.DataFrame) -> pd.DataFrame:
     """Le screener ignore la dernière ligne (barre « en formation ») : on duplique la dernière barre clôturée."""
     return pd.concat([df, df.iloc[[-1]]], ignore_index=True)
 
 
 def make_signal_fn(spec: AgentSpec, symbol_spec: SymbolSpec, entry_tf: str = "M15",
-                   check_regime: bool = True, params_override: Optional[dict] = None) -> Callable[[pd.DataFrame], Optional[Signal]]:
+                   check_regime: bool = True, params_override: Optional[dict] = None,
+                   fast: Optional[bool] = None) -> Callable[[pd.DataFrame], Optional[Signal]]:
     """signal_fn(df_slice) : df_slice = barres du tf d'entrée clôturées jusqu'à i. Aucune barre future n'est visible.
 
     La fonction renvoyée expose ``prepare(df_full)`` (pré-calcul, appelé par ``run_backtest``), ``data_error``
@@ -66,6 +104,10 @@ def make_signal_fn(spec: AgentSpec, symbol_spec: SymbolSpec, entry_tf: str = "M1
     trend_delta = timedelta(minutes=tf_minutes(trend_tf))
     need = required_bars(entry_tf, trend_tf)
     cache: dict = {"times": None, "e": None, "t": None, "t_times": None}
+    # 2026-09-29 : jumeau vectorisé (backtest/fastsig.py) si la stratégie en a un et que l'équivalence est prouvée
+    from ..backtest import fastsig as _fs
+    fast_name = spec.strategy if spec.strategy in _fs.FAST else (spec.base_strategy if getattr(spec, "base_strategy", None) in _fs.FAST else None)
+    use_fast = (fast if fast is not None else True) and fast_name is not None         and str((spec.params or {}).get("entry_kind", "MARKET") or "MARKET").upper() == "MARKET"
 
     def _trend_frame(df: pd.DataFrame) -> pd.DataFrame:
         return resample(df, trend_tf) if trend_tf != entry_tf else df
@@ -77,13 +119,14 @@ def make_signal_fn(spec: AgentSpec, symbol_spec: SymbolSpec, entry_tf: str = "M1
     def prepare(df_full: pd.DataFrame) -> None:
         """Pré-calcule les indicateurs une seule fois (indicateurs causaux → découpage par préfixe sans lookahead)."""
         df_full = df_full.reset_index(drop=True)
-        e_full = enrich(df_full)
-        t_full = enrich(_trend_frame(df_full)) if len(df_full) else e_full
+        e_full = _enrich_cached(df_full, "e")
+        t_full = _enrich_cached(_trend_frame(df_full), "t_" + trend_tf) if len(df_full) else e_full
         cache["times"] = pd.DatetimeIndex(df_full["time"])
         cache["e"] = e_full
         cache["t"] = t_full
         cache["t_times"] = pd.DatetimeIndex(t_full["time"])
         cache["gen"] = cache.get("gen", 0) + 1          # nouveau jeu de données : le cache de tendance repart à zéro
+        cache["fast"] = _prepare_fast(e_full, t_full) if (use_fast and len(df_full)) else None
         fn.data_error = None
         if len(df_full) < need:
             fn.data_error = f"données insuffisantes : {len(df_full)} barres {entry_tf} < {need} requises pour la tendance {trend_tf}"
@@ -107,9 +150,46 @@ def make_signal_fn(spec: AgentSpec, symbol_spec: SymbolSpec, entry_tf: str = "M1
         n_closed = int(t_times.searchsorted(_closed_trend_cutoff(last_time), side="right"))
         return e_en, t_all.iloc[:n_closed]
 
+    def _prepare_fast(e_full: pd.DataFrame, t_full: pd.DataFrame):
+        """Signaux de toutes les bougies en une fois — mêmes filtres, dans le même ordre, que `fn` ci-dessous."""
+        times = cache["times"]
+        n = len(e_full)
+        cut = pd.DatetimeIndex(times) + entry_delta - trend_delta
+        nc = np.asarray(cache["t_times"].searchsorted(cut, side="right"), dtype=np.int64)
+        i = np.arange(n)
+        sess_ok = np.zeros(n, dtype=bool)
+        for k, ts in enumerate(times):
+            ss = current_session(ts.to_pydatetime())
+            sess_ok[k] = ss.value in spec.sessions or ss is Session.OFF
+        base = (i + 1 >= MIN_ENTRY_BARS) & sess_ok & (nc >= MIN_TREND_BARS) & (nc + 1 >= 60) & (i + 2 >= 60)
+        if check_regime:
+            reg_ok = {}
+            tkey = _data_key(t_full, "regime")
+            for v in np.unique(nc[base]):
+                reg_ok[int(v)] = _regime_value(t_full, int(v), tkey) in spec.regimes
+            base &= np.array([reg_ok.get(int(v), False) for v in nc])
+        ctx = _fs.FastCtx(e=e_full, t=t_full, lt_idx=nc - 1, base=base)
+        for c in _fs.LE_COLS:
+            base &= ~np.isnan(ctx.col(c))
+        for c in _fs.LT_COLS:
+            base &= ~np.isnan(ctx.tcol(c))
+        base &= ctx.col("atr14") > 0
+        ctx.base = base
+        side, sl, tp = _fs.FAST[fast_name](ctx, dict(spec.params or {}))
+        return side, sl, tp
+
     def fn(df: pd.DataFrame) -> Optional[Signal]:
         if len(df) < MIN_ENTRY_BARS:
             return None
+        fa = cache.get("fast")
+        if fa is not None:
+            k = len(df)
+            times = cache["times"]
+            if k <= len(times) and df["time"].iloc[0] == times[0] and df["time"].iloc[-1] == times[k - 1]:
+                sd = int(fa[0][k - 1])
+                if sd == 0:
+                    return None
+                return Signal(side=Side.BUY if sd > 0 else Side.SELL, sl=float(fa[1][k - 1]), tp=float(fa[2][k - 1]), note=spec.agent_id)
         # 2026-09-29 (accélération, résultat identique) : la session ne dépend que de l'heure → testée en premier ;
         # le cadre de tendance et son régime ne changent qu'à la clôture d'une barre de tendance → mis en cache
         last_time = df["time"].iloc[-1]
@@ -142,6 +222,18 @@ def make_signal_fn(spec: AgentSpec, symbol_spec: SymbolSpec, entry_tf: str = "M1
                       order_price=(float(c.order_price) if getattr(c, "order_price", 0.0) else None),
                       expiry_bars=int(getattr(c, "expiry_bars", 0) or 3))
 
+    def signal_at(i: int):
+        """Signal précalculé de la bougie i du jeu préparé, ou `engine._NO_FAST` s'il n'y en a pas."""
+        from ..backtest.engine import _NO_FAST
+        fa = cache.get("fast")
+        if fa is None or i < MIN_ENTRY_BARS - 1:
+            return _NO_FAST if fa is None else None
+        sd = int(fa[0][i])
+        if sd == 0:
+            return None
+        return Signal(side=Side.BUY if sd > 0 else Side.SELL, sl=float(fa[1][i]), tp=float(fa[2][i]), note=spec.agent_id)
+
+    fn.signal_at = signal_at
     fn.prepare = prepare
     fn.data_error = None
     fn.required_bars = need

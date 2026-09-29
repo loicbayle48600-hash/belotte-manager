@@ -255,6 +255,9 @@ def _atr_causal(highs: np.ndarray, lows: np.ndarray, closes: np.ndarray, n: int 
     return out
 
 
+_NO_FAST = object()   # « pas de signal précalculé pour cette bougie »
+
+
 def run_backtest(df: pd.DataFrame, signal_fn: SignalFn, costs: BTCosts, params: dict | None = None,
                  risk_money: float = 100.0, max_bars_held: int | None = None, exit_fn: ExitFn | None = None,
                  warmup: int = 200, management: dict | None = None) -> BTResult:
@@ -271,6 +274,7 @@ def run_backtest(df: pd.DataFrame, signal_fn: SignalFn, costs: BTCosts, params: 
     # pré-calcul optionnel (indicateurs causaux) : signal_fn ne verra toujours que df.iloc[:i+1] à chaque barre ;
     # assert_no_lookahead vérifie que le résultat ne dépend pas des barres futures
     prep = getattr(signal_fn, "prepare", None)
+    signal_at = getattr(signal_fn, "signal_at", None)
     if callable(prep):
         prep(df)
     opens = df["open"].to_numpy(dtype=float)
@@ -427,7 +431,11 @@ def run_backtest(df: pd.DataFrame, signal_fn: SignalFn, costs: BTCosts, params: 
 
         # 3) recherche d'un signal à la clôture de la barre i (uniquement barres <= i visibles)
         if pos is None and i >= warmup and i < n - 1:
-            sig = signal_fn(df.iloc[: i + 1])
+            # 2026-09-29 : accès direct au signal précalculé (jumeau vectorisé) quand la fonction le propose — même
+            # résultat que signal_fn(df.iloc[: i + 1]), sans découper le tableau à chaque bougie
+            sig = signal_at(i) if signal_at is not None else _NO_FAST
+            if sig is _NO_FAST:
+                sig = signal_fn(df.iloc[: i + 1])
             if sig is not None:
                 if isinstance(sig, Signal):
                     pending = sig
