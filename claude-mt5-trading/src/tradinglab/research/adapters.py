@@ -83,6 +83,7 @@ def make_signal_fn(spec: AgentSpec, symbol_spec: SymbolSpec, entry_tf: str = "M1
         cache["e"] = e_full
         cache["t"] = t_full
         cache["t_times"] = pd.DatetimeIndex(t_full["time"])
+        cache["gen"] = cache.get("gen", 0) + 1          # nouveau jeu de données : le cache de tendance repart à zéro
         fn.data_error = None
         if len(df_full) < need:
             fn.data_error = f"données insuffisantes : {len(df_full)} barres {entry_tf} < {need} requises pour la tendance {trend_tf}"
@@ -109,19 +110,26 @@ def make_signal_fn(spec: AgentSpec, symbol_spec: SymbolSpec, entry_tf: str = "M1
     def fn(df: pd.DataFrame) -> Optional[Signal]:
         if len(df) < MIN_ENTRY_BARS:
             return None
-        e_en, t_closed = _frames(df)
-        if len(t_closed) < MIN_TREND_BARS:
-            return None
-        e_en = _with_forming_bar(e_en)
-        t_en = _with_forming_bar(t_closed)
-        reg = classify_regime(t_en) if check_regime else None
-        if check_regime and reg.regime.value not in spec.regimes:
-            return None
+        # 2026-09-29 (accélération, résultat identique) : la session ne dépend que de l'heure → testée en premier ;
+        # le cadre de tendance et son régime ne changent qu'à la clôture d'une barre de tendance → mis en cache
         last_time = df["time"].iloc[-1]
         ts = last_time.to_pydatetime() if hasattr(last_time, "to_pydatetime") else datetime.now(timezone.utc)
         sess = current_session(ts)
         if sess.value not in spec.sessions and sess is not Session.OFF:
             return None
+        e_en, t_closed = _frames(df)
+        if len(t_closed) < MIN_TREND_BARS:
+            return None
+        cle = (cache.get("gen"), len(t_closed), t_closed["time"].iloc[-1])
+        if cache.get("t_key") == cle:
+            t_en, reg = cache["t_en"], cache["t_reg"]
+        else:
+            t_en = _with_forming_bar(t_closed)
+            reg = classify_regime(t_en) if check_regime else None
+            cache["t_key"], cache["t_en"], cache["t_reg"] = cle, t_en, reg
+        if check_regime and reg.regime.value not in spec.regimes:
+            return None
+        e_en = _with_forming_bar(e_en)
         atr = float(e_en["atr14"].iloc[-2]) if pd.notna(e_en["atr14"].iloc[-2]) else 0.0
         snap = SimpleNamespace(symbol=symbol_spec.name, spec=symbol_spec, frames={entry_tf: e_en, trend_tf: t_en},
                                regime=reg or SimpleNamespace(regime=Regime.UNCERTAIN), session=sess, spread_points=symbol_spec.spread_points,
