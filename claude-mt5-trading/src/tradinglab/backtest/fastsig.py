@@ -14,8 +14,8 @@ Correspondances avec le screener, pour la bougie i (préfixe df.iloc[:i+1]) :
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Callable, Optional
+from dataclasses import dataclass, field, replace
+from typing import Any, Callable, Optional
 
 import numpy as np
 import pandas as pd
@@ -26,6 +26,15 @@ FastFn = Callable[["FastCtx", dict], tuple]
 FAST: dict[str, FastFn] = {}
 #: jeux de paramètres testés par le test d'équivalence (tests/test_fastsig_2026_09_29.py), déclarés avec la stratégie
 TEST_PARAMS: dict[str, list[dict]] = {}
+
+def xp_of(*arrays):
+    """Module de calcul (numpy ou cupy) des tableaux reçus — cupy dès qu'un tableau est sur la carte graphique."""
+    for a in arrays:
+        if hasattr(a, "__cuda_array_interface__"):
+            import cupy
+            return cupy
+    return np
+
 
 LE_COLS = ("ema20", "ema50", "ema200", "atr14", "rsi14", "adx14")      # _ctx : colonnes obligatoires de `le`
 LT_COLS = ("ema20", "ema50", "ema200")                                  # _ctx : colonnes obligatoires de `lt`
@@ -49,17 +58,49 @@ class FastCtx:
     E: dict = field(default_factory=dict)
     T: dict = field(default_factory=dict)
     _sw: dict = field(default_factory=dict)
+    # 2026-09-29 (portage 3090) : `xp` = numpy (processeur) ou cupy (carte). Les calculs propres aux DONNÉES restent en
+    # numpy (ncol, ntcol, swings, _sw) et sont partagés ; `col`/`tcol`/`base_x`/`dev` donnent les tableaux sur la carte.
+    xp: Any = np
+    _dev: dict = field(default_factory=dict)
+
+    def on(self, xp) -> "FastCtx":
+        """Même contexte, calculs dans `xp` (caches numpy partagés, copies sur la carte propres à ce contexte)."""
+        return replace(self, xp=xp, _dev={}) if xp is not self.xp else self
+
+    def dev(self, a, key=None):
+        """Tableau numpy → `xp` (copie mise en cache sous `key` si fournie)."""
+        if self.xp is np:
+            return a
+        if key is not None:
+            if key not in self._dev:
+                self._dev[key] = self.xp.asarray(a)
+            return self._dev[key]
+        return self.xp.asarray(a)
+
+    @property
+    def base_x(self):
+        return self.dev(self.base, ("base",))
 
     @property
     def n(self) -> int:
         return len(self.e)
 
-    def col(self, c: str) -> np.ndarray:
+    def ncol(self, c: str) -> np.ndarray:
+        """Colonne de `le`, toujours en numpy."""
         if c not in self.E:
             self.E[c] = self.e[c].to_numpy(dtype=float) if c in self.e.columns else np.full(self.n, np.nan)
         return self.E[c]
 
-    def tcol(self, c: str) -> np.ndarray:
+    def col(self, c: str):
+        """Colonne de `le` dans `xp`."""
+        return self.dev(self.ncol(c), ("E", c))
+
+    def tcol(self, c: str):
+        """Colonne de `lt` dans `xp`."""
+        return self.dev(self.ntcol(c), ("T", c))
+
+    def ntcol(self, c: str) -> np.ndarray:
+        """Colonne de `lt`, toujours en numpy."""
         if c not in self.T:
             src = self.t[c].to_numpy(dtype=float) if c in self.t.columns else np.full(len(self.t), np.nan)
             out = np.full(self.n, np.nan)
@@ -96,50 +137,54 @@ class FastCtx:
         return self._sw[cle]
 
 
-def trend_of(close, e20, e50, e200) -> np.ndarray:
+def trend_of(close, e20, e50, e200):
     """_trend_of vectorisé : +1 UP, -1 DOWN, 0 FLAT (comparaisons avec NaN → FLAT, comme le scalaire)."""
+    xp = xp_of(close, e20)
     up = (e20 > e50) & (e50 > e200) & (close > e20)
     dn = (e20 < e50) & (e50 < e200) & (close < e20)
-    return np.where(up, 1, np.where(dn, -1, 0)).astype(np.int8)
+    return xp.where(up, 1, xp.where(dn, -1, 0)).astype(xp.int8)
 
 
 def structure_sl(ctx: FastCtx, side: np.ndarray, entry: np.ndarray, atr: np.ndarray, sl_atr: float) -> np.ndarray:
     """_structure_sl vectorisé (swings 3/3 sur les lignes 0..i)."""
     sh_p, _, sl_p, _ = ctx.swings(3, 3, 1)
-    low, high = sl_p[0], sh_p[0]
-    buy = entry - sl_atr * atr
-    buy = np.where(np.isnan(low), buy, np.minimum(buy, low - 0.2 * atr))
-    buy = np.maximum(buy, entry - 3 * atr)
+    xp = ctx.xp
+    low, high = ctx.dev(sl_p[0], ("sw_low33",)), ctx.dev(sh_p[0], ("sw_high33",))
+    buy = entry - sl_atr * atr                              # sl_atr : nombre ou colonne (P, 1) → P configurations
+    buy = xp.where(xp.isnan(low), buy, xp.minimum(buy, low - 0.2 * atr))
+    buy = xp.maximum(buy, entry - 3 * atr)
     sell = entry + sl_atr * atr
-    sell = np.where(np.isnan(high), sell, np.maximum(sell, high + 0.2 * atr))
-    sell = np.minimum(sell, entry + 3 * atr)
-    return np.where(side > 0, buy, sell)
+    sell = xp.where(xp.isnan(high), sell, xp.maximum(sell, high + 0.2 * atr))
+    sell = xp.minimum(sell, entry + 3 * atr)
+    return xp.where(side > 0, buy, sell)
 
 
 def build(side: np.ndarray, entry: np.ndarray, sl: np.ndarray, rr) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """_build vectorisé : refus si distance non finie / nulle / stop du mauvais côté ; cible finale = max(rr, 2,5) R."""
-    side = side.astype(np.int8)
+    xp = xp_of(side, entry, sl)
+    side = side.astype(xp.int8)
     with np.errstate(invalid="ignore"):
-        dist = np.abs(entry - sl)
-        ok = (side != 0) & np.isfinite(dist) & (dist > 0) & (side * (entry - sl) > 0)
-        rr = np.maximum(np.asarray(rr, dtype=float), 2.5)
+        dist = xp.abs(entry - sl)
+        ok = (side != 0) & xp.isfinite(dist) & (dist > 0) & (side * (entry - sl) > 0)
+        rr = xp.maximum(xp.asarray(rr, dtype=float), 2.5)       # rr : nombre ou colonne (P, 1)
         tp = entry + side * dist * rr
-    side = np.where(ok, side, 0).astype(np.int8)
-    return side, np.where(ok, sl, np.nan), np.where(ok, tp, np.nan)
+    side = xp.where(ok, side, 0).astype(xp.int8)
+    return side, xp.where(ok, sl, xp.nan), xp.where(ok, tp, xp.nan)
 
 
 # ------------------------------------------------------------------------------------------------ stratégies
 @register_fast("ema_trend", [{}, {"adx_min": 15, "sl_atr": 1.0, "rr": 3.0}, {"adx_min": 30, "vol_pct_max": 70}])
 def ema_trend(ctx: FastCtx, p: dict):
+    xp = ctx.xp
     close, adx = ctx.col("close"), ctx.col("adx14")
     tr = trend_of(close, ctx.col("ema20"), ctx.col("ema50"), ctx.col("ema200"))
-    ok = ctx.base & (tr != 0) & ~(adx < p.get("adx_min", 25))
+    ok = ctx.base_x & (tr != 0) & ~(adx < p.get("adx_min", 25))
     if p.get("vol_pct_max"):
         vp = ctx.col("vol_pct")
-        ok &= ~(~np.isnan(vp) & (vp > p["vol_pct_max"]))
+        ok &= ~(~xp.isnan(vp) & (vp > p["vol_pct_max"]))
     tt = trend_of(ctx.tcol("close"), ctx.tcol("ema20"), ctx.tcol("ema50"), ctx.tcol("ema200"))
     ok &= (tt == tr) | (tt == 0)
-    side = np.where(ok, tr, 0)
+    side = xp.where(ok, tr, 0)
     sl = structure_sl(ctx, side, close, ctx.col("atr14"), p.get("sl_atr", 1.5))
     return build(side, close, sl, p.get("rr", 2.0))
 

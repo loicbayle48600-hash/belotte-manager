@@ -194,6 +194,7 @@ def make_signal_fn(spec: AgentSpec, symbol_spec: SymbolSpec, entry_tf: str = "M1
             if len(_CTX_CACHE) >= _CACHE_MAX:
                 _CTX_CACHE.pop(next(iter(_CTX_CACHE)))
             _CTX_CACHE[ckey] = ctx
+        cache["ctx"] = ctx                               # exposé pour le calcul par paquets sur la carte (massive)
         side, sl, tp = _fs.FAST[fast_name](ctx, dict(spec.params or {}))
         return side, sl, tp
 
@@ -253,7 +254,8 @@ def make_signal_fn(spec: AgentSpec, symbol_spec: SymbolSpec, entry_tf: str = "M1
         return Signal(side=Side.BUY if sd > 0 else Side.SELL, sl=float(fa[1][i]), tp=float(fa[2][i]), note=spec.agent_id)
 
     fn.signal_at = signal_at
-    fn.fast_arrays = lambda: cache.get("fast")      # (side, sl, tp) de chaque bougie, pour la simulation en masse
+    fn.fast_arrays = lambda: cache.get("fast")
+    fn.fast_ctx = lambda: cache.get("ctx")      # (side, sl, tp) de chaque bougie, pour la simulation en masse
     fn.prepare = prepare
     fn.data_error = None
     fn.required_bars = need
