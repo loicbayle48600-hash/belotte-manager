@@ -134,6 +134,30 @@ def swing_points(df: pd.DataFrame, left: int = 3, right: int = 3) -> tuple[list[
     ajouter des barres futures ne modifie jamais un pivot déjà confirmé.
     Renvoie (swing_highs, swing_lows) sous forme de listes de (index positionnel, prix).
     """
+    # 2026-09-29 : version vectorisée (fenêtres glissantes numpy), résultat identique à la boucle d'origine
+    # (`_swing_points_boucle`, gardée pour le test d'équivalence). Mesuré : 60 % du temps d'un backtest était ici.
+    n = len(df)
+    if n < left + right + 1 or left < 1 or right < 1:
+        return _swing_points_boucle(df, left, right)
+    highs = df["high"].to_numpy(dtype=float)
+    lows = df["low"].to_numpy(dtype=float)
+    from numpy.lib.stride_tricks import sliding_window_view as _win
+    idx = np.arange(left, n - right)
+    prev_h = _win(highs, left).max(axis=1)[idx - left]
+    next_h = _win(highs, right).max(axis=1)[idx + 1]
+    prev_l = _win(lows, left).min(axis=1)[idx - left]
+    next_l = _win(lows, right).min(axis=1)[idx + 1]
+    h, lo = highs[idx], lows[idx]
+    with np.errstate(invalid="ignore"):
+        mh = (h > prev_h) & (h >= next_h)
+        ml = (lo < prev_l) & (lo <= next_l)
+    sh = [(int(i), float(v)) for i, v in zip(idx[mh], h[mh])]
+    sl = [(int(i), float(v)) for i, v in zip(idx[ml], lo[ml])]
+    return sh, sl
+
+
+def _swing_points_boucle(df: pd.DataFrame, left: int = 3, right: int = 3) -> tuple[list[tuple[int, float]], list[tuple[int, float]]]:
+    """Implémentation de référence (boucle), utilisée pour les très petites séries et par le test d'équivalence."""
     n = len(df)
     highs = df["high"].to_numpy(dtype=float)
     lows = df["low"].to_numpy(dtype=float)
