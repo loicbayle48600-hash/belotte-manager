@@ -73,19 +73,17 @@ def _window_atr(ctx: FastCtx, lookback: int = 100, n: int = 14) -> np.ndarray:
     return out
 
 
-@register_fast("sr_rejection", [{}, {"with_trend": True}, {"tol_atr": 0.6, "sl_atr": 1.5, "rr": 3.0}])
-def sr_rejection(ctx: FastCtx, p: dict):
-    close, opn, atr = ctx.col("close"), ctx.col("open"), ctx.col("atr14")
-    low, high = ctx.col("low"), ctx.col("high")
-    tr = _lt_trend(ctx)
+def _sr_levels(ctx: FastCtx) -> dict:
+    """Niveaux de support_resistance (100 barres, tolérance 0,5 ATR) pour chaque bougie active, calculés une fois par
+    contexte (2026-09-29 : 0,8 s par configuration sinon). Même arithmétique que l'indicateur."""
+    if "sr_levels" in ctx._sw:
+        return ctx._sw["sr_levels"]
     from ..market_data.indicators import swing_points
     sh, sl = swing_points(ctx.e)
     piv_i = np.array([q[0] for q in sh] + [q[0] for q in sl], dtype=np.int64)
     piv_p = np.array([q[1] for q in sh] + [q[1] for q in sl], dtype=float)
     ref = _window_atr(ctx)
-    tol_atr, k, wt = p.get("tol_atr", 0.3), p.get("sl_atr", 1.0), p.get("with_trend")
-    side = np.zeros(ctx.n, dtype=np.int8)
-    slv = np.full(ctx.n, np.nan)
+    res: dict = {}
     for i in np.nonzero(ctx.base)[0]:
         lb = i - 99 if i >= 99 else 0
         sel = (piv_i >= lb + 3) & (piv_i <= i - 3)
@@ -103,7 +101,24 @@ def sr_rejection(ctx: FastCtx, p: dict):
                 clusters[-1].append(lv)
             else:
                 clusters.append([lv])
-        lv_ = [float(np.mean(c)) for c in clusters]
+        res[int(i)] = [float(np.mean(c)) for c in clusters]
+    ctx._sw["sr_levels"] = res
+    return res
+
+
+@register_fast("sr_rejection", [{}, {"with_trend": True}, {"tol_atr": 0.6, "sl_atr": 1.5, "rr": 3.0}])
+def sr_rejection(ctx: FastCtx, p: dict):
+    close, opn, atr = ctx.col("close"), ctx.col("open"), ctx.col("atr14")
+    low, high = ctx.col("low"), ctx.col("high")
+    tr = _lt_trend(ctx)
+    niveaux = _sr_levels(ctx)                              # ne dépend que des données : partagé entre configurations
+    tol_atr, k, wt = p.get("tol_atr", 0.3), p.get("sl_atr", 1.0), p.get("with_trend")
+    side = np.zeros(ctx.n, dtype=np.int8)
+    slv = np.full(ctx.n, np.nan)
+    for i in np.nonzero(ctx.base)[0]:
+        lv_ = niveaux.get(int(i))
+        if not lv_:
+            continue
         t = tol_atr * atr[i]
         near_low = [x for x in lv_ if abs(low[i] - x) <= t]
         near_high = [x for x in lv_ if abs(high[i] - x) <= t]

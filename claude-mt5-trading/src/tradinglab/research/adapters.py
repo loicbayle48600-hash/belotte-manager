@@ -53,6 +53,7 @@ def resample(df: pd.DataFrame, tf: str) -> pd.DataFrame:
 _ENRICH_CACHE: dict = {}
 _REGIME_CACHE: dict = {}
 _SESSION_CACHE: dict = {}
+_CTX_CACHE: dict = {}
 _CACHE_MAX = 48
 
 
@@ -151,8 +152,8 @@ def make_signal_fn(spec: AgentSpec, symbol_spec: SymbolSpec, entry_tf: str = "M1
         n_closed = int(t_times.searchsorted(_closed_trend_cutoff(last_time), side="right"))
         return e_en, t_all.iloc[:n_closed]
 
-    def _prepare_fast(e_full: pd.DataFrame, t_full: pd.DataFrame):
-        """Signaux de toutes les bougies en une fois — mêmes filtres, dans le même ordre, que `fn` ci-dessous."""
+    def _build_ctx(e_full: pd.DataFrame, t_full: pd.DataFrame):
+
         times = cache["times"]
         n = len(e_full)
         cut = pd.DatetimeIndex(times) + entry_delta - trend_delta
@@ -180,6 +181,19 @@ def make_signal_fn(spec: AgentSpec, symbol_spec: SymbolSpec, entry_tf: str = "M1
             base &= ~np.isnan(ctx.tcol(c))
         base &= ctx.col("atr14") > 0
         ctx.base = base
+        return ctx
+
+    def _prepare_fast(e_full: pd.DataFrame, t_full: pd.DataFrame):
+        """Signaux de toutes les bougies en une fois — mêmes filtres, dans le même ordre, que `fn` ci-dessous.
+        Le contexte (sessions, régime, colonnes alignées, pivots) ne dépend que des données et des filtres de l'agent :
+        il est partagé entre toutes les configurations d'un même marché (2026-09-29, simulation en masse)."""
+        ckey = (_data_key(e_full, "ctx"), entry_tf, trend_tf, tuple(sorted(spec.sessions)), tuple(sorted(spec.regimes)), check_regime)
+        ctx = _CTX_CACHE.get(ckey)
+        if ctx is None:
+            ctx = _build_ctx(e_full, t_full)
+            if len(_CTX_CACHE) >= _CACHE_MAX:
+                _CTX_CACHE.pop(next(iter(_CTX_CACHE)))
+            _CTX_CACHE[ckey] = ctx
         side, sl, tp = _fs.FAST[fast_name](ctx, dict(spec.params or {}))
         return side, sl, tp
 
@@ -239,6 +253,7 @@ def make_signal_fn(spec: AgentSpec, symbol_spec: SymbolSpec, entry_tf: str = "M1
         return Signal(side=Side.BUY if sd > 0 else Side.SELL, sl=float(fa[1][i]), tp=float(fa[2][i]), note=spec.agent_id)
 
     fn.signal_at = signal_at
+    fn.fast_arrays = lambda: cache.get("fast")      # (side, sl, tp) de chaque bougie, pour la simulation en masse
     fn.prepare = prepare
     fn.data_error = None
     fn.required_bars = need
