@@ -482,6 +482,9 @@ n'utilise PAS Fable (retiré de TIER_A le 2026-09-23) : le quota Fable est rése
   17 h NY réparé** : `_copy_gaps` appelait `.get` sur des `BotPositionPlan` → « rapport quotidien impossible » les 27 et
   28/09 (test de régression ajouté). (3) Nuit : SAFE_MODE 41 s à 23h11 (cotations figées 62 s au rollover, retour AUTO
   automatique) ; 11 trades clos −343 $ (8 gagnants dont 7 protégés, 3 stops pleins) ; ordres Q : 5 remplis, 2 expirés.
+- **29/09, décision utilisateur (« je valide »)** : **CH157 → LIVE** (variante d'E01, 20 trades d'ombre, 10 gagnants,
+  +15,4 R, +0,77 R/trade) ; P20 (−20,5 R/24), CH135 (−18 R/30), O03 (−13,8 R/30), CH137 (−8 R/8) SUSPENDED. Suivant sur
+  la liste : CH158 (+7,3 R/25), non promu.
 - **Stop du suiveur élargi du surcroît de spread (28/09, décision utilisateur)** : SILVER chez les démos IC (spread 82
   points) contre XAGUSD chez le maître (11) — les quatre copies argent ont pris le stop à 61,807 sur un pic que le maître
   (stop 61,804, plus haut 61,776) n'a pas vu. Le maître exporte son spread ; à l'ouverture d'une copie, le stop du suiveur
