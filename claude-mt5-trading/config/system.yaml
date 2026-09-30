@@ -3,9 +3,11 @@ system:
   # Gel des réglages de trading (plan pro du 2026-09-25, point 2, accord utilisateur) : la version en cours n'est jugée
   # qu'après `trades_requis` trades live clôturés depuis `depuis`. Pas de changement de trading d'ici là, sauf correctif
   # de sécurité ou demande explicite de l'utilisateur. Suivi : page Qualité du dashboard et rapport de 17 h New York.
+  # lab-v1 (25/09 19:26 UTC) close à 96/100 trades : le 01/10, l'utilisateur a demandé le forex court terme en live pendant
+  # la session asiatique (changement des entrées) → nouvelle version, nouveau gel de 100 trades.
   gel_reglages:
-    version: lab-v1
-    depuis: "2026-09-25T19:26:08+00:00"
+    version: lab-v2
+    depuis: "2026-09-30T23:40:00+00:00"
     trades_requis: 100
   # début des statistiques des comptes suiveurs (comptes démo remis à 500 000 $ le 2026-09-25)
   accounts_stats_since: "2026-09-25T12:55:22+00:00"
@@ -72,6 +74,10 @@ execution:
   # - le forex en M1/M5/M15 perd en réel (120 trades, −0,25 R/trade ; l'optimiseur ne retient rien en M15) : ses signaux
   #   sont suivis en papier seulement, jamais exécutés ; H1/H4 et les autres classes continuent
   forex_short_term_paper_only: true
+  # 2026-10-01, demande utilisateur (« en Asie mets les agents en live, pas sur papier ») : pendant la session ASIE, le forex
+  # court terme (M1/M5/M15) passe en LIVE (gate complet : 07b coût ≤ 20 % du risque, risque forex 0,025 %). Papier ASIE du
+  # 29 au 30/09 : 77 trades, +29,2 R brut, ≈ +20 R après commission (spread non mesuré en papier), PF 1,46 puis 1,36.
+  forex_short_term_live_sessions: [ASIA]
   # - heures UTC interdites aux entrées forex (refus avant revue IA). Mesuré : −21 R concentrés sur 09–11 h et 13–14 h UTC
   #   en 8 jours, échantillon court. Décision utilisateur 28/09 au soir : le forex garde le droit de trader à ces heures →
   #   liste vide (le réglage reste disponible, ex. [9, 10, 13]).

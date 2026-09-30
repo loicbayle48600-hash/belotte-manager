@@ -1310,6 +1310,11 @@ class Orchestrator:
         ag = self.registry.get(c.agent_id) if getattr(self, "registry", None) is not None else None
         if ag is not None and bool((ag.params or {}).get("forex_short_term_ok", False)):
             return False
+        # exception par session (2026-10-01, demande utilisateur « en Asie mets les agents en live, pas sur papier ») :
+        # en papier ASIE, 77 trades +29,2 R brut (PF 1,64) quand Londres −12 R et New York −20 R
+        en_live = {str(x).upper() for x in (self.s.execution.get("forex_short_term_live_sessions") or [])}
+        if str(getattr(c, "session", "") or "").upper() in en_live:
+            return False
         spec = self.broker.symbol_info(c.symbol)
         if spec is None or getattr(spec, "asset_class", "") != "forex":
             return False

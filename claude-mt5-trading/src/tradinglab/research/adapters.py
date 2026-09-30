@@ -35,6 +35,30 @@ def tf_minutes(tf: str) -> int:
     return TF_MINUTES.get(str(tf).upper(), 60)
 
 
+#: 2026-10-01 : jusqu'à H2, la session d'une bougie se juge à sa CLÔTURE (le bot décide à ce moment-là) et le filtre est
+#: strict : pas de signal dans la plage OFF (21:00-22:00 UTC, week-end), SYDNEY seulement pour les agents qui la listent.
+#: H4 / D1 / W1 : le bot prend le signal au premier scan permis après la clôture (souvent en OFF : 21:00 UTC) — ces
+#: bougies restent permises en OFF / SYDNEY, comme avant.
+INTRADAY_MAX_MIN = 120
+
+
+def sessions_bougies(times, entry_tf: str, crypto: bool = False) -> np.ndarray:
+    """Session de décision de chaque bougie, comme le bot en live (crypto : marché continu)."""
+    idx = pd.DatetimeIndex(times)
+    if tf_minutes(entry_tf) <= INTRADAY_MAX_MIN:
+        d = pd.Timedelta(minutes=tf_minutes(entry_tf))
+        return np.array([current_session((t + d).to_pydatetime(), round_the_clock=crypto).value for t in idx], dtype=object)
+    return np.array([current_session(t.to_pydatetime()).value for t in idx], dtype=object)
+
+
+def masque_sessions(vals: np.ndarray, sessions, entry_tf: str) -> np.ndarray:
+    """Bougies où l'agent peut entrer, selon ses sessions (voir `sessions_bougies`)."""
+    ok = np.isin(vals, list(sessions))
+    if tf_minutes(entry_tf) > INTRADAY_MAX_MIN:
+        ok |= np.isin(vals, [Session.OFF.value, Session.SYDNEY.value])
+    return ok
+
+
 def required_bars(entry_tf: str, trend_tf: str) -> int:
     """Barres minimales du tf d'entrée pour disposer de MIN_TREND_BARS barres de tendance clôturées.
 
@@ -115,6 +139,7 @@ def make_signal_fn(spec: AgentSpec, symbol_spec: SymbolSpec, entry_tf: str = "M1
     entry_delta = timedelta(minutes=tf_minutes(entry_tf))
     trend_delta = timedelta(minutes=tf_minutes(trend_tf))
     need = required_bars(entry_tf, trend_tf)
+    crypto = str(getattr(symbol_spec, "asset_class", "") or "") == "crypto"
     cache: dict = {"times": None, "e": None, "t": None, "t_times": None}
     # 2026-09-29 : jumeau vectorisé (backtest/fastsig.py) si la stratégie en a un et que l'équivalence est prouvée
     from ..backtest import fastsig as _fs
@@ -180,14 +205,14 @@ def make_signal_fn(spec: AgentSpec, symbol_spec: SymbolSpec, entry_tf: str = "M1
             closes = _trend_closes(cache["t_times"])
         nc = np.asarray(closes.searchsorted(pd.DatetimeIndex(times) + entry_delta, side="right"), dtype=np.int64)
         i = np.arange(n)
-        skey = _data_key(e_full, "sess")
+        skey = (_data_key(e_full, "sess"), entry_tf, crypto)
         vals = _SESSION_CACHE.get(skey)
         if vals is None:                           # session de chaque bougie : même calcul pour toutes les configurations
-            vals = np.array([current_session(ts.to_pydatetime()).value for ts in times], dtype=object)
+            vals = sessions_bougies(times, entry_tf, crypto)
             if len(_SESSION_CACHE) >= _CACHE_MAX:
                 _SESSION_CACHE.pop(next(iter(_SESSION_CACHE)))
             _SESSION_CACHE[skey] = vals
-        sess_ok = np.isin(vals, list(spec.sessions)) | (vals == Session.OFF.value)
+        sess_ok = masque_sessions(vals, spec.sessions, entry_tf)
         base = (i + 1 >= MIN_ENTRY_BARS) & sess_ok & (nc >= MIN_TREND_BARS) & (nc + 1 >= 60) & (i + 2 >= 60)
         if check_regime:
             serie = _regime_serie(t_full, _data_key(t_full, "regime"))
@@ -232,10 +257,11 @@ def make_signal_fn(spec: AgentSpec, symbol_spec: SymbolSpec, entry_tf: str = "M1
         # 2026-09-29 (accélération, résultat identique) : la session ne dépend que de l'heure → testée en premier ;
         # le cadre de tendance et son régime ne changent qu'à la clôture d'une barre de tendance → mis en cache
         last_time = df["time"].iloc[-1]
+        if not bool(masque_sessions(sessions_bougies([pd.Timestamp(last_time)], entry_tf, crypto), spec.sessions, entry_tf)[0]):
+            return None
+        # session transmise au screener (certaines stratégies la lisent) : inchangée, heure d'ouverture de la bougie
         ts = last_time.to_pydatetime() if hasattr(last_time, "to_pydatetime") else datetime.now(timezone.utc)
         sess = current_session(ts)
-        if sess.value not in spec.sessions and sess is not Session.OFF:
-            return None
         e_en, t_closed = _frames(df)
         if len(t_closed) < MIN_TREND_BARS:
             return None

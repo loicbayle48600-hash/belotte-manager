@@ -77,6 +77,11 @@ def current_session(now: datetime | None = None, round_the_clock: bool = False) 
       effectivement vers 21:00-22:00 UTC (Sydney), le creux n'existe que pour le forex.
 
     Les plages ASIA / LONDON / NEWYORK / OVERLAP restent identiques dans les deux cas.
+
+    2026-10-01 (demande utilisateur : « la session Sydney je la vois jamais ») : hors crypto, 22:00-00:00 UTC devient
+    `SYDNEY` (seul Sydney est ouvert avant Tokyo). 21:00-22:00 UTC reste `OFF` : c'est l'heure du changement de jour
+    (spreads très larges, pause de l'or et des indices). Aucun agent existant ne liste SYDNEY : il faut un agent validé
+    pour elle (recherche → shadow) pour y trader. La crypto garde 21:00-00:00 en ASIA.
     """
     now = now or utcnow()
     h = now.hour + now.minute / 60.0
@@ -92,7 +97,9 @@ def current_session(now: datetime | None = None, round_the_clock: bool = False) 
         return Session.NEWYORK
     if 0 <= h < 8:
         return Session.ASIA
-    return Session.ASIA if round_the_clock else Session.OFF
+    if round_the_clock:
+        return Session.ASIA
+    return Session.SYDNEY if h >= 22 else Session.OFF
 
 
 #: horaires forex d'IC Markets en HEURE SERVEUR : ouverture lundi 00:05, fermeture vendredi 23:55

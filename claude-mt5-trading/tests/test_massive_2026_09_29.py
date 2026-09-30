@@ -54,23 +54,24 @@ def test_univers_complet():
 
 
 def test_variante_de_session_identique_au_filtre_de_l_agent():
-    """Effacer les signaux hors session = agent restreint à la session (exactement)."""
-    from tradinglab.core.clock import current_session
-    from tradinglab.research.adapters import make_signal_fn
+    """Effacer les signaux hors session = agent restreint à la session (exactement), Sydney comprise (2026-10-01 :
+    signaux de base sur toutes les sessions, filtre strict à la clôture de la bougie, comme le bot en live)."""
+    from tradinglab.research.adapters import make_signal_fn, masque_sessions, sessions_bougies
     from test_fastsig_2026_09_29 import _spec
     df = _synth(2500, 6)
-    sess = np.array([current_session(t.to_pydatetime()).value for t in df["time"]], dtype=object)
+    sess = sessions_bougies(df["time"], "M15")
+    toutes = ["ASIA", "LONDON", "NEWYORK", "OVERLAP_LDN_NY", "SYDNEY"]
     for st in ("ema_trend", "bollinger_mr", "structure_bos"):
-        tout = make_signal_fn(_spec(st, {}, "M15", "H1"), SPEC_SYM, "M15"); tout.prepare(df)
-        for ses in (["LONDON"], ["ASIA"], ["OVERLAP_LDN_NY"]):
+        tout = make_signal_fn(_spec(st, {}, "M15", "H1", sessions=toutes), SPEC_SYM, "M15"); tout.prepare(df)
+        for ses in (["LONDON"], ["ASIA"], ["OVERLAP_LDN_NY"], ["SYDNEY"], ["ASIA", "LONDON", "NEWYORK", "OVERLAP_LDN_NY"]):
             seul = make_signal_fn(_spec(st, {}, "M15", "H1", sessions=ses), SPEC_SYM, "M15"); seul.prepare(df)
-            masque = np.where(np.isin(sess, ses) | (sess == "OFF"), tout.fast_arrays()[0], 0)
+            masque = np.where(masque_sessions(sess, ses, "M15"), tout.fast_arrays()[0], 0)
             assert np.array_equal(masque, seul.fast_arrays()[0]), (st, ses)
 
 
 def test_grille_par_session():
     g = m.grid(["ema_trend"], ["forex"], [("M15", "H1")], sessions=m.SESSION_VARIANTS)
-    assert len(g) == 4 * len(m.SL_ATR) * len(m.RR) * 5 and {str(c["sessions"]) for c in g} == {str(v) for v in m.SESSION_VARIANTS}
+    assert len(g) == 4 * len(m.SL_ATR) * len(m.RR) * len(m.SESSION_VARIANTS) and {str(c["sessions"]) for c in g} == {str(v) for v in m.SESSION_VARIANTS}
     m._init({("EURUSD", "M15"): _synth(2500, 4)}, {"EURUSD": SPEC_SYM},
             {"EURUSD": BTCosts(spread_points=10, slippage_points=3, point=SPEC_SYM.point, tick_value=1.0, tick_size=SPEC_SYM.tick_size)}, None)
     out = m._task(("EURUSD", "M15", "H1", "ema_trend", g[:10]))

@@ -85,8 +85,13 @@ def test_backtest_complet_identique(strategy):
     from tradinglab.backtest.engine import BTCosts, run_backtest
     costs = BTCosts(spread_points=10, commission_per_lot=7.0, slippage_points=3, point=SPEC_SYM.point,
                     tick_value=SPEC_SYM.tick_value, tick_size=SPEC_SYM.tick_size)
-    nom, df, entry, trend = _datasets()[0]
-    spec = _spec(strategy, PARAMS.get(strategy, [{}])[0], entry, trend)
-    res = [run_backtest(df, make_signal_fn(spec, SPEC_SYM, entry, fast=f), costs) for f in (False, True)]
-    cle = [[(str(t.entry_time), t.entry, t.exit, t.r_multiple, t.exit_reason) for t in r.trades] for r in res]
-    assert cle[0] == cle[1] and len(cle[0]) > 0, strategy
+    # 2026-10-01 : filtre de session aligné sur le live (plus de signal intraday entre 21:00 et 22:00 UTC ni en SYDNEY
+    # pour un agent qui ne la liste pas) : on compare sur tous les jeux (synthétiques et réel en cache), au moins un trade
+    total = 0
+    for nom, df, entry, trend in _datasets():
+        spec = _spec(strategy, PARAMS.get(strategy, [{}])[0], entry, trend)
+        res = [run_backtest(df, make_signal_fn(spec, SPEC_SYM, entry, fast=f), costs) for f in (False, True)]
+        cle = [[(str(t.entry_time), t.entry, t.exit, t.r_multiple, t.exit_reason) for t in r.trades] for r in res]
+        assert cle[0] == cle[1], (strategy, nom)
+        total += len(cle[0])
+    assert total > 0, strategy

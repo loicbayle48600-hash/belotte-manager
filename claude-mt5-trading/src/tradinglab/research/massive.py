@@ -95,8 +95,11 @@ def charger_ut(broker, reel: str, tf: str, cache_dir, state_file=None, max_cache
     return df
 #: 2026-09-29, demande utilisateur (« des agents spécialisés par marché : Londres, Asie, US… ») : chaque configuration est
 #: aussi déclinée par session. Le filtre de session est le PREMIER du screener et ne dépend que de l'heure : la variante
-#: se déduit exactement des signaux « toutes sessions » en effaçant ceux hors session (le week-end, OFF, reste permis).
-SESSION_VARIANTS = [None, ["ASIA"], ["LONDON"], ["NEWYORK"], ["OVERLAP_LDN_NY"]]
+#: se déduit exactement des signaux « toutes sessions » en effaçant ceux hors session (voir adapters.masque_sessions).
+SESSION_VARIANTS = [None, ["ASIA"], ["LONDON"], ["NEWYORK"], ["OVERLAP_LDN_NY"], ["SYDNEY"]]
+#: 2026-10-01 : signaux de base calculés sur TOUTES les sessions (Sydney comprise), puis chaque configuration est filtrée
+#: par SES sessions (« toutes » = les 4 sessions de jour, sans Sydney), exactement comme le bot en live
+
 N_OUT = 8
 
 
@@ -269,10 +272,10 @@ def _task(args) -> list:
     atr = _atr_causal(h, l, c)
     n = len(df)
     cut = int(n * (1 - HOLDOUT))
-    from ..core.clock import current_session
+    from .adapters import masque_sessions, sessions_bougies
     skey = (sym, entry_tf)
     if skey not in _SESS:
-        _SESS[skey] = np.array([current_session(t.to_pydatetime()).value for t in df["time"]], dtype=object)
+        _SESS[skey] = sessions_bougies(df["time"], entry_tf, str(ss.asset_class) == "crypto")
     sess = _SESS[skey]
     sides, sls, tps = [], [], []
     calcules: dict = {}
@@ -280,13 +283,12 @@ def _task(args) -> list:
         pk = json.dumps(sorted(cfg["params"].items()), default=str)
         if pk in calcules:                                  # même paramètres, autre session : signaux déjà calculés
             s0, a0, b0 = calcules[pk]
-            ses = cfg.get("sessions")
-            if ses:
-                s0 = np.where(np.isin(sess, ses) | (sess == "OFF"), s0, 0).astype(np.int8)
+            ses = cfg.get("sessions") or opt.SESSIONS
+            s0 = np.where(masque_sessions(sess, ses, entry_tf), s0, 0).astype(np.int8)
             sides.append(s0); sls.append(a0); tps.append(b0)
             continue
         spec = AgentSpec(agent_id="MASS", family="X", name="mass", strategy=strategy, markets=[sym],
-                         sessions=list(opt.SESSIONS), timeframes={"entry": entry_tf, "trend": trend_tf},
+                         sessions=list(opt.SESSIONS) + ["SYDNEY"], timeframes={"entry": entry_tf, "trend": trend_tf},
                          regimes=list(opt.REGIMES.get(strategy, opt.ALL)), params=dict(cfg["params"]), base_strategy=strategy)
         f = make_signal_fn(spec, ss, entry_tf)
         f.prepare(df)
@@ -295,9 +297,8 @@ def _task(args) -> list:
             fa = (np.zeros(n, dtype=np.int8), np.full(n, np.nan), np.full(n, np.nan))
         calcules[pk] = fa
         s0 = fa[0]
-        ses = cfg.get("sessions")
-        if ses:
-            s0 = np.where(np.isin(sess, ses) | (sess == "OFF"), s0, 0).astype(np.int8)
+        ses = cfg.get("sessions") or opt.SESSIONS
+        s0 = np.where(masque_sessions(sess, ses, entry_tf), s0, 0).astype(np.int8)
         sides.append(s0); sls.append(fa[1]); tps.append(fa[2])
     side, sl, tp = np.stack(sides), np.stack(sls), np.stack(tps)
     cost = _COSTS[sym]
@@ -314,8 +315,7 @@ def _task_gpu(args) -> list:
     from ..agents.registry import AgentSpec
     from ..backtest import fastsig, gpu_sim
     from ..backtest.engine import _atr_causal
-    from ..core.clock import current_session
-    from .adapters import make_signal_fn
+    from .adapters import make_signal_fn, masque_sessions, sessions_bougies
     sym, entry_tf, trend_tf, strategy, cfgs = args
     df = _DATA.get((sym, entry_tf))
     ss = _SPECS.get(sym)
@@ -323,7 +323,7 @@ def _task_gpu(args) -> list:
         return [None] * len(cfgs)
     try:
         spec = AgentSpec(agent_id="MASS", family="X", name="mass", strategy=strategy, markets=[sym],
-                         sessions=list(opt.SESSIONS), timeframes={"entry": entry_tf, "trend": trend_tf},
+                         sessions=list(opt.SESSIONS) + ["SYDNEY"], timeframes={"entry": entry_tf, "trend": trend_tf},
                          regimes=list(opt.REGIMES.get(strategy, opt.ALL)), params=dict(cfgs[0]["params"]), base_strategy=strategy)
         f = make_signal_fn(spec, ss, entry_tf)
         f.prepare(df)
@@ -338,7 +338,7 @@ def _task_gpu(args) -> list:
         atr = cp.asarray(_atr_causal(h_np, l_np, c_np))
         skey = (sym, entry_tf)
         if skey not in _SESS:
-            _SESS[skey] = np.array([current_session(t.to_pydatetime()).value for t in df["time"]], dtype=object)
+            _SESS[skey] = sessions_bougies(df["time"], entry_tf, str(ss.asset_class) == "crypto")
         sess = _SESS[skey]
         masques: dict = {}
         cost = _COSTS[sym]
@@ -361,13 +361,12 @@ def _task_gpu(args) -> list:
             lignes_s, lignes_sl, lignes_tp = [], [], []
             for j in idx:
                 k = col[(cfgs[j]["params"]["sl_atr"], cfgs[j]["params"]["rr"])]
-                ses = cfgs[j].get("sessions")
+                ses = cfgs[j].get("sessions") or opt.SESSIONS
                 sd = s_[k]
-                if ses:
-                    mk = tuple(ses)
-                    if mk not in masques:
-                        masques[mk] = cp.asarray(np.isin(sess, ses) | (sess == "OFF"))
-                    sd = cp.where(masques[mk], sd, 0).astype(cp.int8)
+                mk = tuple(ses)
+                if mk not in masques:
+                    masques[mk] = cp.asarray(masque_sessions(sess, ses, entry_tf))
+                sd = cp.where(masques[mk], sd, 0).astype(cp.int8)
                 lignes_s.append(sd)
                 lignes_sl.append(sl_[k])
                 lignes_tp.append(tp_[k])

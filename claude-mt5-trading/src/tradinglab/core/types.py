@@ -93,6 +93,7 @@ class Session(str, Enum):
     LONDON = "LONDON"
     NEWYORK = "NEWYORK"
     OVERLAP_LDN_NY = "OVERLAP_LDN_NY"
+    SYDNEY = "SYDNEY"          # 2026-10-01 : 22:00-00:00 UTC (forex, indices, métaux), après le changement de jour
     OFF = "OFF"
 
 

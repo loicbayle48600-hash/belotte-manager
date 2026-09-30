@@ -235,7 +235,7 @@ def test_feed_snapshot_ok(broker: MockBroker):
     assert snap.bar_times["H1"] and snap.bar_times["H1"] == pd.Timestamp(snap.frames["H1"]["time"].iloc[-2]).isoformat()
     pub = snap.to_public_dict()
     assert "frames" not in pub and pub["regime"]["regime"] in {r.value for r in Regime}
-    assert pub["session"] in {"ASIA", "LONDON", "NEWYORK", "OVERLAP_LDN_NY", "OFF"}
+    assert pub["session"] in {"ASIA", "LONDON", "NEWYORK", "OVERLAP_LDN_NY", "SYDNEY", "OFF"}
 
 
 def test_feed_stale_tick(broker: MockBroker):
