@@ -17,7 +17,8 @@ from typing import Optional
 
 import pandas as pd
 
-TF_SEC = {"M1": 60, "M5": 300, "M15": 900, "M30": 1800, "H1": 3600, "H4": 14400, "D1": 86400}
+TF_SEC = {"M1": 60, "M5": 300, "M15": 900, "M30": 1800, "H1": 3600, "H2": 7200, "H4": 14400, "D1": 86400,
+          "W1": 604800, "MN1": 2592000}
 
 
 class TerminalOccupe(RuntimeError):

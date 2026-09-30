@@ -22,8 +22,12 @@ from ..core.types import Regime, Session, Side, SymbolSpec
 from ..market_data.indicators import enrich
 from ..market_data.regime import MIN_BARS as MIN_TREND_BARS, classify_regime, regime_series
 
-RESAMPLE = {"M5": "5min", "M15": "15min", "M30": "30min", "H1": "1h", "H4": "4h", "D1": "1D"}
-TF_MINUTES = {"M1": 1, "M5": 5, "M15": 15, "M30": 30, "H1": 60, "H4": 240, "D1": 1440}
+# 2026-09-30 : H2, W1 (semaine du dimanche, comme MT5) et MN1 (mois calendaire). MN1 ne sert que de tendance :
+# jamais assez d'historique mensuel pour entrer (MIN_ENTRY_BARS = 260 mois).
+RESAMPLE = {"M5": "5min", "M15": "15min", "M30": "30min", "H1": "1h", "H2": "2h", "H4": "4h", "D1": "1D",
+            "W1": "W-SUN", "MN1": "MS"}
+TF_MINUTES = {"M1": 1, "M5": 5, "M15": 15, "M30": 30, "H1": 60, "H2": 120, "H4": 240, "D1": 1440, "W1": 10080,
+              "MN1": 43200}
 MIN_ENTRY_BARS = 260   # barres du tf d'entrée nécessaires aux indicateurs (ema200, vol_pct sur 200)
 
 
@@ -120,9 +124,17 @@ def make_signal_fn(spec: AgentSpec, symbol_spec: SymbolSpec, entry_tf: str = "M1
     def _trend_frame(df: pd.DataFrame) -> pd.DataFrame:
         return resample(df, trend_tf) if trend_tf != entry_tf else df
 
-    def _closed_trend_cutoff(last_time) -> pd.Timestamp:
-        # une barre de tendance ouverte en T est clôturée si T + trend_delta <= clôture de la barre d'entrée (L + entry_delta)
-        return pd.Timestamp(last_time) + entry_delta - trend_delta
+    def _trend_closes(t_times: pd.DatetimeIndex) -> pd.DatetimeIndex:
+        """Clôture de chaque barre de tendance. Durée fixe, sauf MN1 (2026-09-30) : un mois calendaire (28 à 31 jours),
+        une durée fixe de 30 jours ferait lire la clôture d'un mois de 31 jours un jour trop tôt (lookahead)."""
+        if str(trend_tf).upper() == "MN1":
+            return t_times + pd.offsets.MonthBegin(1)
+        return t_times + trend_delta
+
+    def _n_closed(t_times: pd.DatetimeIndex, last_time, closes=None) -> int:
+        # une barre de tendance est clôturée si sa clôture <= clôture de la barre d'entrée (L + entry_delta)
+        closes = _trend_closes(t_times) if closes is None else closes
+        return int(closes.searchsorted(pd.Timestamp(last_time) + entry_delta, side="right"))
 
     def prepare(df_full: pd.DataFrame) -> None:
         """Pré-calcule les indicateurs une seule fois (indicateurs causaux → découpage par préfixe sans lookahead)."""
@@ -133,13 +145,14 @@ def make_signal_fn(spec: AgentSpec, symbol_spec: SymbolSpec, entry_tf: str = "M1
         cache["e"] = e_full
         cache["t"] = t_full
         cache["t_times"] = pd.DatetimeIndex(t_full["time"])
+        cache["t_closes"] = _trend_closes(cache["t_times"])
         cache["gen"] = cache.get("gen", 0) + 1          # nouveau jeu de données : le cache de tendance repart à zéro
         cache["fast"] = _prepare_fast(e_full, t_full) if (use_fast and len(df_full)) else None
         fn.data_error = None
         if len(df_full) < need:
             fn.data_error = f"données insuffisantes : {len(df_full)} barres {entry_tf} < {need} requises pour la tendance {trend_tf}"
         elif len(df_full):
-            n_closed = int(cache["t_times"].searchsorted(_closed_trend_cutoff(df_full["time"].iloc[-1]), side="right"))
+            n_closed = _n_closed(cache["t_times"], df_full["time"].iloc[-1], cache["t_closes"])
             if n_closed < MIN_TREND_BARS:
                 fn.data_error = f"données insuffisantes : {n_closed} barres {trend_tf} clôturées < {MIN_TREND_BARS}"
 
@@ -150,20 +163,22 @@ def make_signal_fn(spec: AgentSpec, symbol_spec: SymbolSpec, entry_tf: str = "M1
         last_time = df["time"].iloc[-1]
         if times is not None and k <= len(times) and df["time"].iloc[0] == times[0] and last_time == times[k - 1]:
             e_en = cache["e"].iloc[:k]
-            t_all, t_times = cache["t"], cache["t_times"]
+            t_all, t_times, closes = cache["t"], cache["t_times"], cache.get("t_closes")
         else:
             e_en = enrich(df.reset_index(drop=True))
             t_all = enrich(_trend_frame(df.reset_index(drop=True)))
-            t_times = pd.DatetimeIndex(t_all["time"])
-        n_closed = int(t_times.searchsorted(_closed_trend_cutoff(last_time), side="right"))
+            t_times, closes = pd.DatetimeIndex(t_all["time"]), None
+        n_closed = _n_closed(t_times, last_time, closes)
         return e_en, t_all.iloc[:n_closed]
 
     def _build_ctx(e_full: pd.DataFrame, t_full: pd.DataFrame):
 
         times = cache["times"]
         n = len(e_full)
-        cut = pd.DatetimeIndex(times) + entry_delta - trend_delta
-        nc = np.asarray(cache["t_times"].searchsorted(cut, side="right"), dtype=np.int64)
+        closes = cache.get("t_closes")
+        if closes is None:
+            closes = _trend_closes(cache["t_times"])
+        nc = np.asarray(closes.searchsorted(pd.DatetimeIndex(times) + entry_delta, side="right"), dtype=np.int64)
         i = np.arange(n)
         skey = _data_key(e_full, "sess")
         vals = _SESSION_CACHE.get(skey)

@@ -271,10 +271,10 @@ class MockBroker(BrokerAdapter):
         tf = timeframe.upper()
         if tf in ("M5", "M1"):
             return df.tail(count)[RATES_COLUMNS].reset_index(drop=True)
-        rule = {"M15": "15min", "M30": "30min", "H1": "1h", "H4": "4h", "D1": "1D", "W1": "1W"}[tf]
+        rule = {"M15": "15min", "M30": "30min", "H1": "1h", "H2": "2h", "H4": "4h", "D1": "1D", "W1": "1W", "MN1": "MS"}[tf]
         # ne ré-échantillonner que la queue utile : sinon le coût croît avec tout l'historique simulé, ce qui
         # interdit en pratique d'allonger la série (une stratégie D1 a besoin de plusieurs mois de barres).
-        per_bar = {"M15": 3, "M30": 6, "H1": 12, "H4": 48, "D1": 288, "W1": 2016}[tf]
+        per_bar = {"M15": 3, "M30": 6, "H1": 12, "H2": 24, "H4": 48, "D1": 288, "W1": 2016, "MN1": 8928}[tf]
         need = (count + 2) * per_bar
         if len(df) > need:
             df = df.tail(need)

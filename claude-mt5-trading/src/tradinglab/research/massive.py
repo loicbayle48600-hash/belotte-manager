@@ -71,7 +71,9 @@ KEY_PARAMS_FIN: dict[str, dict[str, list]] = {
     "donchian_breakout": {"lookback": [8, 10, 15, 20, 30, 40, 55, 80]},
     "rsi2_reversion": {"rsi2": [(3, 97), (5, 95), (10, 90), (15, 85), (20, 80)]},
 }
-BARS = {"M5": 20000, "M15": 20000, "H1": 20000, "H4": 8000, "D1": 3000}
+# 2026-09-30 (demande utilisateur : « or et tous les autres, sur tous les temps possibles ») : M1, H2 et W1 en plus.
+# MT5 limite l'historique M1 (≈ 100 000 barres ≈ 3 mois) ; MN1 n'est jamais une unité d'ENTRÉE (trop peu de mois).
+BARS = {"M1": 100000, "M5": 20000, "M15": 20000, "H1": 20000, "H2": 12000, "H4": 8000, "D1": 3000, "W1": 1500}
 HOLDOUT = 0.30
 #: 2026-09-29, demande utilisateur (« des agents spécialisés par marché : Londres, Asie, US… ») : chaque configuration est
 #: aussi déclinée par session. Le filtre de session est le PREMIER du screener et ne dépend que de l'heure : la variante
@@ -116,7 +118,14 @@ ESPACES: dict[str, dict] = {
     "structure_bos": {"require_mtf": ("bool",)},
 }
 TF_ALEATOIRES = [("M5", "M15"), ("M5", "H1"), ("M15", "H1"), ("M15", "H4"), ("H1", "H4"), ("H1", "D1"), ("H4", "D1"),
-                 ("H4", "H4"), ("D1", "D1")]
+                 ("H4", "H4"), ("D1", "D1"),
+                 # 2026-09-30 : toutes les unités de temps (M1, H2, W1 ; MN1 en tendance seulement)
+                 ("M1", "M5"), ("M1", "M15"), ("H2", "H4"), ("H2", "D1"), ("H4", "W1"), ("D1", "W1"), ("D1", "MN1"),
+                 ("W1", "MN1"), ("W1", "W1")]
+#: toutes les paires (entrée, tendance) utiles, pour `--toutes-ut`
+TF_TOUTES = [("M1", "M5"), ("M1", "M15"), ("M5", "M15"), ("M5", "H1"), ("M15", "H1"), ("M15", "H4"), ("H1", "H4"),
+             ("H1", "D1"), ("H2", "H4"), ("H2", "D1"), ("H4", "D1"), ("H4", "W1"), ("H4", "H4"), ("D1", "W1"),
+             ("D1", "MN1"), ("D1", "D1"), ("W1", "MN1"), ("W1", "W1")]
 
 
 def tirage(n_reglages: int, seed: int, strategies: Optional[list] = None, classes: Optional[list] = None,
@@ -428,6 +437,7 @@ def main(argv: Optional[list[str]] = None) -> int:  # pragma: no cover - process
     ap.add_argument("--device", default="cpu", choices=["cpu", "gpu"], help="gpu : signaux et simulation sur la carte (3090)")
     ap.add_argument("--fin", action="store_true", help="grille fine (stops, cibles, réglages clés)")
     ap.add_argument("--timeframes", default="", help="ex. M5:M15,M15:H4,H1:D1")
+    ap.add_argument("--toutes-ut", action="store_true", help="toutes les unités de temps (M1 … W1, MN1 en tendance)")
     ap.add_argument("--cache-age-h", type=float, default=0.0, help="réutiliser les historiques en cache de moins de N heures")
     ap.add_argument("--etiquette", default="", help="nom du passage (rapport, journal)")
     ap.add_argument("--tirage", type=int, default=0, help="nombre de réglages clés tirés au hasard (recherche continue)")
@@ -452,6 +462,8 @@ def main(argv: Optional[list[str]] = None) -> int:  # pragma: no cover - process
         classes = [c for c in args.classes.split(",") if c] or list(opt.CLASSES)
     strategies = [x for x in args.strategies.split(",") if x] or None
     tfs_args = [tuple(x.split(":")) for x in args.timeframes.split(",") if x] or None
+    if args.toutes_ut:
+        tfs_args = list(TF_TOUTES)
     if args.tirage:
         configs = tirage(args.tirage, args.seed, strategies, classes, SESSION_VARIANTS if args.sessions else None)
     else:

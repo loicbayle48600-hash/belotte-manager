@@ -207,6 +207,7 @@ class Orchestrator:
                            closed_offline=[p.ticket for p in fermees_hors_ligne])
         self._setup_models()
         self._setup_research()
+        self._sync_feed_timeframes()
         # Positions fermées pendant l'arrêt du bot. `sync()` les retire de l'état et les renvoie, mais le
         # démarrage jetait cette liste : le cycle normal appelle `_on_position_closed` (l. 266), pas la reprise.
         # Le 2026-09-21 BTCUSD a été fermée à +1 581 $ pendant une coupure de 74 min ; le gain est bien sur le
@@ -1154,6 +1155,48 @@ class Orchestrator:
         if bool((self.s.learning or {}).get("research_external", False)):
             self._apply_status_requests()
             self._apply_agent_proposals()
+        self._sync_feed_timeframes()
+
+    def _sync_feed_timeframes(self) -> dict:
+        """2026-09-30 (recherche sur toutes les unités de temps : M1 … W1, MN1 en tendance) : le flux sert aussi les
+        unités de temps (entrée et tendance) des agents SHADOW / CANDIDATE / LIVE / DEGRADED qui ne sont pas dans
+        `scheduler.timeframes`, uniquement sur les marchés de ces agents (même rattachement que le routeur). Sans cela un
+        agent H2 ou W1 venu de la recherche resterait muet (le screener ne trouve pas son unité de temps).
+        La qualité des données reste jugée sur l'unité principale : une unité ajoutée ne bloque jamais un marché."""
+        from ..core.clock import TF_SECONDS
+
+        base = {str(tf).upper() for tf in self.feed.timeframes}
+        statuts = {AgentStatus.SHADOW.value, AgentStatus.CANDIDATE.value, AgentStatus.LIVE.value, AgentStatus.DEGRADED.value}
+        besoins: dict[str, list] = {}
+        for a in list(self.registry.agents.values()):
+            if not a.generates_trades or a.status not in statuts:
+                continue
+            for tf in {str(a.timeframes.get("entry", "")).upper(), str(a.timeframes.get("trend", "")).upper()}:
+                if tf and tf not in base:
+                    besoins.setdefault(tf, []).append(a)
+        if not besoins:
+            return {}
+        groupe = getattr(getattr(self, "router_", None), "group_of", {}) or {}
+        classes: dict[str, str] = {}
+        for root, real in (getattr(self, "universe", None) or {}).items():
+            spec = self.broker.symbol_info(real)
+            if spec is not None:
+                classes[root] = spec.asset_class
+        ajouts: dict[str, list] = {}
+        for tf, agents in besoins.items():
+            if tf not in TF_SECONDS:
+                self.journal.warn("unité de temps d'agent inconnue du flux", timeframe=tf, agents=[a.agent_id for a in agents][:10])
+                continue
+            servis = self.feed.extra_timeframes.setdefault(tf, set())
+            for root, real in self.universe.items():
+                if real in servis or root not in classes:
+                    continue
+                if any(AgentRegistry.matches_market(a, classes[root], root, groupe.get(root)) for a in agents):
+                    servis.add(real)
+                    ajouts.setdefault(tf, []).append(real)
+        if ajouts:
+            self.journal.event("feed_timeframes", ajouts={tf: sorted(v) for tf, v in ajouts.items()})
+        return ajouts
 
     def _review_with_deadline(self, batch: list, score_bonus: float, deadline: float = None) -> None:
         """Revues IA en parallèle, bornées dans le temps. Chaque revue travaille sur une COPIE du candidat : une

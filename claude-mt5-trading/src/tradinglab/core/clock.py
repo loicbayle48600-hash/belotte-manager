@@ -7,7 +7,10 @@ from .types import Session, utcnow
 
 TF_SECONDS = {
     "M1": 60, "M5": 300, "M15": 900, "M30": 1800,
-    "H1": 3600, "H4": 14400, "D1": 86400, "W1": 604800,
+    "H1": 3600, "H2": 7200, "H4": 14400, "D1": 86400, "W1": 604800,
+    # 2026-09-30 : MN1 = durée NOMINALE (30 jours) pour les calculs approchés (expirations) ; l'ouverture et la clôture
+    # d'une barre mensuelle suivent le calendrier (`bar_open_time`, `seconds_until_next_bar`)
+    "MN1": 2592000,
 }
 
 
@@ -41,6 +44,10 @@ def bar_open_time(ts: datetime, tf: str, server_offset_sec: int | None = None) -
     s = tf_seconds(tf)
     off = SERVER_UTC_OFFSET_SEC if server_offset_sec is None else int(server_offset_sec)
     e = int(ts.timestamp()) + off
+    if tf.upper() == "MN1":
+        # 1er du mois 00:00 heure SERVEUR (comme MT5), exprimé en UTC
+        loc = datetime.fromtimestamp(e, tz=timezone.utc)
+        return datetime(loc.year, loc.month, 1, tzinfo=timezone.utc) - timedelta(seconds=off)
     if tf.upper() == "W1":
         e -= _W1_ANCHOR_SHIFT_SEC
         return datetime.fromtimestamp(e - e % s + _W1_ANCHOR_SHIFT_SEC - off, tz=timezone.utc)
@@ -126,6 +133,16 @@ def forex_market_open(now: datetime | None = None) -> bool:
 
 def seconds_until_next_bar(tf: str, now: datetime | None = None) -> float:
     now = now or utcnow()
+    if tf.upper() == "MN1":
+        return (next_month_open(bar_open_time(now, tf)) - now).total_seconds()
     s = tf_seconds(tf)
     nxt = bar_open_time(now, tf) + timedelta(seconds=s)
     return (nxt - now).total_seconds()
+
+
+def next_month_open(open_utc: datetime, server_offset_sec: int | None = None) -> datetime:
+    """Ouverture (UTC) de la barre mensuelle qui suit celle ouverte en `open_utc` (1er du mois suivant, heure serveur)."""
+    off = SERVER_UTC_OFFSET_SEC if server_offset_sec is None else int(server_offset_sec)
+    loc = open_utc + timedelta(seconds=off)
+    y, m = (loc.year + 1, 1) if loc.month == 12 else (loc.year, loc.month + 1)
+    return datetime(y, m, 1, tzinfo=timezone.utc) - timedelta(seconds=off)
