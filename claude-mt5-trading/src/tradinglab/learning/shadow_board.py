@@ -31,7 +31,7 @@ def famille(agent_id: str) -> str:
 FAMILLES = {"A": "scanners", "B": "tendance", "C": "cassure", "D": "pullback", "E": "retournement", "F": "structure",
             "G": "volatilité", "K": "annonces", "L": "par classe", "M": "par symbole", "N": "saisonnalité",
             "O": "cycle long", "P": "optimiseur", "Q": "ordres en attente", "R": "optimiseur 2", "S": "micro M1",
-            "X": "recherche GPU", "CH": "challengers"}
+            "X": "recherche GPU", "CH": "challengers", "OR": "or (algorithme dédié)"}
 
 
 def _infos_agents(home: Path) -> dict[str, str]:

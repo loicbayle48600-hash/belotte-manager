@@ -1,0 +1,52 @@
+{
+ "agent_id": "OR01",
+ "family": "OR",
+ "name": "or_cassure_asie_h1_tendance_d1",
+ "strategy": "session_breakout",
+ "markets": [
+  "XAUUSD"
+ ],
+ "sessions": [
+  "LONDON",
+  "OVERLAP_LDN_NY"
+ ],
+ "timeframes": {
+  "entry": "H1",
+  "trend": "D1"
+ },
+ "regimes": [
+  "TRENDING",
+  "RANGING",
+  "BREAKOUT",
+  "HIGH_VOLATILITY",
+  "LOW_VOLATILITY",
+  "UNCERTAIN",
+  "RISK_ON",
+  "RISK_OFF"
+ ],
+ "params": {
+  "start": "00:00",
+  "end": "07:00",
+  "session": "asiatique",
+  "sl_atr": 3.0,
+  "rr": 2.0,
+  "trend_only": true
+ },
+ "status": "SHADOW",
+ "version": "1.0",
+ "model_tier_role": "technical_analysis",
+ "news_sensitive": false,
+ "news_trader": false,
+ "cost_budget_usd": 0.5,
+ "description": "Algorithme or (30/09, demande utilisateur) : 1re clôture H1 hors du range asiatique 00-07 UTC entre 07 et 16 UTC, seulement dans le sens de la tendance D1 ; stop au bord opposé du range. Backtest H1 mai 2023 - sept. 2026 avec la gestion du bot et les coûts : 192 trades, +0,29 R (t 3,4), PF 1,70, DD 6,3 R, les deux moitiés positives. LIMITES : 90 % d'achats pendant la hausse historique de l'or ; même règle sur l'argent : 0,00 R. À juger en shadow, jamais en live sans ce verdict.",
+ "entry_rules": "clôture H1 hors du range asiatique (00:00-07:00 UTC), bougie ouverte dans le range, tendance D1 alignée",
+ "invalidation_rules": "retour et clôture dans le range",
+ "sl_logic": "bord opposé du range asiatique (au moins 0,5 ATR)",
+ "tp_logic": "ADAPTIVE_R_MANAGEMENT",
+ "filters": [
+  "trend_only"
+ ],
+ "parent_id": null,
+ "created_by": "claude",
+ "base_strategy": "session_breakout"
+}

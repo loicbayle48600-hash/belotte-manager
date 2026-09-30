@@ -206,6 +206,11 @@ def session_breakout(spec: AgentSpec, snap) -> Optional[TradeCandidate]:
         sl = max(sl, entry + 0.5 * atr)
     else:
         return None
+    # 2026-09-30 (algorithme or) : option « dans le sens de la tendance du cadre supérieur seulement ». En live le score
+    # (58, +15 si aligné, seuil 65) écarte déjà les cassures à contre-tendance ; le shadow, lui, n'a pas de seuil de
+    # score : sans ce filtre il mélangerait les deux et jugerait mal l'idée (or H1 2023-2026 : à contre-tendance −0,10 R)
+    if p.get("trend_only") and _trend_of(lt) != ("UP" if side is Side.BUY else "DOWN"):
+        return None
     score = 58
     b, pros = _mtf_bonus(le, lt, side)
     score += b
