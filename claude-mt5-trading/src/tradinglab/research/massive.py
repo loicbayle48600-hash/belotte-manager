@@ -55,6 +55,22 @@ KEY_PARAMS: dict[str, dict[str, list]] = {
     "rsi2_reversion": {"rsi2": [(5, 95), (10, 90), (20, 80)]},
 }
 TIMEFRAMES = [("M5", "H1"), ("M15", "H1"), ("H1", "H4"), ("H4", "D1"), ("D1", "D1")]
+#: grille FINE (2026-09-30, recherches de nuit) : stops et cibles plus serrés, réglages clés élargis
+SL_ATR_FIN = [0.6, 0.8, 1.0, 1.2, 1.4, 1.6, 1.8, 2.0, 2.3, 2.6, 3.0]
+RR_FIN = [1.2, 1.5, 2.0, 2.5, 3.0, 4.0]
+KEY_PARAMS_FIN: dict[str, dict[str, list]] = {
+    "ema_trend": {"adx_min": [12, 15, 18, 20, 23, 25, 28, 32]},
+    "mtf_trend_pullback": {"rsi": [(25, 75), (30, 70), (35, 65), (38, 62), (42, 58), (45, 55)]},
+    "atr_expansion": {"atr_ratio": [1.05, 1.1, 1.2, 1.3, 1.4, 1.5, 1.7, 2.0]},
+    "bollinger_mr": {"rsi": [(15, 85), (20, 80), (25, 75), (30, 70), (35, 65), (40, 60)]},
+    "liquidity_sweep": {"with_trend": [False, True]},
+    "structure_bos": {"require_mtf": [False, True]},
+    "fib_pullback": {"tol_atr": [0.2, 0.3, 0.4, 0.5, 0.7]},
+    "exhaustion": {"rsi_ext": [15, 18, 20, 22, 25, 28, 30, 35]},
+    "sr_rejection": {"tol_atr": [0.15, 0.2, 0.3, 0.4, 0.5], "with_trend": [False, True]},
+    "donchian_breakout": {"lookback": [8, 10, 15, 20, 30, 40, 55, 80]},
+    "rsi2_reversion": {"rsi2": [(3, 97), (5, 95), (10, 90), (15, 85), (20, 80)]},
+}
 BARS = {"M5": 20000, "M15": 20000, "H1": 20000, "H4": 8000, "D1": 3000}
 HOLDOUT = 0.30
 #: 2026-09-29, demande utilisateur (« des agents spécialisés par marché : Londres, Asie, US… ») : chaque configuration est
@@ -64,10 +80,11 @@ SESSION_VARIANTS = [None, ["ASIA"], ["LONDON"], ["NEWYORK"], ["OVERLAP_LDN_NY"]]
 N_OUT = 8
 
 
-def expand(strategy: str) -> list[dict]:
-    """Toutes les combinaisons de paramètres d'une stratégie."""
-    keys = list(KEY_PARAMS.get(strategy, {}))
-    vals = [KEY_PARAMS[strategy][k] for k in keys]
+def expand(strategy: str, fin: bool = False) -> list[dict]:
+    """Toutes les combinaisons de paramètres d'une stratégie (`fin` : grille fine de nuit)."""
+    table = {**KEY_PARAMS, **KEY_PARAMS_FIN} if fin else KEY_PARAMS
+    keys = list(table.get(strategy, {}))
+    vals = [table[strategy][k] for k in keys]
     out = []
     for combo in itertools.product(*vals) if keys else [()]:
         base = {}
@@ -78,21 +95,21 @@ def expand(strategy: str) -> list[dict]:
                 base["rsi_lo"], base["rsi_hi"] = v
             else:
                 base[k] = v
-        for sl in SL_ATR:
-            for rr in RR:
+        for sl in (SL_ATR_FIN if fin else SL_ATR):
+            for rr in (RR_FIN if fin else RR):
                 out.append({**base, "sl_atr": sl, "rr": rr})
     return out
 
 
 def grid(strategies: Optional[list] = None, classes: Optional[list] = None, timeframes: Optional[list] = None,
-         sessions: Optional[list] = None) -> list[dict]:
+         sessions: Optional[list] = None, fin: bool = False) -> list[dict]:
     """Liste des configurations : {strategy, entry_tf, trend_tf, asset_class, params}."""
     from ..backtest import fastsig
     out = []
     for st in (strategies or sorted(fastsig.FAST)):
         for (e, t) in (timeframes or TIMEFRAMES):
             for c in (classes or list(opt.CLASSES)):
-                for prm in expand(st):
+                for prm in expand(st, fin):
                     for ses in (sessions if sessions is not None else [None]):
                         out.append({"strategy": st, "entry_tf": e, "trend_tf": t, "asset_class": c, "params": prm, "sessions": ses})
     return out
@@ -127,8 +144,9 @@ def aggregate(rows: np.ndarray) -> dict:
 
 def plateau_ok(cfg: dict, index: dict, min_voisins: int = 2) -> bool:
     """Voisines de stop (juste au-dessus / au-dessous, mêmes autres paramètres) gagnantes sur l'apprentissage."""
-    i = SL_ATR.index(cfg["params"]["sl_atr"])
-    voisines = [SL_ATR[j] for j in (i - 1, i + 1) if 0 <= j < len(SL_ATR)]
+    grille = SL_ATR if cfg["params"]["sl_atr"] in SL_ATR and not cfg.get("fin") else SL_ATR_FIN
+    i = grille.index(cfg["params"]["sl_atr"])
+    voisines = [grille[j] for j in (i - 1, i + 1) if 0 <= j < len(grille)]
     reste = {k: v for k, v in cfg["params"].items() if k != "sl_atr"}
     gagnantes = 0
     for sl in voisines:
@@ -354,6 +372,10 @@ def main(argv: Optional[list[str]] = None) -> int:  # pragma: no cover - process
     ap.add_argument("--univers", action="store_true", help="toutes les classes et tous les symboles de config/markets.yaml")
     ap.add_argument("--sessions", action="store_true", help="décliner chaque configuration par session (Asie, Londres, NY, chevauchement)")
     ap.add_argument("--device", default="cpu", choices=["cpu", "gpu"], help="gpu : signaux et simulation sur la carte (3090)")
+    ap.add_argument("--fin", action="store_true", help="grille fine (stops, cibles, réglages clés)")
+    ap.add_argument("--timeframes", default="", help="ex. M5:M15,M15:H4,H1:D1")
+    ap.add_argument("--cache-age-h", type=float, default=0.0, help="réutiliser les historiques en cache de moins de N heures")
+    ap.add_argument("--etiquette", default="", help="nom du passage (rapport, journal)")
     args = ap.parse_args(argv)
     s = load_settings()
     load_dotenv(s.home / ".env")
@@ -370,7 +392,10 @@ def main(argv: Optional[list[str]] = None) -> int:  # pragma: no cover - process
     else:
         classes = [c for c in args.classes.split(",") if c] or list(opt.CLASSES)
     strategies = [x for x in args.strategies.split(",") if x] or None
-    configs = grid(strategies, classes, sessions=SESSION_VARIANTS if args.sessions else None)
+    tfs_args = [tuple(x.split(":")) for x in args.timeframes.split(",") if x] or None
+    configs = grid(strategies, classes, tfs_args, sessions=SESSION_VARIANTS if args.sessions else None, fin=args.fin)
+    for cfg in configs:
+        cfg["fin"] = bool(args.fin)
     if args.max_configs:
         configs = configs[: args.max_configs]
     voulus = sorted({sym for c in classes for sym in opt.CLASSES_ALL[c]})
@@ -390,6 +415,7 @@ def main(argv: Optional[list[str]] = None) -> int:  # pragma: no cover - process
         for tf in tfs:
             try:
                 df = load_rates(broker, reel, tf, BARS[tf], s.data_dir / "cache" / "rates", pause_sec=2.0,
+                                max_cache_age_sec=(args.cache_age_h * 3600) if args.cache_age_h else None,
                                 state_file=s.state_dir / "system_state.json")
             except TerminalOccupe as e:
                 journal.warn("recherche en masse arrêtée : terminal occupé", error=str(e))
@@ -423,7 +449,13 @@ def main(argv: Optional[list[str]] = None) -> int:  # pragma: no cover - process
                     if r is not None:
                         results.setdefault(i, []).append(r)
     retenues, etapes = select(configs, results)
-    retenues = retenues[: args.top]
+    vus, distinctes = set(), []
+    for x in retenues:
+        cle = (x[0]["strategy"], x[0]["entry_tf"], x[0]["asset_class"], str(x[0].get("sessions")))
+        if cle not in vus:
+            vus.add(cle)
+            distinctes.append(x)
+    retenues = distinctes[: args.top]
     reg = AgentRegistry(status_file=s.data_dir / "agent_status.json")
     ids = opt.next_ids(set(reg.agents), len(retenues))
     props = []
@@ -445,7 +477,7 @@ def main(argv: Optional[list[str]] = None) -> int:  # pragma: no cover - process
     rapport = {"date": datetime.now(timezone.utc).isoformat(), "duree_sec": round(time.time() - t0), "etapes": etapes,
                "retenues": [{"config": c, "apprentissage": a, "controle": k} for c, a, k in retenues],
                "propositions": [p["agent_id"] for p in props]}
-    out = s.home / "reports" / f"massive_{datetime.now(timezone.utc).strftime('%Y-%m-%d_%H%M')}.json"
+    out = s.home / "reports" / f"massive_{args.etiquette + '_' if args.etiquette else ''}{datetime.now(timezone.utc).strftime('%Y-%m-%d_%H%M')}.json"
     out.parent.mkdir(exist_ok=True)
     out.write_text(json.dumps(rapport, ensure_ascii=False, indent=1, default=str), encoding="utf-8")
     resume = {k: v for k, v in etapes.items() if k != "top50"}

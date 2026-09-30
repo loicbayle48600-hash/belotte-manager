@@ -109,3 +109,12 @@ def test_tache_par_marche_egale_taches_separees():
     for a, b in zip(sep, grp):
         for x, y in zip(a, b):
             assert np.array_equal(x[0], y[0]) and np.array_equal(x[1], y[1])
+
+
+def test_grille_fine_et_plateau_fin():
+    g = m.grid(["exhaustion"], ["forex"], [("M15", "H1")], fin=True)
+    assert len(g) == 8 * len(m.SL_ATR_FIN) * len(m.RR_FIN)
+    cfg = {**g[0], "fin": True}
+    cfg["params"] = {**cfg["params"], "sl_atr": 1.4}
+    idx = {m._key(cfg, {**cfg["params"], "sl_atr": v}): {"exp": 0.1, "pf": 1.3} for v in (1.2, 1.6)}
+    assert m.plateau_ok(cfg, idx)

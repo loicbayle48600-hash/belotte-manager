@@ -37,7 +37,8 @@ def cycle_age_sec(state_file: Path) -> Optional[float]:
 
 
 def load_rates(broker, symbol: str, tf: str, n: int, cache_dir: Path, pause_sec: float = 2.0,
-               state_file: Optional[Path] = None, max_cycle_age_sec: float = 90.0) -> pd.DataFrame:
+               state_file: Optional[Path] = None, max_cycle_age_sec: float = 90.0,
+               max_cache_age_sec: Optional[float] = None) -> pd.DataFrame:
     cache_dir.mkdir(parents=True, exist_ok=True)
     f = cache_dir / f"{symbol}_{tf}.csv"
     if f.exists():
@@ -46,7 +47,9 @@ def load_rates(broker, symbol: str, tf: str, n: int, cache_dir: Path, pause_sec:
             df["time"] = pd.to_datetime(df["time"], utc=True)
             derniere = df["time"].iloc[-1].to_pydatetime()
             age = (datetime.now(timezone.utc) - derniere).total_seconds()
-            if len(df) >= n and age <= 3 * TF_SEC.get(tf, 3600):
+            # max_cache_age_sec (2026-09-30, recherches de nuit) : un historique de quelques heures suffit pour chercher
+            limite = max_cache_age_sec if max_cache_age_sec is not None else 3 * TF_SEC.get(tf, 3600)
+            if len(df) >= n and age <= limite:
                 return df.tail(n).reset_index(drop=True)
         except (OSError, ValueError, KeyError):
             pass
