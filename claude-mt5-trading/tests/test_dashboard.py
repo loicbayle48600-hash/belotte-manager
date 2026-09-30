@@ -929,3 +929,15 @@ def test_page_qualite_et_api(home: Path):
         srv.shutdown()
         srv.server_close()
         t.join(timeout=5)
+
+
+
+def test_page_shadow_et_recherche_repond_sans_erreur(home: Path):
+    """2026-10-01 : la page /shadow affichait « 'Settings' object has no attribute 'strategies' » (mauvais nom de
+    réglage, non couvert par le test du tableau qui appelait shadow_board directement)."""
+    from tradinglab.dashboards.server import DashboardData
+
+    d = DashboardData(home).shadow()
+    assert "erreur" not in d, d.get("erreur")
+    assert {"resume", "familles", "agents", "recherche", "criteres"} <= set(d)
+    assert d["criteres"]["min_shadow"] == 20 and d["criteres"]["perdant_n"] == 50

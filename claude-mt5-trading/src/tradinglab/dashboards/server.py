@@ -535,7 +535,7 @@ class DashboardData:
         from ..learning.shadow_board import shadow_board
 
         try:
-            result = shadow_board(self.home, dict(self.settings.strategies.get("learning", {}) or {}))
+            result = shadow_board(self.home, dict(self.settings.learning or {}))   # section « learning » de strategies.yaml
         except Exception as e:  # noqa: BLE001 - lecture seule : jamais de 500 pour un fichier illisible
             result = {"erreur": f"{type(e).__name__}: {e}"}
         self._shadow_cache = (time.time(), result)
