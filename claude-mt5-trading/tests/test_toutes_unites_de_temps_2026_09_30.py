@@ -98,6 +98,7 @@ def test_recherche_toutes_ut():
             assert required_bars(e, t) <= m.BARS[e], (e, t)
     for e, _ in m.TF_TOUTES:
         assert e in m.BARS
+    assert max(m.BARS.values()) < 100000, "MT5 refuse une demande égale à sa limite de 100 000 barres"
 
 
 def test_flux_sert_les_ut_des_agents(settings, broker):

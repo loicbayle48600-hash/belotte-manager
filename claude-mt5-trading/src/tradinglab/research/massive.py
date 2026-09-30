@@ -72,8 +72,8 @@ KEY_PARAMS_FIN: dict[str, dict[str, list]] = {
     "rsi2_reversion": {"rsi2": [(3, 97), (5, 95), (10, 90), (15, 85), (20, 80)]},
 }
 # 2026-09-30 (demande utilisateur : « or et tous les autres, sur tous les temps possibles ») : M1, H2 et W1 en plus.
-# MT5 limite l'historique M1 (≈ 100 000 barres ≈ 3 mois) ; MN1 n'est jamais une unité d'ENTRÉE (trop peu de mois).
-BARS = {"M1": 100000, "M5": 20000, "M15": 20000, "H1": 20000, "H2": 12000, "H4": 8000, "D1": 3000, "W1": 1500}
+# MT5 refuse une demande égale à sa limite « Max bars » (100 000 : « Invalid params », constaté le 30/09) : 90 000 M1 ≈ 3 mois ; MN1 n'est jamais une unité d'ENTRÉE (trop peu de mois).
+BARS = {"M1": 90000, "M5": 20000, "M15": 20000, "H1": 20000, "H2": 12000, "H4": 8000, "D1": 3000, "W1": 1500}
 HOLDOUT = 0.30
 #: 2026-09-29, demande utilisateur (« des agents spécialisés par marché : Londres, Asie, US… ») : chaque configuration est
 #: aussi déclinée par session. Le filtre de session est le PREMIER du screener et ne dépend que de l'heure : la variante
@@ -496,6 +496,9 @@ def main(argv: Optional[list[str]] = None) -> int:  # pragma: no cover - process
                 return 2
             if df is not None and len(df):
                 data[(sym, tf)] = df
+            else:
+                # 30/09 : un historique vide (ex. demande au-delà de la limite du terminal) ne doit plus passer inaperçu
+                journal.warn("historique vide : unité de temps ignorée pour ce marché", symbol=sym, timeframe=tf, bars=BARS[tf])
     journal.event("massive_start", configurations=len(configs), jeux=len(data), workers=args.workers)
     # tâches : (symbole, cadre, stratégie) avec toutes ses configurations
     groupes: dict = {}
