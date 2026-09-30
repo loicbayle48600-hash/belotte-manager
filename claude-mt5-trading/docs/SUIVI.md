@@ -611,3 +611,4 @@ n'utilise PAS Fable (retiré de TIER_A le 2026-09-23) : le quota Fable est rése
 - Pas de clé API Anthropic tierce « illimitée » (revente de clés détournées).
 
 - 30/09 : régime vectorisé (`regime_series`) pour la recherche en masse : 7 s → 0,01 s par marché, équivalence testée. **Incident 09:41** : le terminal maître a été connecté au compte 53076986 (nouveau suiveur COPY3) → ACCOUNT_MISMATCH, SAFE_MODE. À faire : reconnecter le terminal maître sur 53068680, puis redémarrer en AUTO (copieurs COPY4-7 retirés encore actifs, COPY3 à lancer).
+- 30/09 10:52 : maître 53068680 reconnecté, AUTO. Copieurs actifs : blueguardian, demo1 new (53076986). Moneta en attente : son terminal est connecté au 53068680, à reconnecter au compte Moneta par l utilisateur plus tard.
