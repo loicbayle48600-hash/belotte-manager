@@ -124,3 +124,24 @@ def test_flux_sert_les_ut_des_agents(settings, broker):
     assert o._sync_feed_timeframes() == {}, "idempotent"
     snap = o.feed.snapshot(reel)
     assert "H2" in snap.frames and "W1" in snap.frames
+
+
+def test_h2_et_w1_construits_sans_telechargement(tmp_path):
+    """La recherche construit H2 depuis H1 et W1 depuis D1 : elle ne demande jamais H2 / W1 au terminal du bot."""
+    from tradinglab.research import massive as m
+
+    demandes = []
+
+    class Faux:
+        def rates(self, symbol, tf, n):
+            demandes.append(tf)
+            pas = {"H1": "1h", "D1": "1D", "H2": "2h", "W1": "7D"}[tf]
+            return _synth(400, 3, pas)
+
+    h2 = m.charger_ut(Faux(), "XAUUSD", "H2", tmp_path)
+    w1 = m.charger_ut(Faux(), "XAUUSD", "W1", tmp_path)
+    assert demandes == ["H1", "D1"]
+    assert (h2["time"].diff().dropna() == pd.Timedelta(hours=2)).all() and len(h2) == 200
+    assert (w1["time"].dt.dayofweek == 6).all(), "semaines du dimanche, comme MT5"
+    m.charger_ut(Faux(), "XAUUSD", "H2", tmp_path / "b", reelles=True)
+    assert demandes[-1] == "H2"

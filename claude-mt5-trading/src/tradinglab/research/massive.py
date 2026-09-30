@@ -75,6 +75,24 @@ KEY_PARAMS_FIN: dict[str, dict[str, list]] = {
 # MT5 refuse une demande égale à sa limite « Max bars » (100 000 : « Invalid params », constaté le 30/09) : 90 000 M1 ≈ 3 mois ; MN1 n'est jamais une unité d'ENTRÉE (trop peu de mois).
 BARS = {"M1": 90000, "M5": 20000, "M15": 20000, "H1": 20000, "H2": 12000, "H4": 8000, "D1": 3000, "W1": 1500}
 HOLDOUT = 0.30
+#: 2026-09-30 : H2 et W1 CONSTRUITS à partir des historiques H1 / D1 déjà en cache (regroupement UTC, comme les unités
+#: de tendance) : aucun téléchargement lourd par le terminal MT5 partagé avec le bot. Les premiers téléchargements réels
+#: H2 / W1 des 73 marchés ont allongé un cycle du bot à 74 s le 30/09 au soir. `--ut-reelles` pour les vraies barres
+#: (passage dédié, marché calme).
+DERIVEES = {"H2": "H1", "W1": "D1"}
+
+
+def charger_ut(broker, reel: str, tf: str, cache_dir, state_file=None, max_cache_age_sec=None, reelles: bool = False):
+    """Historique de `tf` pour la recherche : téléchargé (cache), ou construit depuis l'unité source de `DERIVEES`."""
+    from .adapters import resample
+    from .rates_cache import load_rates
+
+    src = None if reelles else DERIVEES.get(tf)
+    df = load_rates(broker, reel, src or tf, BARS[src or tf], cache_dir, pause_sec=2.0, max_cache_age_sec=max_cache_age_sec,
+                    state_file=state_file)
+    if src and df is not None and len(df):
+        df = resample(df, tf)
+    return df
 #: 2026-09-29, demande utilisateur (« des agents spécialisés par marché : Londres, Asie, US… ») : chaque configuration est
 #: aussi déclinée par session. Le filtre de session est le PREMIER du screener et ne dépend que de l'heure : la variante
 #: se déduit exactement des signaux « toutes sessions » en effaçant ceux hors session (le week-end, OFF, reste permis).
@@ -424,7 +442,7 @@ def main(argv: Optional[list[str]] = None) -> int:  # pragma: no cover - process
     from ..core.journal import Journal
     from ..mt5.mock_adapter import make_broker
     from ..mt5.symbols import resolve_symbols
-    from .rates_cache import TerminalOccupe, load_rates
+    from .rates_cache import TerminalOccupe
 
     ap = argparse.ArgumentParser(description="Recherche en masse de stratégies")
     ap.add_argument("--workers", type=int, default=max(1, (os.cpu_count() or 4) - 4))
@@ -439,6 +457,7 @@ def main(argv: Optional[list[str]] = None) -> int:  # pragma: no cover - process
     ap.add_argument("--fin", action="store_true", help="grille fine (stops, cibles, réglages clés)")
     ap.add_argument("--timeframes", default="", help="ex. M5:M15,M15:H4,H1:D1")
     ap.add_argument("--toutes-ut", action="store_true", help="toutes les unités de temps (M1 … W1, MN1 en tendance)")
+    ap.add_argument("--ut-reelles", action="store_true", help="vraies barres H2 / W1 du terminal (sinon construites depuis H1 / D1)")
     ap.add_argument("--cache-age-h", type=float, default=0.0, help="réutiliser les historiques en cache de moins de N heures")
     ap.add_argument("--etiquette", default="", help="nom du passage (rapport, journal)")
     ap.add_argument("--tirage", type=int, default=0, help="nombre de réglages clés tirés au hasard (recherche continue)")
@@ -489,9 +508,9 @@ def main(argv: Optional[list[str]] = None) -> int:  # pragma: no cover - process
                              point=ss.point, tick_value=ss.tick_value, tick_size=ss.tick_size)
         for tf in tfs:
             try:
-                df = load_rates(broker, reel, tf, BARS[tf], s.data_dir / "cache" / "rates", pause_sec=2.0,
+                df = charger_ut(broker, reel, tf, s.data_dir / "cache" / "rates", state_file=s.state_dir / "system_state.json",
                                 max_cache_age_sec=(args.cache_age_h * 3600) if args.cache_age_h else None,
-                                state_file=s.state_dir / "system_state.json")
+                                reelles=args.ut_reelles)
             except TerminalOccupe as e:
                 journal.warn("recherche en masse arrêtée : terminal occupé", error=str(e))
                 return 2
