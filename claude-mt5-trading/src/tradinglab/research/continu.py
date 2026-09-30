@@ -1,0 +1,78 @@
+"""Recherche CONTINUE sur la 3090 (2026-09-30, demande utilisateur : « continue les recherches, des milliards de tests
+sur le GPU »).
+
+Boucle sans fin (jusqu'à arrêt) de passages de la recherche en masse à réglages TIRÉS AU HASARD dans des espaces larges
+(research/massive.py --tirage), sur tout l'univers et toutes les sessions, en priorité basse et sur la carte graphique.
+
+- Compteur cumulé (state/recherche_continue.json) : configurations et backtests testés depuis le début ; le seuil
+  statistique de chaque passage tient compte de TOUT ce qui a déjà été testé (--m-cumul) — un milliard d'essais ne doit
+  pas fabriquer de faux gagnants.
+- Au plus `--top` idées nouvelles par passage, jamais un doublon d'une idée existante (registre ou propositions).
+- Si la boucle de trading ne boucle plus (> 120 s), on attend. Arrêt propre : créer state/recherche_continue.stop.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import subprocess
+import sys
+import time
+from datetime import datetime, timezone
+from pathlib import Path
+
+
+def _age_cycle(home: Path):
+    try:
+        d = json.loads((home / "state" / "system_state.json").read_text(encoding="utf-8"))
+        return (datetime.now(timezone.utc) - datetime.fromisoformat(d["last_cycle"]["ts"])).total_seconds()
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def main(argv=None) -> int:  # pragma: no cover - pilotage de processus
+    ap = argparse.ArgumentParser(description="Recherche continue sur la 3090")
+    ap.add_argument("--workers", type=int, default=10)
+    ap.add_argument("--reglages", type=int, default=400, help="réglages clés tirés par passage")
+    ap.add_argument("--top", type=int, default=5)
+    args = ap.parse_args(argv)
+    home = Path(__file__).resolve().parents[3]
+    etat_f = home / "state" / "recherche_continue.json"
+    stop_f = home / "state" / "recherche_continue.stop"
+    etat = json.loads(etat_f.read_text(encoding="utf-8")) if etat_f.exists() else {"passages": 0, "configurations": 0, "seed": 1000}
+    while not stop_f.exists():
+        age = _age_cycle(home)
+        if age is not None and age > 120:
+            time.sleep(120)
+            continue
+        etat["seed"] += 1
+        etat["passages"] += 1
+        cmd = [sys.executable, "-m", "tradinglab.research.massive", "--device", "gpu", "--workers", str(args.workers),
+               "--univers", "--sessions", "--tirage", str(args.reglages), "--seed", str(etat["seed"]),
+               "--m-cumul", str(etat["configurations"]), "--top", str(args.top), "--cache-age-h", "24",
+               "--etiquette", f"continu_{etat['passages']}"]
+        print(f"{datetime.now():%d/%m %H:%M} passage {etat['passages']} (graine {etat['seed']}, cumul {etat['configurations']:,})", flush=True)
+        creation = 0x00004000 if sys.platform == "win32" else 0
+        debut = time.time()
+        proc = subprocess.run(cmd, cwd=str(home), creationflags=creation, capture_output=True, text=True, encoding="utf-8", errors="replace")
+        # le passage imprime {'testees': N, ...} en dernière ligne
+        testees = 0
+        for ligne in (proc.stdout or "").splitlines()[::-1]:
+            if "'testees':" in ligne:
+                try:
+                    testees = int(ligne.split("'testees':")[1].split(",")[0])
+                except ValueError:
+                    pass
+                break
+        etat["configurations"] += testees
+        etat["derniere"] = {"date": datetime.now(timezone.utc).isoformat(), "testees": testees, "code": proc.returncode,
+                            "duree_sec": round(time.time() - debut), "sortie": (proc.stdout or "")[-400:]}
+        etat_f.write_text(json.dumps(etat, ensure_ascii=False, indent=1), encoding="utf-8")
+        print(f"   → {testees:,} configurations, code {proc.returncode}, {round(time.time() - debut)} s", flush=True)
+        if proc.returncode != 0:
+            time.sleep(300)                      # échec (terminal occupé…) : on laisse respirer avant de reprendre
+    print("arrêt demandé (state/recherche_continue.stop)", flush=True)
+    return 0
+
+
+if __name__ == "__main__":  # pragma: no cover
+    raise SystemExit(main())

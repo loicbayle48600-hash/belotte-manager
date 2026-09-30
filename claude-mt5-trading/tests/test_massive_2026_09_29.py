@@ -118,3 +118,12 @@ def test_grille_fine_et_plateau_fin():
     cfg["params"] = {**cfg["params"], "sl_atr": 1.4}
     idx = {m._key(cfg, {**cfg["params"], "sl_atr": v}): {"exp": 0.1, "pf": 1.3} for v in (1.2, 1.6)}
     assert m.plateau_ok(cfg, idx)
+
+
+def test_tirage_aleatoire_et_seuil_cumulatif():
+    a = m.tirage(5, 42, classes=["forex"], sessions=m.SESSION_VARIANTS)
+    b = m.tirage(5, 42, classes=["forex"], sessions=m.SESSION_VARIANTS)
+    assert a == b and len(a) >= 5 * len(m.SL_ATR_FIN) * len(m.RR_FIN)
+    assert all(c["fin"] and c["strategy"] in m.ESPACES for c in a)
+    assert m.tirage(5, 43, classes=["forex"]) != m.tirage(5, 42, classes=["forex"])
+    assert m.seuil_multiple(10**9) > m.seuil_multiple(10**6)

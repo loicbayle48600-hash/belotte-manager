@@ -101,6 +101,56 @@ def expand(strategy: str, fin: bool = False) -> list[dict]:
     return out
 
 
+#: espaces LARGES des réglages clés (2026-09-30, recherche continue : « des milliards de tests ») — tirage aléatoire
+ESPACES: dict[str, dict] = {
+    "ema_trend": {"adx_min": ("int", 8, 40)},
+    "mtf_trend_pullback": {"rsi_lo": ("sym", 20, 48)},
+    "atr_expansion": {"atr_ratio": ("float", 1.0, 2.5)},
+    "bollinger_mr": {"rsi_lo": ("sym", 8, 45)},
+    "fib_pullback": {"tol_atr": ("float", 0.1, 1.0)},
+    "exhaustion": {"rsi_ext": ("int", 8, 40)},
+    "sr_rejection": {"tol_atr": ("float", 0.1, 0.8), "with_trend": ("bool",)},
+    "donchian_breakout": {"lookback": ("int", 5, 120)},
+    "rsi2_reversion": {"rsi_lo": ("sym", 2, 30)},
+    "liquidity_sweep": {"with_trend": ("bool",)},
+    "structure_bos": {"require_mtf": ("bool",)},
+}
+TF_ALEATOIRES = [("M5", "M15"), ("M5", "H1"), ("M15", "H1"), ("M15", "H4"), ("H1", "H4"), ("H1", "D1"), ("H4", "D1"),
+                 ("H4", "H4"), ("D1", "D1")]
+
+
+def tirage(n_reglages: int, seed: int, strategies: Optional[list] = None, classes: Optional[list] = None,
+           sessions: Optional[list] = None) -> list[dict]:
+    """Configurations tirées au hasard : pour chaque tirage (stratégie, couple d'unités de temps, réglages clés), toute la
+    grille fine stop × cible (le plateau se juge sur le stop), toutes les classes et variantes de session."""
+    import random
+    from ..backtest import fastsig
+    rng = random.Random(seed)
+    strats = [x for x in (strategies or sorted(fastsig.FAST)) if x in ESPACES]
+    out = []
+    for _ in range(n_reglages):
+        st = rng.choice(strats)
+        e, t = rng.choice(TF_ALEATOIRES)
+        base = {}
+        for k, spec in ESPACES[st].items():
+            if spec[0] == "int":
+                base[k] = rng.randint(spec[1], spec[2])
+            elif spec[0] == "float":
+                base[k] = round(rng.uniform(spec[1], spec[2]), 2)
+            elif spec[0] == "bool":
+                base[k] = rng.random() < 0.5
+            elif spec[0] == "sym":                       # seuil bas / haut symétriques (RSI)
+                lo = rng.randint(spec[1], spec[2])
+                base["rsi_lo"], base["rsi_hi"] = lo, 100 - lo
+        for c in (classes or list(opt.CLASSES)):
+            for sl in SL_ATR_FIN:
+                for rr in RR_FIN:
+                    for ses in (sessions if (sessions is not None and e in ("M1", "M5", "M15", "M30", "H1")) else [None]):
+                        out.append({"strategy": st, "entry_tf": e, "trend_tf": t, "asset_class": c,
+                                    "params": {**base, "sl_atr": sl, "rr": rr}, "sessions": ses, "fin": True})
+    return out
+
+
 def grid(strategies: Optional[list] = None, classes: Optional[list] = None, timeframes: Optional[list] = None,
          sessions: Optional[list] = None, fin: bool = False) -> list[dict]:
     """Liste des configurations : {strategy, entry_tf, trend_tf, asset_class, params}."""
@@ -329,7 +379,7 @@ def _task_marche(args) -> list:
 
 
 # ------------------------------------------------------------------------------------------------ pilotage
-def select(configs: list[dict], results: dict, min_trades: int = 60) -> tuple[list, dict]:
+def select(configs: list[dict], results: dict, min_trades: int = 60, m_cumul: int = 0) -> tuple[list, dict]:
     """Applique les garde-fous 2 à 4. `results[i]` = (lignes apprentissage, lignes contrôle) par symbole."""
     index, rows = {}, []
     for i, cfg in enumerate(configs):
@@ -340,8 +390,8 @@ def select(configs: list[dict], results: dict, min_trades: int = 60) -> tuple[li
         k = aggregate(np.array([x[1] for x in r])) if r else None
         index[_key(cfg, cfg["params"])] = a
         rows.append((cfg, a, k))
-    t_min = seuil_multiple(len(rows))
-    etapes = {"testees": len(rows), "t_min": round(t_min, 2)}
+    t_min = seuil_multiple(len(rows) + int(m_cumul))
+    etapes = {"testees": len(rows), "t_min": round(t_min, 2), "m_cumul": int(m_cumul) + len(rows)}
     s1 = [x for x in rows if x[1]["n"] >= min_trades and x[1]["exp"] > 0 and x[1]["pf"] >= 1.2 and x[1]["t"] >= t_min]
     etapes["significatives"] = len(s1)
     s2 = [x for x in s1 if plateau_ok(x[0], index)]
@@ -380,6 +430,9 @@ def main(argv: Optional[list[str]] = None) -> int:  # pragma: no cover - process
     ap.add_argument("--timeframes", default="", help="ex. M5:M15,M15:H4,H1:D1")
     ap.add_argument("--cache-age-h", type=float, default=0.0, help="réutiliser les historiques en cache de moins de N heures")
     ap.add_argument("--etiquette", default="", help="nom du passage (rapport, journal)")
+    ap.add_argument("--tirage", type=int, default=0, help="nombre de réglages clés tirés au hasard (recherche continue)")
+    ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--m-cumul", type=int, default=0, help="configurations déjà testées (seuil cumulatif)")
     ap.add_argument("--holdout", type=float, default=0.30, help="part la plus récente de chaque historique réservée au contrôle")
     args = ap.parse_args(argv)
     globals()["HOLDOUT"] = float(args.holdout)
@@ -399,7 +452,10 @@ def main(argv: Optional[list[str]] = None) -> int:  # pragma: no cover - process
         classes = [c for c in args.classes.split(",") if c] or list(opt.CLASSES)
     strategies = [x for x in args.strategies.split(",") if x] or None
     tfs_args = [tuple(x.split(":")) for x in args.timeframes.split(",") if x] or None
-    configs = grid(strategies, classes, tfs_args, sessions=SESSION_VARIANTS if args.sessions else None, fin=args.fin)
+    if args.tirage:
+        configs = tirage(args.tirage, args.seed, strategies, classes, SESSION_VARIANTS if args.sessions else None)
+    else:
+        configs = grid(strategies, classes, tfs_args, sessions=SESSION_VARIANTS if args.sessions else None, fin=args.fin)
     for cfg in configs:
         cfg["fin"] = bool(args.fin)
     if args.max_configs:
@@ -454,7 +510,7 @@ def main(argv: Optional[list[str]] = None) -> int:  # pragma: no cover - process
                 for i, r in zip(idx, res):
                     if r is not None:
                         results.setdefault(i, []).append(r)
-    retenues, etapes = select(configs, results)
+    retenues, etapes = select(configs, results, m_cumul=args.m_cumul)
     reg0 = AgentRegistry(status_file=s.data_dir / "agent_status.json")
     vus = set()
     for a in reg0.agents.values():
