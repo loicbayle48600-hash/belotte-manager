@@ -37,6 +37,38 @@ class Executor:
         self.journal = journal
         # fenêtre d'agrégation des idées de trade (prop firm : rouvrir dans le même sens sous 10 min)
         self.idea_window_minutes = float(idea_window_minutes)
+        # cible broker fixe en multiples de R depuis le prix réel (profit_management.final_target_r ; 0 = cible du signal)
+        self.final_target_r = 0.0
+
+    def _cible_finale(self, pos: Position) -> Optional[Position]:
+        """Pose la cible broker à exactement `final_target_r` R du prix d'exécution RÉEL (2026-09-30, version lab-v2).
+
+        Le gate décide toujours sur la cible structurelle du signal (RR ≥ 1,5 au scan et au tick) : seules les sorties
+        changent. Rejeu des mêmes signaux (9 agents live, 29 agents de recherche) : une cible fixe à 3 R fait mieux que
+        la cible du signal (médiane 2,4 R) sur 7 agents live sur 9 et 25 sur 29, sur les deux moitiés de l'historique,
+        avec un drawdown plus bas d'environ 10 % ; le TP2 à 2,5 R peut enfin se déclencher. Le SL n'est jamais touché."""
+        if pos.sl is None or pos.sl <= 0 or self.final_target_r <= 0:
+            return None
+        r_reel = abs(pos.price_open - pos.sl)
+        if r_reel <= 0:
+            return None
+        try:
+            spec = self.broker.symbol_info(pos.symbol)
+        except Exception:  # noqa: BLE001 - spec indisponible : on garde la cible d'origine, jamais d'approximation
+            return None
+        if spec is None:
+            return None
+        sens = 1.0 if pos.side == Side.BUY else -1.0
+        cible = normalize_price(pos.price_open + sens * self.final_target_r * r_reel, spec)
+        if pos.tp and abs(pos.tp - cible) < spec.point / 2:
+            return None
+        ancienne = pos.tp
+        res = self.broker.modify_position(pos.ticket, pos.sl, cible)
+        self.journal.event("cible_finale", ticket=pos.ticket, symbol=pos.symbol, r=self.final_target_r, ancienne=ancienne,
+                           nouvelle=cible, ok=res.ok, retcode=res.retcode)
+        if not res.ok:
+            self.journal.warn("cible finale non posée : cible du signal conservée", ticket=pos.ticket, retcode=res.retcode)
+        return self.broker.position(pos.ticket) if res.ok else None
 
     def _preserver_rr_cible(self, pos: Position, candidate: TradeCandidate) -> Optional[Position]:
         """Replace la cible broker au multiple de R que le gate a approuvé. Ne la rapproche jamais.
@@ -121,7 +153,10 @@ class Executor:
         if actual is not None and actual > planned * 1.10:
             self.journal.warn("risque réel après fill supérieur au risque planifié", ticket=pos.ticket,
                               planned=planned, actual=actual, price_open=pos.price_open, sl=pos.sl)
-        pos = self._preserver_rr_cible(pos, candidate) or pos
+        if self.final_target_r > 0:
+            pos = self._cible_finale(pos) or pos
+        else:
+            pos = self._preserver_rr_cible(pos, candidate) or pos
         initial_risk = actual if actual is not None else planned
         equity = state.equity
         plan = BotPositionPlan(

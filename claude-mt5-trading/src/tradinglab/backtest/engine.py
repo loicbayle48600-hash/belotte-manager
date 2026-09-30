@@ -387,6 +387,10 @@ def run_backtest(df: pd.DataFrame, signal_fn: SignalFn, costs: BTCosts, params: 
                     "entry_time": times[i], "risk": float(abs(entry - pending.sl)), "mae": 0.0, "mfe": 0.0,
                     "note": pending.note, "realized": 0.0, "remaining": 1.0, "tp1": False, "tp2": False,
                 }
+                # cible finale fixe en R depuis le prix réel, comme l'exécuteur du bot (profit_management.final_target_r)
+                ft = float((mgmt or {}).get("final_target_r") or 0.0)
+                if ft > 0 and pos["risk"] > 0:
+                    pos["tp"] = float(entry + pending.side.sign * ft * pos["risk"])
             else:
                 rejected += 1
             if fill:

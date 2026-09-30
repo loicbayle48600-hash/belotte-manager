@@ -100,6 +100,7 @@ class Orchestrator:
         self.trading_day = self.prop.profile.trading_day_calendar()
         self.executor = Executor(broker, self.store, self.journal,
                                  idea_window_minutes=self.prop.profile.trade_idea_aggregation_minutes)
+        self.executor.final_target_r = float((settings.profit_management or {}).get("final_target_r") or 0.0)
         self.pm = PositionManager(broker, self.store, self.journal, PMConfig.from_config(settings.profit_management), self.magic)
         self.pm.commission_per_lot = self.prop.commission_per_lot   # break-even commission comprise (2026-09-25)
         self.pm.commission_price = self.prop.commission_price       # crypto en % de la valeur (2026-09-26)

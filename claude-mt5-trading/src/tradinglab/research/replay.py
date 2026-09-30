@@ -135,6 +135,15 @@ def simulate(c: ReplayCandidate, bars, pm: dict) -> tuple[float, Optional[object
     be_r, off = float(pm.get("break_even_r", 1.0)), float(pm.get("break_even_offset_r", 0.05))
     tr_r, tr_m = float(pm.get("trailing_start_r", 2.0)), float(pm.get("trailing_atr_multiplier", 1.5))
     tp1 = tp2 = False
+    # protection du profit (2026-09-28) : dès `protect_profit_risk_ratio` R, break-even et suiveur armés, verrou au plus
+    # haut de `protect_profit_lock_ratio` R et de `protect_profit_lock_fraction` × meilleur R (comme le position manager)
+    prot_r = float(pm.get("protect_profit_risk_ratio", 0.0) or 0.0)
+    lock_fix = float(pm.get("protect_profit_lock_ratio", 0.0) or 0.0)
+    lock_frac = float(pm.get("protect_profit_lock_fraction", 0.0) or 0.0)
+    force = False
+    # cible finale fixe en R (profit_management.final_target_r), sinon la cible broker du candidat
+    ft = float(pm.get("final_target_r") or 0.0)
+    tp = (c.entry + d * ft * dist) if ft > 0 else c.tp
     meilleur = c.entry
     r_de = lambda px: (px - c.entry) * d / dist  # noqa: E731
     for row in bars.itertuples(index=False):
@@ -142,8 +151,8 @@ def simulate(c: ReplayCandidate, bars, pm: dict) -> tuple[float, Optional[object
         defavorable, favorable = (bas, haut) if d > 0 else (haut, bas)
         if (defavorable - sl) * d <= 0:                                   # stop touché (supposé d'abord)
             return realise + reste * r_de(sl), t
-        if c.tp and (favorable - c.tp) * d >= 0:                          # TP broker : tout le reste
-            return realise + reste * r_de(c.tp), t
+        if tp and (favorable - tp) * d >= 0:                              # TP broker : tout le reste
+            return realise + reste * r_de(tp), t
         r_max = r_de(favorable)
         if not tp1 and r_max >= tp1_r:
             realise += tp1_p * tp1_r; reste -= tp1_p; tp1 = True
@@ -151,10 +160,17 @@ def simulate(c: ReplayCandidate, bars, pm: dict) -> tuple[float, Optional[object
             realise += tp2_p * tp2_r; reste -= tp2_p; tp2 = True
         meilleur = max(meilleur, favorable) if d > 0 else min(meilleur, favorable)
         r_best = r_de(meilleur)
+        if prot_r > 0 and r_best >= prot_r:
+            force = True
         plancher = c.entry + d * off * dist
-        if r_best >= be_r and (plancher - sl) * d > 0:
+        if force:
+            verrou_r = max(lock_fix, lock_frac * r_best)
+            if verrou_r > 0:
+                verrou = c.entry + d * verrou_r * dist
+                plancher = max(plancher, verrou) if d > 0 else min(plancher, verrou)
+        if (r_best >= be_r or force) and (plancher - sl) * d > 0:
             sl = plancher
-        if r_best >= tr_r and c.atr > 0:
+        if (r_best >= tr_r or force) and c.atr > 0:
             suivi = meilleur - d * tr_m * c.atr
             suivi = max(suivi, plancher) if d > 0 else min(suivi, plancher)
             if (suivi - sl) * d > 0:
@@ -218,7 +234,7 @@ def _texte(res: dict, jours: int, n: int) -> str:
     for nom, x in (("actuel", a), ("proposé", p)):
         lignes.append(f"{nom:12}{x['trades']:>8}{x['total_r']:>10.2f}{x['win_rate']:>9.0f}%{x['max_dd_r']:>10.2f}")
     lignes.append(f"écart proposé − actuel : {p['total_r'] - a['total_r']:+.2f} R")
-    lignes.append("Coût d'entrée (spread + commission) déduit. Limites : revue IA non rejouée, stop supposé touché avant l'objectif "
+    lignes.append("Coût d'entrée (spread + commission) déduit. Protection du profit rejouée. Limites : revue IA non rejouée, stop supposé touché avant l'objectif "
                   "dans une même barre, une position simulée par symbole.")
     return "\n".join(lignes)
 
