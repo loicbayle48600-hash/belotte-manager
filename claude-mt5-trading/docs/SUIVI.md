@@ -537,6 +537,14 @@ n'utilise PAS Fable (retiré de TIER_A le 2026-09-23) : le quota Fable est rése
   identique (+0,57 R, PF 2,97 au contrôle). Propositions réduites à 8 distinctes (unité de temps × stop) : X35–X42 en
   SHADOW, sessions NEWYORK, `forex_short_term_ok` (exception accordée le 29/09). Rapport : reports/massive_2026-09-29_2328.json.
   À noter : E03 (exhaustion LIVE, rsi_ext 20, toutes sessions) n'a qu'un trade réel.
+- **Nuit du 29 au 30/09 sur la 3090** (research/nuit.py) : 7 passages (grille fine, unités de temps alternatives, contrôle 20 /
+  30 / 40 %), ≈ 2,3 millions de configurations en 1 h 15. Toutes les idées proposées (X35–X58, SHADOW) rejouées avec les
+  trois découpages : **25/25 tiennent 3/3**. Idée dominante : **exhaustion forex (28 paires), M5/M15, session de New York
+  ou chevauchement** — PF 2,0 à 3,8, +0,38 à +0,64 R au contrôle (coûts réels vérifiés). Idées indépendantes, coûts réels
+  (spread médian + commission) : RSI(2) M15 indices New York (X48/X54, ~1 190 trades, +0,16 R, PF 1,33), bollinger_mr M15
+  forex New York (X53, +0,29 R, PF 1,68), liquidity_sweep M15 indices New York (X56, +0,13 R, PF 1,27), Donchian D1 crypto
+  (X49, +0,14 R, PF 1,26). Marginales avec coûts réels : X50 (exhaustion H1, PF 1,11) et X58 (RSI2 indices chevauchement,
+  PF 1,14). Doublons de X35 : X43, X51. Décision LIVE à prendre après 2–3 semaines d'ombre.
 - **Stop du suiveur élargi du surcroît de spread (28/09, décision utilisateur)** : SILVER chez les démos IC (spread 82
   points) contre XAGUSD chez le maître (11) — les quatre copies argent ont pris le stop à 61,807 sur un pic que le maître
   (stop 61,804, plus haut 61,776) n'a pas vu. Le maître exporte son spread ; à l'ouverture d'une copie, le stop du suiveur
