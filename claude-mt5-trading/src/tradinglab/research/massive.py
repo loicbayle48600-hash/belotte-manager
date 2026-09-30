@@ -119,9 +119,10 @@ ESPACES: dict[str, dict] = {
 }
 TF_ALEATOIRES = [("M5", "M15"), ("M5", "H1"), ("M15", "H1"), ("M15", "H4"), ("H1", "H4"), ("H1", "D1"), ("H4", "D1"),
                  ("H4", "H4"), ("D1", "D1"),
-                 # 2026-09-30 : toutes les unités de temps (M1, H2, W1 ; MN1 en tendance seulement)
-                 ("M1", "M5"), ("M1", "M15"), ("H2", "H4"), ("H2", "D1"), ("H4", "W1"), ("D1", "W1"), ("D1", "MN1"),
-                 ("W1", "MN1"), ("W1", "W1")]
+                 # 2026-09-30 : H2 et W1 (MN1 en tendance seulement). PAS de M1 dans la recherche continue : télécharger
+                 # 90 000 barres M1 sur 73 marchés par le terminal partagé a allongé les cycles du bot à 54-74 s le
+                 # 30/09 au soir. Le M1 passe par des passages dédiés (--toutes-ut), à lancer marché calme (week-end).
+                 ("H2", "H4"), ("H2", "D1"), ("H4", "W1"), ("D1", "W1"), ("D1", "MN1"), ("W1", "MN1"), ("W1", "W1")]
 #: toutes les paires (entrée, tendance) utiles, pour `--toutes-ut`
 TF_TOUTES = [("M1", "M5"), ("M1", "M15"), ("M5", "M15"), ("M5", "H1"), ("M15", "H1"), ("M15", "H4"), ("H1", "H4"),
              ("H1", "D1"), ("H2", "H4"), ("H2", "D1"), ("H4", "D1"), ("H4", "W1"), ("H4", "H4"), ("D1", "W1"),

@@ -88,10 +88,12 @@ def test_equivalence_rapide_lente_sur_les_nouvelles_ut():
 def test_recherche_toutes_ut():
     from tradinglab.research import massive as m
 
+    assert "M1" not in {e for e, _ in m.TF_ALEATOIRES}, "pas de M1 en continu : téléchargements lourds sur le terminal du bot"
+    assert "M1" in {e for e, _ in m.TF_TOUTES}
     for paires in (m.TF_ALEATOIRES, m.TF_TOUTES):
         entrees = {e for e, _ in paires}
         tendances = {t for _, t in paires}
-        assert {"M1", "H2", "W1"} <= entrees and "MN1" in tendances
+        assert {"H2", "W1"} <= entrees and "MN1" in tendances
         assert "MN1" not in entrees, "jamais d'entrée mensuelle : trop peu d'historique"
         for e, t in paires:
             assert e in m.BARS, e
