@@ -686,6 +686,28 @@ class Orchestrator:
                           comment_prefix=str(self.s.system.get("order_comment_prefix", "TLAB")))
         return self.gate.evaluate(ctx)
 
+    #: 2026-10-01 (« trades semi-longs ») : unités d'entrée dont le stop suiveur se cale sur leur propre ATR
+    UT_ATR_PROPRE = ("H4", "D1", "W1")
+
+    def _atr_gestion(self, plan, snap) -> float:
+        """ATR du stop suiveur. Agents intraday : ATR H1 (réglage d'origine). Agents H4 / D1 / W1 : ATR de LEUR unité
+        d'entrée, comme dans les backtests qui les ont validés — avec l'ATR H1, un trade D1 (stop ≈ 1,5 ATR D1) avait
+        un suiveur à ≈ 0,2 R dès +1,05 R : chaque trade semi-long redevenait un trade de quelques heures."""
+        repli = abs(plan.entry - plan.initial_sl)
+        if snap is None:
+            return repli
+        tf = self._invalidation_timeframe(plan.agent_id).upper()
+        if tf in self.UT_ATR_PROPRE:
+            df = snap.frames.get(tf)
+            if df is not None and len(df) >= 3:
+                try:
+                    v = float(last_closed(df)["atr14"])
+                except (KeyError, TypeError, ValueError):
+                    v = float("nan")
+                if v == v and v > 0:
+                    return v
+        return snap.atr_h1 if snap.atr_h1 else repli
+
     def _invalidation_timeframe(self, agent_id: str) -> str:
         """Timeframe sur lequel juger l'invalidation d'une position : le tf d'entrée de l'agent.
         Position adoptée (`ADOPTED`) ou agent inconnu → M15 (comportement historique)."""
@@ -762,7 +784,7 @@ class Orchestrator:
                     if ok:
                         continue
             snap = self.snapshots.get(plan.symbol)
-            ctx = MarketContext(atr=snap.atr_h1 if snap else abs(plan.entry - plan.initial_sl))
+            ctx = MarketContext(atr=self._atr_gestion(plan, snap))
             if snap is not None:
                 # L'invalidation des screeners s'exprime sur le tf d'entrée de l'agent (sauf tf explicite dans le
                 # texte, cf. `_invalidation_hit`) : on lit donc ce tf (M5/M15/H1 selon la spec), pas M15 en dur. Un agent H1 était

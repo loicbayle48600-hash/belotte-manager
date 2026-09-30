@@ -101,3 +101,31 @@ def test_config_reelle_forex_court_terme_en_live_partout():
     for ses in ("ASIA", "LONDON", "NEWYORK", "OVERLAP_LDN_NY"):
         c = SimpleNamespace(agent_id="B03", symbol="EURGBP", timeframes=["M5", "H1"], session=ses)
         assert not o._forex_court_terme(c), ses
+
+
+
+def test_shadow_semi_long_garde_le_temps_de_son_unite(tmp_path):
+    """01/10, « trades semi-longs » : une position shadow H4 / D1 / W1 n'est plus coupée à 72 h comme un trade intraday."""
+    from tradinglab.shadow.shadow import ShadowPosition, delai_max_heures
+
+    assert delai_max_heures("M15") == 72.0 and delai_max_heures("H1") == 72.0 and delai_max_heures("") == 72.0
+    assert delai_max_heures("H4") == 240.0 and delai_max_heures("D1") == 480.0 and delai_max_heures("W1") == 1440.0
+    ancienne = ShadowPosition(id="x", agent_id="O01", symbol="XAUUSD", side="BUY", entry=1.0, sl=0.9, tp=1.2,
+                              opened_at="2026-09-30T00:00:00+00:00", regime="TRENDING", session="LONDON", setup_score=70.0)
+    assert ancienne.entry_tf == "", "positions déjà enregistrées : relues sans erreur, délai intraday par défaut"
+
+
+def test_stop_suiveur_semi_long_sur_l_atr_de_son_unite():
+    """01/10 : agents H4 / D1 / W1 → stop suiveur calé sur l'ATR de leur unité (comme leurs backtests) ; intraday → ATR H1."""
+    from tradinglab.orchestration.orchestrator import Orchestrator
+
+    o = Orchestrator.__new__(Orchestrator)
+    tfs = {"SW1": "D1", "IN1": "M15"}
+    o.registry = SimpleNamespace(get=lambda aid: SimpleNamespace(timeframes={"entry": tfs[aid]}) if aid in tfs else None)
+    d1 = pd.DataFrame({"atr14": [9.0, 9.5, 10.0, 11.0]})
+    snap = SimpleNamespace(frames={"D1": d1}, atr_h1=2.0)
+    plan = lambda aid: SimpleNamespace(agent_id=aid, entry=100.0, initial_sl=85.0)      # noqa: E731
+    assert o._atr_gestion(plan("SW1"), snap) == 10.0, "dernière bougie D1 clôturée"
+    assert o._atr_gestion(plan("IN1"), snap) == 2.0, "intraday : ATR H1 inchangé"
+    assert o._atr_gestion(plan("SW1"), SimpleNamespace(frames={}, atr_h1=2.0)) == 2.0, "unité absente : repli ATR H1"
+    assert o._atr_gestion(plan("SW1"), None) == 15.0, "sans données : distance du stop initial"

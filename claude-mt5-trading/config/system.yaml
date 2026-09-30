@@ -4,7 +4,8 @@ system:
   # qu'après `trades_requis` trades live clôturés depuis `depuis`. Pas de changement de trading d'ici là, sauf correctif
   # de sécurité ou demande explicite de l'utilisateur. Suivi : page Qualité du dashboard et rapport de 17 h New York.
   # lab-v1 (25/09 19:26 UTC) close à 96/100 trades : le 01/10, l'utilisateur a demandé le forex court terme en live (Asie,
-  # puis toutes les sessions) → nouvelle version lab-v2, nouveau gel de 100 trades.
+  # puis toutes les sessions) et les trades semi-longs (stop suiveur des agents H4 / D1 / W1 sur l'ATR de leur unité)
+  # → nouvelle version lab-v2, nouveau gel de 100 trades.
   gel_reglages:
     version: lab-v2
     depuis: "2026-09-30T23:55:00+00:00"

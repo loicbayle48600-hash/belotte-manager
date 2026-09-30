@@ -42,6 +42,16 @@ class ShadowPosition:
     pending: bool = False      # ordre non encore rempli
     expires_at: str = ""       # annulation de l'ordre après `expiry_bars` barres de l'unité d'entrée
     cost_r: float = 0.0        # 2026-09-29 : spread d'entrée en R, déduit du résultat (entrées M1 : le spread y pèse lourd)
+    entry_tf: str = ""         # 2026-10-01 : unité d'entrée de l'agent (durée maximale de la position, voir `delai_max_heures`)
+
+
+#: 2026-10-01 (« trades semi-longs ») : une position shadow d'un agent H4 / D1 / W1 était coupée à 72 h comme un trade
+#: intraday ; elle garde désormais le temps de son unité de temps. Intraday (M1 … H2) : `max_hours` (72 h), inchangé.
+DELAI_MAX_HEURES = {"H4": 240.0, "D1": 480.0, "W1": 1440.0}
+
+
+def delai_max_heures(entry_tf: str, defaut: float = 72.0) -> float:
+    return max(float(defaut), DELAI_MAX_HEURES.get(str(entry_tf or "").upper(), float(defaut)))
 
 
 class ShadowTrader:
@@ -104,7 +114,8 @@ class ShadowTrader:
                                mode=mode, reason=reason, key=c.idempotency_key,
                                entry_kind=kind if attente else "MARKET", order_price=float(getattr(c, "order_price", 0.0) or 0.0) if attente else 0.0,
                                pending=attente, expires_at=expire,
-                               cost_r=self._cost_r(c))
+                               cost_r=self._cost_r(c),
+                               entry_tf=str(list(getattr(c, "timeframes", None) or [""])[0] or "").upper())
             self.positions[p.id] = p
             self.executed[c.idempotency_key] = None
             out.append(p)
@@ -149,7 +160,7 @@ class ShadowTrader:
         dirty = False
         for pid, p in list(self.positions.items()):
             opened = datetime.fromisoformat(p.opened_at)
-            timed_out = (now - opened).total_seconds() > max_hours * 3600
+            timed_out = (now - opened).total_seconds() > delai_max_heures(p.entry_tf, max_hours) * 3600
             snap = snapshots.get(p.symbol)
             df = None
             if snap is not None:
@@ -212,7 +223,7 @@ class ShadowTrader:
                               closed_at=now.isoformat(), mode=p.mode or "shadow", regime=p.regime, session=p.session, tp=[p.tp],
                               features={"setup_score": p.setup_score, **({"paper_reason": p.reason} if p.reason else {})},
                               mae_r=round(-min(0.0, p.min_r), 3), mfe_r=round(max(0.0, p.max_r), 3),
-                              exit_reason=reason, candidate_id=p.id)
+                              exit_reason=reason, candidate_id=p.id, duration_sec=round((now - opened).total_seconds(), 1))
             self.store.record_trade(rec)
             closed.append(rec)
             del self.positions[pid]
