@@ -307,7 +307,10 @@ def _task_marche(args) -> list:
     """Un marché (symbole, unité de temps) avec TOUTES ses stratégies : le processus ne reçoit que cet historique
     (2026-09-30 : chaque processus gardait les 365 historiques en mémoire, 5,6 Go pour 12 processus) et vide ses caches
     ensuite. Renvoie une liste de sorties par sous-tâche (stratégie)."""
-    sym, entry_tf, df, ss, cost, device, sous = args
+    sym, entry_tf, df, ss, cost, device, sous = args[:7]
+    global HOLDOUT
+    if len(args) > 7:
+        HOLDOUT = float(args[7])
     _DATA.clear()
     _SPECS.clear()
     _COSTS.clear()
@@ -377,7 +380,9 @@ def main(argv: Optional[list[str]] = None) -> int:  # pragma: no cover - process
     ap.add_argument("--timeframes", default="", help="ex. M5:M15,M15:H4,H1:D1")
     ap.add_argument("--cache-age-h", type=float, default=0.0, help="réutiliser les historiques en cache de moins de N heures")
     ap.add_argument("--etiquette", default="", help="nom du passage (rapport, journal)")
+    ap.add_argument("--holdout", type=float, default=0.30, help="part la plus récente de chaque historique réservée au contrôle")
     args = ap.parse_args(argv)
+    globals()["HOLDOUT"] = float(args.holdout)
     s = load_settings()
     load_dotenv(s.home / ".env")
     journal = Journal(s.logs_dir, s.system.get("timezone_local", "UTC"), component="massive")
@@ -438,7 +443,7 @@ def main(argv: Optional[list[str]] = None) -> int:  # pragma: no cover - process
         df = data.get((sym, tf))
         if df is None or sym not in specs:
             continue
-        taches.append((sym, tf, df, specs[sym], costs[sym], args.device, [(t, st, [configs[i] for i in idx]) for t, st, idx in lst]))
+        taches.append((sym, tf, df, specs[sym], costs[sym], args.device, [(t, st, [configs[i] for i in idx]) for t, st, idx in lst], HOLDOUT))
         cles.append([idx for _, _, idx in lst])
     mgmt = dict(s.profit_management) if bool(bt.get("use_position_management", True)) else None
     results: dict = {}
@@ -450,12 +455,28 @@ def main(argv: Optional[list[str]] = None) -> int:  # pragma: no cover - process
                     if r is not None:
                         results.setdefault(i, []).append(r)
     retenues, etapes = select(configs, results)
-    vus, distinctes = set(), []
+    reg0 = AgentRegistry(status_file=s.data_dir / "agent_status.json")
+    vus = set()
+    for a in reg0.agents.values():
+        if a.agent_id.startswith("X"):
+            vus.add((a.base_strategy or a.strategy, a.timeframes.get("entry"), tuple(sorted(a.markets)), str(sorted(a.sessions))))
+    fp = s.state_dir / "agent_proposals.jsonl"
+    if fp.exists():
+        for ligne in fp.read_text(encoding="utf-8").splitlines():
+            try:
+                d = json.loads(ligne)
+                vus.add((d.get("base_strategy") or d["strategy"], d["timeframes"]["entry"], tuple(sorted(d["markets"])), str(sorted(d["sessions"]))))
+            except (ValueError, KeyError):
+                pass
+    distinctes = []
     for x in retenues:
-        cle = (x[0]["strategy"], x[0]["entry_tf"], x[0]["asset_class"], str(x[0].get("sessions")))
-        if cle not in vus:
-            vus.add(cle)
-            distinctes.append(x)
+        c0 = x[0]
+        ses = sorted(c0.get("sessions") or opt.SESSIONS)
+        cle_reg = (c0["strategy"], c0["entry_tf"], tuple(sorted(opt.CLASSES_ALL[c0["asset_class"]])), str(ses))
+        if cle_reg in vus:
+            continue
+        vus.add(cle_reg)
+        distinctes.append(x)
     retenues = distinctes[: args.top]
     reg = AgentRegistry(status_file=s.data_dir / "agent_status.json")
     ids = opt.next_ids(set(reg.agents), len(retenues))

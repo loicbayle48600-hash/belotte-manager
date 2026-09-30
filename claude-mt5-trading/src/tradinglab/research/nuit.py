@@ -16,12 +16,16 @@ import time
 from datetime import datetime, timedelta
 from pathlib import Path
 
-#: passages dans l'ordre (étiquette, arguments) ; la liste est rejouée en boucle si la nuit n'est pas finie
+#: passages dans l'ordre (étiquette, arguments), chacun UNE fois : mêmes données + même grille = même résultat.
+#: Les derniers sont des contrôles de robustesse (période jamais vue plus longue / plus courte).
 PASSAGES = [
     ("univers_fin", ["--univers", "--sessions", "--fin"]),
     ("univers_ut_alt", ["--univers", "--sessions", "--timeframes", "M5:M15,M15:H4,H1:D1,H4:H4"]),
     ("univers_fin_ut_alt", ["--univers", "--sessions", "--fin", "--timeframes", "M5:M15,M15:H4,H1:D1"]),
     ("univers_std", ["--univers", "--sessions"]),
+    ("robuste_ctrl40", ["--univers", "--sessions", "--fin", "--holdout", "0.4"]),
+    ("robuste_ctrl20", ["--univers", "--sessions", "--fin", "--holdout", "0.2"]),
+    ("robuste_ut_alt_ctrl40", ["--univers", "--sessions", "--fin", "--timeframes", "M5:M15,M15:H4,H1:D1", "--holdout", "0.4"]),
 ]
 
 
@@ -38,20 +42,21 @@ def main(argv=None) -> int:  # pragma: no cover - pilotage de processus
     ap = argparse.ArgumentParser(description="Recherches de nuit sur la 3090")
     ap.add_argument("--fin", default="07:30", help="heure locale de fin (HH:MM)")
     ap.add_argument("--workers", type=int, default=10)
+    ap.add_argument("--debut", type=int, default=0, help="index du premier passage")
     args = ap.parse_args(argv)
     home = Path(__file__).resolve().parents[3]
     h, mi = (int(x) for x in args.fin.split(":"))
     fin = datetime.now().replace(hour=h, minute=mi, second=0, microsecond=0)
     if fin <= datetime.now():
         fin += timedelta(days=1)
-    k = 0
-    while datetime.now() < fin - timedelta(minutes=20):
+    k = int(args.debut)
+    while datetime.now() < fin - timedelta(minutes=20) and k < len(PASSAGES):
         age = _age_cycle(home)
         if age is not None and age > 120:
             print(f"{datetime.now():%H:%M} boucle de trading silencieuse ({age:.0f} s) : attente", flush=True)
             time.sleep(120)
             continue
-        etiquette, extra = PASSAGES[k % len(PASSAGES)]
+        etiquette, extra = PASSAGES[k]
         k += 1
         cmd = [sys.executable, "-m", "tradinglab.research.massive", "--device", "gpu", "--workers", str(args.workers),
                "--top", "10", "--cache-age-h", "18", "--etiquette", f"{etiquette}_{k}", *extra]
