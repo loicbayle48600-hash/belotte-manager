@@ -193,3 +193,57 @@ def classify_regime(df_enriched: pd.DataFrame, spread_points: int = 0, point: fl
 
     features["reason"] = "aucune règle satisfaite"
     return RegimeResult(Regime.UNCERTAIN, 0.2, features)
+
+
+def regime_series(df_enriched: pd.DataFrame) -> np.ndarray:
+    """Régime de TOUTES les bougies en une passe (2026-09-30, accélération de la recherche en masse).
+
+    `out[j]` = `classify_regime(prefixe).regime.value` quand la dernière barre clôturée du préfixe est la ligne j
+    (préfixe = lignes 0..j + une barre en formation). Mêmes règles, dans le même ordre, que `classify_regime` ;
+    équivalence stricte vérifiée par tests/test_regime_serie_2026_09_30.py."""
+    n = len(df_enriched)
+    col = lambda c: df_enriched[c].to_numpy(dtype=float) if c in df_enriched.columns else np.full(n, np.nan)  # noqa: E731
+    adx, atr, vol, close = col("adx14"), col("atr14"), col("vol_pct"), col("close")
+    e20, e50, e200 = col("ema20"), col("ema50"), col("ema200")
+    bb_up, bb_low, bb_mid, bw = col("bb_up"), col("bb_low"), col("bb_mid"), col("bb_width")
+    out = np.full(n, Regime.UNCERTAIN.value, dtype=object)
+    j = np.arange(n)
+    with np.errstate(invalid="ignore"):
+        order = np.where((e20 > e50) & (e50 > e200), 1, np.where((e20 < e50) & (e50 < e200), -1, 0))
+        direction = np.where((order == 1) & (close > e20), 1, np.where((order == -1) & (close < e20), -1, 0))
+        # percentile de bb_width à la bougie j-1 (fenêtre de 100 bougies, NaN ignorés, au moins 20 valeurs)
+        pct = np.full(n, np.nan)
+        pad = np.concatenate([np.full(BB_WIDTH_LOOKBACK - 1, np.nan), bw])
+        W = np.lib.stride_tricks.sliding_window_view(pad, BB_WIDTH_LOOKBACK)      # W[e] = bw[e-99 .. e]
+        valid = ~np.isnan(W)
+        cnt = valid.sum(axis=1)
+        last = BB_WIDTH_LOOKBACK - 1 - np.argmax(valid[:, ::-1], axis=1)
+        cur = W[np.arange(len(W)), last]
+        le = (valid & (W <= cur[:, None])).sum(axis=1)
+        p = np.where(cnt >= 20, le / np.where(cnt > 0, cnt, 1) * 100.0, np.nan)
+        pct[1:] = p[:-1]                                                             # mesuré sur la bougie précédente
+        base = (j + 2 >= max(MIN_BARS, 2)) & ~np.isnan(adx) & ~np.isnan(atr)
+        reste = base.copy()
+        hv = reste & ~np.isnan(vol) & (vol >= VOL_HIGH_PCT)
+        out[hv] = Regime.HIGH_VOLATILITY.value
+        reste &= ~hv
+        lv = reste & ~np.isnan(vol) & (vol <= VOL_LOW_PCT)
+        out[lv] = Regime.LOW_VOLATILITY.value
+        reste &= ~lv
+        tr = reste & (adx >= ADX_TREND) & (order != 0) & (direction == order)
+        out[tr] = Regime.TRENDING.value
+        reste &= ~tr
+        bo = reste & ~np.isnan(pct) & (pct <= BB_COMPRESSION_PCT) & ~np.isnan(bb_up) & ((close > bb_up) | (close < bb_low))
+        out[bo] = Regime.BREAKOUT.value
+        reste &= ~bo
+    diff_all = close - bb_mid
+    for k in np.nonzero(reste & (adx < ADX_RANGE))[0]:                               # traversées de bb_mid (20 bougies)
+        d = diff_all[max(0, k - RANGE_WINDOW + 1): k + 1]
+        d = d[~np.isnan(d)]
+        if len(d) < 3:
+            continue
+        s = np.sign(d)
+        s = s[s != 0]
+        if len(s) > 1 and int((s[1:] != s[:-1]).sum()) >= RANGE_MIN_CROSSES:
+            out[k] = Regime.RANGING.value
+    return out

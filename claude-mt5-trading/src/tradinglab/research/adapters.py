@@ -20,7 +20,7 @@ from ..backtest.engine import Signal
 from ..core.clock import current_session
 from ..core.types import Regime, Session, Side, SymbolSpec
 from ..market_data.indicators import enrich
-from ..market_data.regime import MIN_BARS as MIN_TREND_BARS, classify_regime
+from ..market_data.regime import MIN_BARS as MIN_TREND_BARS, classify_regime, regime_series
 
 RESAMPLE = {"M5": "5min", "M15": "15min", "M30": "30min", "H1": "1h", "H4": "4h", "D1": "1D"}
 TF_MINUTES = {"M1": 1, "M5": 5, "M15": 15, "M30": 30, "H1": 60, "H4": 240, "D1": 1440}
@@ -77,12 +77,18 @@ def _enrich_cached(df: pd.DataFrame, tag: str) -> pd.DataFrame:
 
 
 def _regime_value(t_full: pd.DataFrame, nc: int, tkey=None) -> str:
-    key = (tkey if tkey is not None else _data_key(t_full, "regime"), nc)
+    """Régime vu par le screener quand `nc` bougies de tendance sont clôturées (= classify_regime sur ce préfixe).
+    2026-09-30 : calculé pour TOUTES les bougies en une passe vectorisée (regime_series), mis en cache par données."""
+    return _regime_serie(t_full, tkey)[nc - 1]
+
+
+def _regime_serie(t_full: pd.DataFrame, tkey=None) -> np.ndarray:
+    key = tkey if tkey is not None else _data_key(t_full, "regime")
     v = _REGIME_CACHE.get(key)
     if v is None:
-        if len(_REGIME_CACHE) > 200_000:
-            _REGIME_CACHE.clear()
-        v = _REGIME_CACHE[key] = classify_regime(_with_forming_bar(t_full.iloc[:nc])).regime.value
+        if len(_REGIME_CACHE) >= _CACHE_MAX:
+            _REGIME_CACHE.pop(next(iter(_REGIME_CACHE)))
+        v = _REGIME_CACHE[key] = regime_series(t_full)
     return v
 
 
@@ -169,11 +175,9 @@ def make_signal_fn(spec: AgentSpec, symbol_spec: SymbolSpec, entry_tf: str = "M1
         sess_ok = np.isin(vals, list(spec.sessions)) | (vals == Session.OFF.value)
         base = (i + 1 >= MIN_ENTRY_BARS) & sess_ok & (nc >= MIN_TREND_BARS) & (nc + 1 >= 60) & (i + 2 >= 60)
         if check_regime:
-            reg_ok = {}
-            tkey = _data_key(t_full, "regime")
-            for v in np.unique(nc[base]):
-                reg_ok[int(v)] = _regime_value(t_full, int(v), tkey) in spec.regimes
-            base &= np.array([reg_ok.get(int(v), False) for v in nc])
+            serie = _regime_serie(t_full, _data_key(t_full, "regime"))
+            ok_t = np.isin(serie, list(spec.regimes))
+            base &= (nc >= 1) & ok_t[np.clip(nc - 1, 0, len(ok_t) - 1)]
         ctx = _fs.FastCtx(e=e_full, t=t_full, lt_idx=nc - 1, base=base)
         for c in _fs.LE_COLS:
             base &= ~np.isnan(ctx.col(c))
