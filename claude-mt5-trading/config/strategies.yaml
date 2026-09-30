@@ -43,6 +43,13 @@ learning:
     # 2026-09-24, décision utilisateur : un agent LIVE qui perd nettement est suspendu sans attendre 60 trades
     fast_suspend_min_trades: 10  # réactivé le 2026-09-25 (demande utilisateur)
     fast_suspend_max_profit_factor: 0.5
+    # 2026-09-30, décisions utilisateur : agent SHADOW suspendu automatiquement à 50 trades avec un PF < 0,8 ;
+    # famille N (saisonnalité) signalée pour une revue live à 50 trades avec un PF >= 1,3 (jamais promue directement)
+    shadow_suspend_min_trades: 50
+    shadow_suspend_max_profit_factor: 0.8
+    shadow_review_families: [N]
+    shadow_review_min_trades: 50
+    shadow_review_min_profit_factor: 1.3
   challenger_generation:
     max_new_per_cycle: 3
     parameter_jitter_percent: 20

@@ -5,6 +5,8 @@ Interdit : RESEARCH → LIVE direct. Chaque étape est persistée (data/research
 """
 from __future__ import annotations
 
+import re
+
 import copy
 import json
 import random
@@ -462,11 +464,50 @@ class DegradationManager:
                 elif st.degradation_score < 0.25:
                     self.registry.set_status(a.agent_id, AgentStatus.LIVE)
                     changes.append({"agent_id": a.agent_id, "from": "DEGRADED", "to": "LIVE", "score": st.degradation_score})
+        changes += self._shadow_rules()
         for c in changes:
+            if c.get("to") is None:
+                continue
             self.store.agent_event(c["agent_id"], "status_change", c)
             if self.journal:
                 self.journal.event("agent_status_change", **c)
-        return changes
+        return [c for c in changes if c.get("to") is not None]
+
+    def _shadow_rules(self) -> list[dict]:
+        """Règles SHADOW (2026-09-30, décisions utilisateur) :
+        - un agent SHADOW à `shadow_suspend_min_trades` trades (50) avec un PF < `shadow_suspend_max_profit_factor` (0,8)
+          est suspendu automatiquement ;
+        - un agent SHADOW d'une famille de `shadow_review_families` (saisonnalité N) à `shadow_review_min_trades` (50)
+          avec un PF ≥ `shadow_review_min_profit_factor` (1,3) est SIGNALÉ pour une revue live (événement
+          `shadow_revue_live`, une fois par processus) — jamais promu directement : le pipeline reste obligatoire."""
+        out = []
+        n_susp = int(self.cfg.get("shadow_suspend_min_trades", 0) or 0)
+        pf_susp = float(self.cfg.get("shadow_suspend_max_profit_factor", 0.0) or 0.0)
+        fams = [str(x) for x in (self.cfg.get("shadow_review_families") or [])]
+        n_rev = int(self.cfg.get("shadow_review_min_trades", 50) or 50)
+        pf_rev = float(self.cfg.get("shadow_review_min_profit_factor", 1.3) or 1.3)
+        if not (n_susp and pf_susp) and not fams:
+            return out
+        signales = self.__dict__.setdefault("_revues_signalees", set())
+        for a in list(self.registry.agents.values()):
+            if not a.generates_trades or a.status != AgentStatus.SHADOW.value:
+                continue
+            st = self.store.agent_stats(a.agent_id, mode="shadow")
+            if n_susp and pf_susp and st.sample_size >= n_susp and st.losses > 0 and st.profit_factor < pf_susp:
+                self.registry.set_status(a.agent_id, AgentStatus.SUSPENDED)
+                out.append({"agent_id": a.agent_id, "from": "SHADOW", "to": "SUSPENDED",
+                            "reason": f"shadow perdant : PF {st.profit_factor:.2f} < {pf_susp} sur {st.sample_size} trades"})
+                continue
+            fam = re.match(r"[A-Z]+", a.agent_id)
+            if (fams and fam and fam.group(0) in fams and st.sample_size >= n_rev and st.profit_factor >= pf_rev
+                    and st.expectancy_r > 0 and a.agent_id not in signales):
+                signales.add(a.agent_id)
+                if self.journal:
+                    self.journal.event("shadow_revue_live", agent_id=a.agent_id, trades=st.sample_size,
+                                       profit_factor=round(st.profit_factor, 2), expectancy_r=round(st.expectancy_r, 3),
+                                       message="critères de revue live atteints en shadow : décision humaine requise")
+                out.append({"agent_id": a.agent_id, "from": "SHADOW", "to": None, "revue_live": True})
+        return out
 
 
 

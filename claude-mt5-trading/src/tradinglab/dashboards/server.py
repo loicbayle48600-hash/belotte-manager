@@ -526,6 +526,21 @@ class DashboardData:
                                "r": rv["r"], "pnl": pnl_ref, "ticket": int(rv.get("ticket") or 0)})
         return trades
 
+    def shadow(self) -> dict:
+        """Page Shadow & recherche (2026-09-30, demande utilisateur : suivre le shadow et la recherche GPU sur le
+        dashboard). Lecture seule, mise en cache 60 s."""
+        cached = getattr(self, "_shadow_cache", None)
+        if cached and time.time() - cached[0] < 60:
+            return cached[1]
+        from ..learning.shadow_board import shadow_board
+
+        try:
+            result = shadow_board(self.home, dict(self.settings.strategies.get("learning", {}) or {}))
+        except Exception as e:  # noqa: BLE001 - lecture seule : jamais de 500 pour un fichier illisible
+            result = {"erreur": f"{type(e).__name__}: {e}"}
+        self._shadow_cache = (time.time(), result)
+        return result
+
     def quality(self, gel_only: bool = False) -> dict:
         """Page Qualité (plan pro du 2026-09-25, point 5) : espérance par agent avec sa marge d'incertitude,
         coût d'entrée, glissement, MFE / MAE, et avancement du gel des réglages."""
@@ -1191,7 +1206,7 @@ tr:last-child td{border-bottom:0}
 @media (max-width:640px){body{padding:.75rem}.hide-sm{display:none}canvas{height:220px}canvas.short{height:110px}.card b{font-size:1.1rem}.bars .row{grid-template-columns:5.5rem 1fr auto}}
 </style></head><body><div class="wrap">
 <h1>📈 Statistiques</h1>
-<div class="crumb"><a href="/">← Tableau de bord</a> · <a href="/control">Panneau de contrôle</a> · <a href="/qualite">Qualité</a> · <a href="/logout">Déconnexion</a> · trades <b>fermés</b> uniquement (le flottant des positions ouvertes n'est pas compté), journée de trading = reset 17:00 New York, heures Europe/Paris, mise à jour toutes les 60 s</div>
+<div class="crumb"><a href="/">← Tableau de bord</a> · <a href="/control">Panneau de contrôle</a> · <a href="/qualite">Qualité</a> · <a href="/shadow">Shadow &amp; recherche</a> · <a href="/logout">Déconnexion</a> · trades <b>fermés</b> uniquement (le flottant des positions ouvertes n'est pas compté), journée de trading = reset 17:00 New York, heures Europe/Paris, mise à jour toutes les 60 s</div>
 <div id="err" class="errbox" hidden></div>
 <div class="tabs" id="atabs" role="tablist" aria-label="Comptes" hidden></div>
 <div id="fview" hidden></div>
@@ -1636,7 +1651,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if self._too_many_attempts():
             return
         if not self._authorized():
-            if parts.path in ("/", "/index.html", "/login", "/control", "/stats", "/qualite"):
+            if parts.path in ("/", "/index.html", "/login", "/control", "/stats", "/qualite", "/shadow"):
                 self._send_html(LOGIN_HTML.replace("__ERR__", ""))
                 return
             self._send_json({"error": "authentification requise"}, HTTPStatus.UNAUTHORIZED,
@@ -1662,6 +1677,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self._send_json(self.server.data.stats())
             elif parts.path == "/qualite":
                 self._send_html(QUALITE_HTML)
+            elif parts.path == "/shadow":
+                self._send_html(SHADOW_HTML)
+            elif parts.path == "/api/shadow":
+                self._send_json(self.server.data.shadow())
             elif parts.path == "/api/quality":
                 self._send_json(self.server.data.quality(gel_only=(query.get("periode") or [""])[0] == "gel"))
             elif parts.path == "/api/copy/status":
@@ -1955,6 +1974,86 @@ def main(argv: list[str] | None = None) -> int:
 # ----------------------------------------------------------------------------
 
 # Page Qualité (plan pro du 2026-09-25, point 5) — même feuille de style que la page Statistiques
+SHADOW_HTML = r"""<!doctype html><html lang="fr"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1"><title>Trading Lab — Shadow &amp; recherche</title>
+""" + STATS_HTML[STATS_HTML.index("<style>"):STATS_HTML.index("</style>") + len("</style>")] + r"""
+<style>.verdict{font-size:.8rem;padding:.12rem .5rem;border-radius:999px;border:1px solid var(--line);white-space:nowrap}
+.v-ok{color:#0f172a;background:var(--green);border-color:var(--green)}.v-ko{color:#0f172a;background:var(--red);border-color:var(--red)}
+.v-val{color:var(--green)}.v-wait{color:var(--amber)}.v-few{color:var(--mut)}
+.mini{display:inline-block;width:70px;height:8px;background:#0f172a;border:1px solid var(--line);border-radius:4px;overflow:hidden;vertical-align:middle}
+.mini div{height:100%;background:var(--sky)}.filt{display:flex;gap:.5rem;flex-wrap:wrap;margin:.5rem 0}
+.filt input,.filt select{background:var(--panel);color:var(--txt);border:1px solid var(--line);border-radius:6px;padding:.3rem .5rem}
+td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}</style></head><body><div class="wrap">
+<h1>👻 Shadow &amp; recherche</h1>
+<div class="crumb"><a href="/">← Tableau de bord</a> · <a href="/stats">Statistiques</a> · <a href="/qualite">Qualité</a> · <a href="/control">Panneau de contrôle</a> · trades shadow <b>clôturés</b> (positions virtuelles, aucun ordre), mise à jour toutes les 60 s</div>
+<div id="err" class="errbox" hidden></div>
+<div class="cards" id="cards"></div>
+<div class="paybox" id="regle"></div>
+<h2>Par famille</h2>
+<div class="tablewrap"><table><thead><tr><th>Famille</th><th class="num">Agents actifs</th><th class="num">Trades</th><th class="num">Résultat</th><th class="num">PF</th><th class="num hide-sm">Réussite</th><th class="num hide-sm">Ouvertes</th></tr></thead>
+<tbody id="fams"><tr><td colspan="7" class="mut">Chargement…</td></tr></tbody></table></div>
+<h2>Par agent</h2>
+<div class="filt"><input id="q" placeholder="Filtrer (agent, stratégie)…" aria-label="Filtrer">
+<select id="fst" aria-label="Statut"><option value="SHADOW">En shadow</option><option value="">Tous</option><option value="LIVE">Live</option><option value="SUSPENDED">Suspendus</option></select>
+<select id="fv" aria-label="Verdict"><option value="">Tous les verdicts</option><option>prêt pour revue live</option><option>shadow validé</option><option>en cours</option><option>pas concluant</option><option>perdant</option></select></div>
+<div class="tablewrap"><table><thead><tr><th>Agent</th><th class="hide-sm">Stratégie</th><th>Statut</th><th class="num">Trades</th><th class="num">Résultat</th><th class="num">PF</th><th class="num hide-sm">Espérance</th><th class="num hide-sm">Réussite</th><th class="num hide-sm">Ouvertes</th><th>Vers le live</th><th>Verdict</th></tr></thead>
+<tbody id="agents"></tbody></table></div>
+<h2>Recherche GPU</h2>
+<div class="cards" id="rcards"></div>
+<h3>Derniers passages</h3>
+<div class="tablewrap"><table><thead><tr><th>Passage</th><th>Heure</th><th class="num">Testées</th><th class="num hide-sm">Seuil t</th><th class="num">Significatives</th><th class="num">Contrôle OK</th><th class="num">Idées nouvelles</th></tr></thead>
+<tbody id="passages"></tbody></table></div>
+<h3>Idées envoyées en shadow</h3>
+<div class="tablewrap"><table><thead><tr><th>Agent</th><th>Stratégie</th><th>UT</th><th class="hide-sm">Marchés</th><th class="hide-sm">Session</th><th class="num">PF backtest</th><th class="num">PF contrôle</th><th class="hide-sm">Date</th></tr></thead>
+<tbody id="idees"></tbody></table></div>
+<p class="note">Résultat en R : multiples du risque pris (−1 R = un stop plein). PF = gains ÷ pertes (au-dessus de 1, l'agent gagne).
+« Contrôle OK » : configurations qui tiennent aussi sur la période récente jamais vue ; la plupart sont des variantes d'idées déjà en shadow, d'où peu d'idées nouvelles.</p>
+</div><script>
+const $=id=>document.getElementById(id);let D=null;
+const f=(v,d=2)=>v===null||v===undefined?'—':Number(v).toFixed(d);
+const sg=(v,d=1)=>v===null||v===undefined?'—':(v>0?'+':'')+Number(v).toFixed(d);
+const cls=v=>v>0?'pos':v<0?'neg':'';
+const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const nf=v=>v===null||v===undefined?'—':Number(v).toLocaleString('fr-FR');
+const hm=s=>{if(!s)return '—';const d=new Date(s);return d.toLocaleString('fr-FR',{timeZone:'Europe/Paris',day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'})};
+function vb(v){const c={'prêt pour revue live':'v-ok','perdant':'v-ko','shadow validé':'v-val','pas concluant':'v-wait'}[v]||'v-few';return `<span class="verdict ${c}">${esc(v)}</span>`}
+function renderAgents(){if(!D)return;const q=$('q').value.toLowerCase(),st=$('fst').value,fv=$('fv').value;
+  const rows=(D.agents||[]).filter(a=>(!st||a.statut===st)&&(!fv||a.verdict===fv)&&(!q||(a.agent_id+' '+a.strategie).toLowerCase().includes(q)));
+  $('agents').innerHTML=rows.length?rows.map(a=>`<tr><td><b>${esc(a.agent_id)}</b></td><td class="hide-sm mut">${esc(a.strategie)}</td><td>${esc(a.statut)}</td>
+  <td class="num">${a.n}</td><td class="num ${cls(a.r)}">${sg(a.r)} R</td><td class="num">${a.pf===null?(a.n?'<span class="mut">sans perte</span>':'—'):f(a.pf)}</td>
+  <td class="num hide-sm ${cls(a.esperance)}">${sg(a.esperance,2)}</td><td class="num hide-sm">${f(a.reussite,0)} %</td><td class="num hide-sm">${a.ouvertes||''}</td>
+  <td><span class="mini"><div style="width:${a.progression}%"></div></span> <span class="mut">${Math.min(a.n,D.criteres.min_shadow)}/${D.criteres.min_shadow}</span></td><td>${vb(a.verdict)}</td></tr>`).join('')
+  :'<tr><td colspan="11" class="mut">Aucun agent pour ce filtre.</td></tr>'}
+async function load(){
+  try{const r=await fetch('/api/shadow',{credentials:'same-origin',cache:'no-store'});
+    if(r.status===401){$('err').innerHTML='Session expirée — <a href="/login">se reconnecter</a>';$('err').hidden=false;return}
+    D=await r.json();if(D.erreur){$('err').textContent='Lecture impossible : '+D.erreur;$('err').hidden=false;return}$('err').hidden=true;
+    const s=D.resume,c=D.criteres,R=D.recherche||{};
+    const cards=[['Agents en shadow',s.agents_shadow,`${s.agents_live} live · ${s.agents_suspendus} suspendus`],
+      ['Résultat shadow actif',sg(s.r_actifs)+' R',`${nf(s.trades_actifs)} trades clôturés`],
+      ['Positions ouvertes',s.ouvertes,'virtuelles, en cours'],
+      ['Prêts pour revue live',s.prets,`≥ ${c.min_shadow} trades, PF ≥ ${f(c.pf_live,1)}`],
+      ['Perdants',s.perdants,`≥ ${c.perdant_n} trades, PF < ${f(c.perdant_pf,1)}`]];
+    $('cards').innerHTML=cards.map(([t,v,x])=>`<div class="card"><small>${t}</small><b>${v}</b><span class="sub">${x}</span></div>`).join('');
+    $('regle').innerHTML=`<p><b>Passage en live</b> : au moins <b>${c.min_shadow} trades shadow</b> avec espérance positive et PF ≥ 1, puis <b>${c.min_sample} trades au total</b> (backtest + shadow),
+      PF ≥ ${f(c.pf_live,1)}, espérance ≥ ${f(c.exp_live,2)} R et drawdown limité. Jamais de passage direct : chaque étape du pipeline est vérifiée.
+      Un agent shadow à ${c.perdant_n} trades avec un PF sous ${f(c.perdant_pf,1)} est suspendu automatiquement.</p>`;
+    $('fams').innerHTML=(D.familles||[]).filter(x=>x.n||x.ouvertes).map(x=>`<tr><td><b>${esc(x.famille)}</b> <span class="mut">${esc(x.nom)}</span></td><td class="num">${x.actifs}</td><td class="num">${x.n}</td>
+      <td class="num ${cls(x.r)}">${sg(x.r)} R</td><td class="num">${f(x.pf)}</td><td class="num hide-sm">${f(x.reussite,0)} %</td><td class="num hide-sm">${x.ouvertes||''}</td></tr>`).join('');
+    renderAgents();
+    $('rcards').innerHTML=[['Configurations testées',nf(R.configurations),`${nf(R.passages_continus)} passages continus`],
+      ['Recherche continue',R.en_marche?'<span class="pos">en marche</span>':'<span class="warn">arrêtée</span>','dernier passage '+hm(R.derniere_date)],
+      ['Idées en shadow',(R.idees||[]).length,`${nf(R.rapports)} rapports`]].map(([t,v,x])=>`<div class="card"><small>${t}</small><b>${v}</b><span class="sub">${x}</span></div>`).join('');
+    $('passages').innerHTML=(R.passages||[]).map(p=>`<tr><td>${esc(p.rapport.replace(/_\d{4}-\d\d-\d\d_\d{4}$/,''))}</td><td>${hm(p.date)}</td><td class="num">${nf(p.testees)}</td>
+      <td class="num hide-sm">${f(p.seuil)}</td><td class="num">${nf(p.significatives)}</td><td class="num">${nf(p.controle)}</td><td class="num ${p.propositions?'pos':''}">${p.propositions}</td></tr>`).join('');
+    $('idees').innerHTML=(R.idees||[]).length?R.idees.map(i=>`<tr><td><b>${esc(i.agent_id)}</b></td><td>${esc(i.strategie)}</td><td>${esc(i.ut)}</td><td class="hide-sm">${esc(String(i.classe||'').replace('u_',''))}</td>
+      <td class="hide-sm">${esc((i.sessions||[]).join(', ')||'toutes')}</td><td class="num">${f(i.pf_backtest)}</td><td class="num">${f(i.pf_controle)}</td><td class="hide-sm">${hm(i.date)}</td></tr>`).join('')
+      :'<tr><td colspan="8" class="mut">Aucune idée nouvelle.</td></tr>';
+  }catch(e){$('err').textContent='Erreur de chargement : '+e;$('err').hidden=false}}
+['q','fst','fv'].forEach(id=>$(id).addEventListener('input',renderAgents));
+load();setInterval(load,60000);
+</script></body></html>"""
+
 QUALITE_HTML = r"""<!doctype html><html lang="fr"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1"><title>Trading Lab — Qualité</title>
 """ + STATS_HTML[STATS_HTML.index("<style>"):STATS_HTML.index("</style>") + len("</style>")] + r"""
@@ -2094,7 +2193,7 @@ summary{cursor:pointer;color:var(--muted);font-size:12px}
 <div class="top">
 <header>
   <h1>Claude MT5 Trading Lab — Tableau de bord</h1>
-  <span class="meta"><a href="/stats">📈 Statistiques</a> &nbsp;·&nbsp; <a href="/qualite">🧪 Qualité</a> &nbsp;·&nbsp; <a href="/control">🎛️ Contrôle</a> &nbsp;·&nbsp; lecture seule, rafraîchie toutes les 5 s. Heure (Paris) : <span id="server_time">—</span></span>
+  <span class="meta"><a href="/stats">📈 Statistiques</a> &nbsp;·&nbsp; <a href="/qualite">🧪 Qualité</a> &nbsp;·&nbsp; <a href="/shadow">👻 Shadow &amp; recherche</a> &nbsp;·&nbsp; <a href="/control">🎛️ Contrôle</a> &nbsp;·&nbsp; lecture seule, rafraîchie toutes les 5 s. Heure (Paris) : <span id="server_time">—</span></span>
   <span id="error"></span>
 </header>
 <div class="glance-lbl">🏦 Compte maître (IC Markets)</div>
