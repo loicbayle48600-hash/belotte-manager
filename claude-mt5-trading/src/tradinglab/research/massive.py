@@ -110,7 +110,8 @@ def grid(strategies: Optional[list] = None, classes: Optional[list] = None, time
         for (e, t) in (timeframes or TIMEFRAMES):
             for c in (classes or list(opt.CLASSES)):
                 for prm in expand(st, fin):
-                    for ses in (sessions if sessions is not None else [None]):
+                    # une bougie H4 / D1 n'a qu'une heure d'ouverture : les variantes de session n'y ont pas de sens (30/09)
+                    for ses in (sessions if (sessions is not None and e in ("M1", "M5", "M15", "M30", "H1")) else [None]):
                         out.append({"strategy": st, "entry_tf": e, "trend_tf": t, "asset_class": c, "params": prm, "sessions": ses})
     return out
 
