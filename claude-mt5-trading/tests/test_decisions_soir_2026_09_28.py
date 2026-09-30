@@ -142,7 +142,8 @@ def test_reglages_du_28_09_soir():
     risk = yaml.safe_load(open("config/risk.yaml", encoding="utf-8"))
     assert risk["risk"]["risk_per_trade_by_class"] == {"forex": 0.025}
     ex = yaml.safe_load(open("config/system.yaml", encoding="utf-8"))["execution"]
-    assert ex["llm_skip_never_approved_after"] == 30 and ex["forex_short_term_paper_only"] is True
+    # 01/10, décision utilisateur « sur tous les marchés en réel » : la règle papier du forex court terme est levée
+    assert ex["llm_skip_never_approved_after"] == 30 and ex["forex_short_term_paper_only"] is False
     assert ex["forex_blocked_hours_utc"] == []            # décision utilisateur 28/09 au soir : le forex garde le droit de trader à ces heures
     deg = yaml.safe_load(open("config/strategies.yaml", encoding="utf-8"))["learning"]["degradation"]
     assert deg["trades_mode"] == "live+paper"

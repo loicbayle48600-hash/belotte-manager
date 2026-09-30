@@ -88,4 +88,16 @@ def test_configuration_asie_en_live():
     import yaml
 
     ex = yaml.safe_load(open("config/system.yaml", encoding="utf-8"))["execution"]
-    assert ex["forex_short_term_paper_only"] is True and ex["forex_short_term_live_sessions"] == ["ASIA"]
+    # 01/10 plus tard : « sur tous les marchés en réel » → règle papier levée partout (l'exception Asie reste pour un retour arrière)
+    assert ex["forex_short_term_paper_only"] is False and ex["forex_short_term_live_sessions"] == ["ASIA"]
+
+
+def test_config_reelle_forex_court_terme_en_live_partout():
+    """01/10, « sur tous les marchés en réel » : avec la configuration du dépôt, plus aucun signal forex court terme en papier."""
+    import yaml
+
+    o, _ = _orch("LONDON")
+    o.s = SimpleNamespace(execution=yaml.safe_load(open("config/system.yaml", encoding="utf-8"))["execution"])
+    for ses in ("ASIA", "LONDON", "NEWYORK", "OVERLAP_LDN_NY"):
+        c = SimpleNamespace(agent_id="B03", symbol="EURGBP", timeframes=["M5", "H1"], session=ses)
+        assert not o._forex_court_terme(c), ses
