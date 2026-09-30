@@ -941,3 +941,15 @@ def test_page_shadow_et_recherche_repond_sans_erreur(home: Path):
     assert "erreur" not in d, d.get("erreur")
     assert {"resume", "familles", "agents", "recherche", "criteres"} <= set(d)
     assert d["criteres"]["min_shadow"] == 20 and d["criteres"]["perdant_n"] == 50
+
+
+
+def test_session_de_marche_affichee(home: Path):
+    """2026-10-01 : la session en cours (dont Sydney) est affichée à côté de l'heure."""
+    from tradinglab.dashboards import server
+    from tradinglab.dashboards.server import DashboardData
+
+    sm = DashboardData(home).snapshot()["session_marche"]
+    toutes = {"ASIA", "LONDON", "NEWYORK", "OVERLAP_LDN_NY", "SYDNEY", "OFF"}
+    assert sm["forex"] in toutes and sm["crypto"] in toutes
+    assert 'id="session_now"' in server.INDEX_HTML and "Sydney" in server.INDEX_HTML

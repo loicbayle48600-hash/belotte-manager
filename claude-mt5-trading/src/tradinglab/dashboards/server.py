@@ -328,6 +328,11 @@ class DashboardData:
         d["journal_tail"] = [project_event(e) for e in read_journal_tail(self.settings.logs_dir, limit, kinds=kinds)]
         d["journal_day"] = utcnow().strftime("%Y-%m-%d")
         d["server_time_utc"] = utcnow().isoformat()
+        # 2026-10-01 (« la session Sydney je la vois jamais ») : session de marché en cours, forex et crypto
+        from ..core.clock import current_session
+        maintenant = utcnow()
+        d["session_marche"] = {"forex": current_session(maintenant).value,
+                               "crypto": current_session(maintenant, round_the_clock=True).value}
         d["orchestrator_heartbeat_age_sec"] = self.store.heartbeat_age("orchestrator")
         # Heartbeat watchdog lu DIRECTEMENT dans state/watchdog.json (et non via la copie faite par
         # l'orchestrateur) : orchestrateur mort ≠ watchdog mort, l'opérateur doit pouvoir distinguer.
@@ -2193,7 +2198,7 @@ summary{cursor:pointer;color:var(--muted);font-size:12px}
 <div class="top">
 <header>
   <h1>Claude MT5 Trading Lab — Tableau de bord</h1>
-  <span class="meta"><a href="/stats">📈 Statistiques</a> &nbsp;·&nbsp; <a href="/qualite">🧪 Qualité</a> &nbsp;·&nbsp; <a href="/shadow">👻 Shadow &amp; recherche</a> &nbsp;·&nbsp; <a href="/control">🎛️ Contrôle</a> &nbsp;·&nbsp; lecture seule, rafraîchie toutes les 5 s. Heure (Paris) : <span id="server_time">—</span></span>
+  <span class="meta"><a href="/stats">📈 Statistiques</a> &nbsp;·&nbsp; <a href="/qualite">🧪 Qualité</a> &nbsp;·&nbsp; <a href="/shadow">👻 Shadow &amp; recherche</a> &nbsp;·&nbsp; <a href="/control">🎛️ Contrôle</a> &nbsp;·&nbsp; lecture seule, rafraîchie toutes les 5 s. Heure (Paris) : <span id="server_time">—</span> &nbsp;·&nbsp; Session : <span id="session_now">—</span></span>
   <span id="error"></span>
 </header>
 <div class="glance-lbl">🏦 Compte maître (IC Markets)</div>
@@ -2420,6 +2425,10 @@ summary{cursor:pointer;color:var(--muted);font-size:12px}
   function render(s){
     CUR = s.currency || '';
     $('server_time').textContent = s.server_time_utc ? new Date(s.server_time_utc).toLocaleString('fr-FR', {timeZone: 'Europe/Paris'}) : UNK;
+    { const NOMS = {ASIA: 'Asie', LONDON: 'Londres', NEWYORK: 'New York', OVERLAP_LDN_NY: 'Londres + New York', SYDNEY: 'Sydney', OFF: 'hors session'};
+      const sm = s.session_marche || {};
+      const fx = NOMS[sm.forex] || sm.forex || UNK, cr = NOMS[sm.crypto] || sm.crypto || UNK;
+      $('session_now').textContent = fx === cr ? fx : fx + ' (crypto : ' + cr + ')'; }
     var p = s.prop || {}, r = s.risk || {}, daily = s.daily || {}, pc = s.payout_cycle || null, corr = s.correlation || {};
     var bp = s.bot_positions || {}, posList = Object.keys(bp).map(function(k){ return bp[k]; });
     var floating = (isNum(s.equity) && isNum(s.balance)) ? s.equity - s.balance : null;
