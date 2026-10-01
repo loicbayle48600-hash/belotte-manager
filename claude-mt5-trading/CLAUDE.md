@@ -1,5 +1,9 @@
 # CLAUDE.md — Claude MT5 Trading Lab
 
+> **Langue : règle absolue.** Toujours répondre à l'utilisateur en **français** : points d'étape, tableaux, questions et
+> message final compris, même quand les sorties d'outils ou le code sont en anglais. Relire la langue de chaque message
+> avant de l'envoyer (rappels de l'utilisateur les 25/09, 30/09 et 01/10/2026).
+
 Guide pour les sessions Claude Code qui travaillent sur ce dépôt. Tout ce qui suit est tiré du code et des
 fichiers `config/*.yaml` : ne rien supposer qui n'y figure pas.
 
