@@ -87,6 +87,11 @@ def main(argv=None) -> int:  # pragma: no cover - pilotage de processus
             etat["week_end_m1"] = semaine_m1
         etat["derniere"] = {"date": datetime.now(timezone.utc).isoformat(), "testees": testees, "code": proc.returncode,
                             "duree_sec": round(time.time() - debut), "sortie": (proc.stdout or "")[-400:]}
+        if proc.returncode != 0:
+            # 2026-10-01 : deux passages en échec (code 1) sans aucune trace ; la fin de la sortie d'erreur est gardée
+            erreur = "\n".join(l for l in (proc.stderr or "").splitlines() if "Warning" not in l and "warn(" not in l)
+            etat["derniere"]["erreur"] = erreur[-1500:]
+            print("   erreur : " + (erreur.strip().splitlines() or ["(vide)"])[-1][:300], flush=True)
         etat_f.write_text(json.dumps(etat, ensure_ascii=False, indent=1), encoding="utf-8")
         print(f"   → {testees:,} configurations, code {proc.returncode}, {round(time.time() - debut)} s", flush=True)
         if proc.returncode != 0:
