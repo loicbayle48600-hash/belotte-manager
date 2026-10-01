@@ -132,15 +132,17 @@ def test_gate_risque_par_classe(settings, broker):
     st = make_state()
     c, atr = make_candidate(broker, rr=2.5)
     plein, _ = gate.evaluate(ctx_for(broker, c, st, atr))
-    moitie, _ = gate.evaluate(ctx_for(broker, c, st, atr, risk_by_class={"forex": 0.025}))
+    # plafond forex = moitié du risque de base (0,025 % pendant le test du 28/09, 0,0625 % depuis le 01/10)
+    demi = float(settings.risk["risk_per_trade_percent"]) / 2
+    moitie, _ = gate.evaluate(ctx_for(broker, c, st, atr, risk_by_class={"forex": demi}))
     assert plein.approved and moitie.approved and moitie.risk_money < plein.risk_money
-    assert moitie.risk_percent <= 0.025 + 1e-9 < plein.risk_percent          # risque effectif (après arrondi du volume)
+    assert moitie.risk_percent <= demi + 1e-9 < plein.risk_percent          # risque effectif (après arrondi du volume)
 
 
 # ---------------- réglages
 def test_reglages_du_28_09_soir():
     risk = yaml.safe_load(open("config/risk.yaml", encoding="utf-8"))
-    assert risk["risk"]["risk_per_trade_by_class"] == {"forex": 0.025}
+    assert risk["risk"]["risk_per_trade_by_class"] == {"forex": 0.0625}     # 01/10 : moitié du risque de base remis à 0,125 %
     ex = yaml.safe_load(open("config/system.yaml", encoding="utf-8"))["execution"]
     # 01/10, décision utilisateur « sur tous les marchés en réel » : la règle papier du forex court terme est levée
     assert ex["llm_skip_never_approved_after"] == 30 and ex["forex_short_term_paper_only"] is False

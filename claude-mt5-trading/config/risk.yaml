@@ -24,21 +24,26 @@ risk:
   # Plus de petites positions pour le même budget de perte total (1 %) ; les plafonds de concentration restent inchangés
   # EN % D'EQUITY (même argent exposé par cluster / devise / classe, composé de plus de tickets). À remettre à 0,125 à la
   # fin de la période de test — voir docs/SUIVI.md.
-  risk_per_trade_percent: 0.05
+  # 2026-10-01, décision utilisateur (« oui, remets le risque ») : fin de la période de test, retour à 0,125 % par trade
+  # (les plafonds de concentration et les paliers après profit ont été calibrés pour cette valeur).
+  risk_per_trade_percent: 0.125
   # 2026-09-28 au soir, décision utilisateur (revue par agents) : le forex a porté toute la perte des 8 derniers jours
   # (113 trades, −14 842 $, −0,18 R/trade, commission ≈ 5 % du risque) alors que crypto, indices, métaux sont positifs.
   # Risque par trade PLAFONNÉ par classe (%), tant que l'espérance forex reste négative. Vide = pas de plafond.
   risk_per_trade_by_class:
-    forex: 0.025
+    forex: 0.0625                 # 2026-10-01 : moitié du risque de base, comme avant (0,025 pendant le test)
   max_risk_per_trade_percent: 0.35
-  max_daily_loss_internal_percent: 1.0  # retour à l'état du 23/09 (demande utilisateur 2026-09-25)
+  # 2026-10-01, décision utilisateur (« monte la perte journalière totale à 2,5 % ») : 1,0 → 2,5 %. Reste sous la limite
+  # dure FOXX (4 % du solde initial, appliquée avec 25 % de marge = 3 %). Sert aussi de limite interne à la prop guard.
+  max_daily_loss_internal_percent: 2.5
   max_total_open_risk_percent: 1.0  # retour à l'état du 23/09 (demande utilisateur 2026-09-25)
   max_open_positions: 30
   max_positions_per_symbol: 1
   # 2026-09-28, TEMPORAIRE (même décision) : 3 → 5. Le verrou à 3 pertes a fermé les entrées de 03 h 50 à 09 h 08 le
   # 28/09 (188 candidats refusés) ; avec des positions 2,5 fois plus petites, 5 pertes d'affilée coûtent 0,25 % au lieu
   # de 0,375 %. À remettre à 3 à la fin de la période de test.
-  max_consecutive_losses: 5
+  # 2026-10-01 : retour à 3 avec la fin de la période de test (proposé avec le retour du risque, accepté par l'utilisateur)
+  max_consecutive_losses: 3
   # Plancher de risque utile, en fraction de risk_per_trade_percent (0.2 = 20 % de la cible, soit 0,025 %).
   # Sous ce seuil, volume_max du broker a raboté la position au point qu'elle ne peut plus peser : le
   # 2026-09-21, XRPUSD a été pris deux fois à 11,52 $ et 12,10 $ de risque sur 500 000 $ tout en consommant

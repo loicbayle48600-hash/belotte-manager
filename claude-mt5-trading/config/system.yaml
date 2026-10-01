@@ -8,9 +8,11 @@ system:
   # positions semi-longues protégées gardées le week-end, sortie à 8 h des trades M1-M15 qui ne décollent pas,
   # protection à 1,0 R pour les agents H1)
   # → nouvelle version lab-v2, nouveau gel de 100 trades.
+  # lab-v3 (01/10, décisions utilisateur) : risque par trade remis à 0,125 % (forex 0,0625 %), verrou à 3 pertes, perte
+  # journalière interne 2,5 %, agents shadow S22 / S24 / CH158 / CH115 passés en live ; lab-v2 close après moins d'un jour.
   gel_reglages:
-    version: lab-v2
-    depuis: "2026-09-30T23:55:00+00:00"
+    version: lab-v3
+    depuis: "2026-10-01T09:30:00+00:00"
     trades_requis: 100
   # début des statistiques des comptes suiveurs (comptes démo remis à 500 000 $ le 2026-09-25)
   accounts_stats_since: "2026-09-25T12:55:22+00:00"

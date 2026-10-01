@@ -62,8 +62,10 @@ def test_filtre_de_mode_du_magasin():
 
 def test_reglages_temporaires_du_28_09():
     risk = yaml.safe_load(open("config/risk.yaml", encoding="utf-8"))
-    assert risk["risk"]["risk_per_trade_percent"] == 0.05, "TEMPORAIRE (28/09) : à remettre à 0,125 après la période de test"
-    assert risk["risk"]["max_consecutive_losses"] == 5, "TEMPORAIRE (28/09) : à remettre à 3 après la période de test"
+    # 01/10, décision utilisateur : fin de la période de test (0,05 % et 5 pertes du 28/09 au 01/10)
+    assert risk["risk"]["risk_per_trade_percent"] == 0.125
+    assert risk["risk"]["max_consecutive_losses"] == 3
+    assert risk["risk"]["max_daily_loss_internal_percent"] == 2.5
     assert risk["risk"]["max_total_open_risk_percent"] / risk["risk"]["risk_per_trade_percent"] <= risk["risk"]["max_open_positions"]
     strat = yaml.safe_load(open("config/strategies.yaml", encoding="utf-8"))
     assert strat["learning"]["paper_trades_live_agents"] is True
