@@ -124,6 +124,7 @@ class Orchestrator:
                                    max_open=int(settings.learning.get("shadow_max_open", 50)),
                                    max_per_agent=int(settings.learning.get("shadow_max_open_per_agent", 0)))
         self.degradation = DegradationManager(self.registry, self.learning, settings.learning, self.journal)
+        self._configurer_gestion_shadow()
         self.research: Optional[ResearchPipeline] = None
         # filtre de contexte COT (CFTC, hebdomadaire) : décision utilisateur du 2026-09-21 — avertit quand un
         # trade suit un positionnement spéculatif déjà extrême ; jamais bloquant, jamais de donnée inventée
@@ -290,6 +291,9 @@ class Orchestrator:
         st.orchestrator_heartbeat = now.isoformat()
         summary: dict = {"ts": now.isoformat(), "entries": 0, "candidates": 0}
         self._process_commands()
+        # 2026-10-01 (décision utilisateur) : réglages relus à chaud et demandes de statut d'agent appliquées tout de suite
+        self._recharger_config_si_change()
+        self._appliquer_demandes_si_presentes()
         self._apply_watchdog()
         # 1. santé + compte
         if not self.broker.is_connected() and not self.broker.connect():
@@ -685,6 +689,100 @@ class Orchestrator:
                           deviation_points=int(ex.get("slippage_deviation_points", 20)), magic=self.magic,
                           comment_prefix=str(self.s.system.get("order_comment_prefix", "TLAB")))
         return self.gate.evaluate(ctx)
+
+    #: sections dont un changement exige encore un redémarrage (flux, cadences, compte, univers, modèles, annonces)
+    RECHARGEMENT_IMPOSSIBLE = ("scheduler", "markets", "models", "news", "account_expected", "extra_timeframes", "magic_number")
+    FICHIERS_RECHARGES = ("risk", "strategies", "system", "prop_firms")
+
+    def _empreinte_config(self) -> dict:
+        out = {}
+        for nom in self.FICHIERS_RECHARGES:
+            f = Path(self.s.home) / "config" / f"{nom}.yaml"
+            try:
+                out[nom] = f.stat().st_mtime_ns
+            except OSError:
+                out[nom] = None
+        return out
+
+    def _recharger_config_si_change(self) -> bool:
+        """Relit config/{risk, strategies, system, prop_firms}.yaml quand l'un d'eux change (2026-10-01, décision
+        utilisateur : moins de redémarrages). Le fichier doit être stable sur deux cycles (pas de lecture d'un fichier en
+        cours d'écriture). Un fichier illisible ou incohérent est refusé : l'ancienne configuration reste en place.
+        Appliqué sans redémarrer : risque, perte journalière, verrous, corrélation, prop, filtre de sécurité, gestion des
+        positions, seuils de revue, shadow, dégradation, règles d'exécution. Les sections de `RECHARGEMENT_IMPOSSIBLE`
+        demandent toujours un redémarrage (signalé dans le journal)."""
+        actuelle = self._empreinte_config()
+        if not hasattr(self, "_config_vue"):
+            self._config_vue, self._config_en_attente = actuelle, None
+            return False
+        if actuelle == self._config_vue:
+            self._config_en_attente = None
+            return False
+        if actuelle != self._config_en_attente:
+            self._config_en_attente = actuelle          # changement vu : on attend qu'il soit stable au cycle suivant
+            return False
+        self._config_vue, self._config_en_attente = actuelle, None
+        try:
+            nouveau = load_settings(self.s.home)
+            r = nouveau.risk
+            if not (0 < float(r["risk_per_trade_percent"]) <= float(r["max_risk_per_trade_percent"])):
+                raise ValueError("risk_per_trade_percent hors bornes")
+            if not (0 < float(r["max_daily_loss_internal_percent"]) <= 10 and int(r["max_consecutive_losses"]) >= 1):
+                raise ValueError("perte journalière ou verrou de pertes hors bornes")
+            PMConfig.from_config(nouveau.profit_management)
+        except Exception as e:  # noqa: BLE001 - YAML illisible ou valeur aberrante : on garde l'ancienne configuration
+            self.journal.warn("configuration illisible ou incohérente : ancienne configuration conservée",
+                              error=f"{type(e).__name__}: {e}"[:200])
+            return False
+        ancien = self.s
+        a_redemarrer = []
+        for cle in self.RECHARGEMENT_IMPOSSIBLE:
+            avant = ancien.raw.get(cle, ancien.system.get(cle)) if hasattr(ancien, "raw") else None
+            apres = nouveau.raw.get(cle, nouveau.system.get(cle)) if hasattr(nouveau, "raw") else None
+            if avant != apres:
+                a_redemarrer.append(cle)
+        self.s = nouveau
+        self.risk = RiskManager(RiskLimits.from_config(nouveau.risk))
+        self.prop = PropGuard(PropProfile.from_config(nouveau.prop), nouveau.autonomous_demo, nouveau.autonomous_prop,
+                              float(nouveau.risk.get("max_daily_loss_internal_percent", 1.0)))
+        self.daily = DailyGuard(nouveau.risk, nouveau.daily_profit)
+        self.corr = CorrelationGuard(CorrelationLimits.from_config(nouveau.correlation), nouveau.section("asset_class_rules"))
+        self.gate = ExecutionGate(self.broker, self.risk, self.prop, self.daily, self.corr)
+        self.executor.final_target_r = float((nouveau.profit_management or {}).get("final_target_r") or 0.0)
+        self.executor.idea_window_minutes = float(self.prop.profile.trade_idea_aggregation_minutes)
+        self.pm.cfg = PMConfig.from_config(nouveau.profit_management)
+        self.pm.commission_per_lot = self.prop.commission_per_lot
+        self.pm.commission_price = self.prop.commission_price
+        self.review.min_rr = float(nouveau.execution.get("min_rr_required", 1.5))
+        self.review.min_sample = int(nouveau.learning.get("min_sample_size", 40))
+        self.post_trade.cfg = nouveau.learning or {}
+        self.shadow.max_open = int(nouveau.learning.get("shadow_max_open", 50))
+        self.shadow.max_per_agent = int(nouveau.learning.get("shadow_max_open_per_agent", 0) or 0)
+        if hasattr(self, "_configurer_gestion_shadow"):
+            self._configurer_gestion_shadow()
+        self.degradation = DegradationManager(self.registry, self.learning, nouveau.learning, self.journal)
+        self.journal.event("config_rechargee", fichiers=list(self.FICHIERS_RECHARGES),
+                           redemarrage_necessaire=a_redemarrer,
+                           risque_par_trade=nouveau.risk.get("risk_per_trade_percent"),
+                           perte_jour_max=nouveau.risk.get("max_daily_loss_internal_percent"))
+        if a_redemarrer:
+            self.journal.warn("réglages changés qui demandent un redémarrage pour s'appliquer", sections=a_redemarrer)
+        return True
+
+    def _configurer_gestion_shadow(self) -> None:
+        """2026-10-01 (décision utilisateur) : shadow et papier gérés comme le live (`learning.shadow_avec_gestion`)."""
+        if bool((self.s.learning or {}).get("shadow_avec_gestion", True)):
+            self.shadow.gestion = PMConfig.from_config(self.s.profit_management)
+            self.shadow.sans_progression = dict((self.s.profit_management or {}).get("no_progress_exit") or {})
+        else:
+            self.shadow.gestion, self.shadow.sans_progression = None, {}
+
+    def _appliquer_demandes_si_presentes(self) -> None:
+        """Demandes de statut d'agent et propositions d'agents : appliquées dès leur dépôt (2026-10-01), plus seulement au
+        cycle de recherche (15 min). Coût nul sans fichier."""
+        d = self.s.state_dir
+        if (d / "agent_status_requests.jsonl").exists() or (d / "agent_proposals.jsonl").exists():
+            self._apply_research_files()
 
     def _sans_progression(self, plan) -> bool:
         """Trade qui ne décolle pas (2026-10-01, décision utilisateur « oui, mais 8 h ») : agent de

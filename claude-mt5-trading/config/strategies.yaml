@@ -21,6 +21,10 @@ learning:
   # positions VIRTUELLES (aucun ordre) : 50 places ne suffisaient plus pour 115 agents SHADOW (2026-09-25)
   shadow_max_open: 600            # 400 → 600 le 2026-09-28 au soir (boost des tests en ombre, demande utilisateur)
   shadow_max_open_per_agent: 6    # 4 → 6, même décision
+  # 2026-10-01, décision utilisateur : positions shadow et papier gérées comme en live (sorties partielles, break-even,
+  # protection du gain, stop suiveur, sortie sans progression) pour juger les agents sur la même base que le réel.
+  # Avant : stop et cible fixes (E05 : −10 R en papier, +3,8 R en réel).
+  shadow_avec_gestion: true
   # verdict post-trade « spread élevé » aligné sur le gate 07b (2026-09-25)
   max_spread_sl_ratio: 0.20
   champion_challenger: true

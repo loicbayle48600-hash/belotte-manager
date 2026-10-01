@@ -1,6 +1,8 @@
 """Shadow trading : les agents SHADOW/CANDIDATE tradent virtuellement (entry/sl/tp/timestamp) sans aucun ordre réel."""
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import json
 import os
 from dataclasses import dataclass, field, asdict
@@ -43,6 +45,16 @@ class ShadowPosition:
     expires_at: str = ""       # annulation de l'ordre après `expiry_bars` barres de l'unité d'entrée
     cost_r: float = 0.0        # 2026-09-29 : spread d'entrée en R, déduit du résultat (entrées M1 : le spread y pèse lourd)
     entry_tf: str = ""         # 2026-10-01 : unité d'entrée de l'agent (durée maximale de la position, voir `delai_max_heures`)
+    # 2026-10-01 : état de la gestion « comme en live » (voir `ShadowTrader._gerer`)
+    sl_courant: float = 0.0    # stop actuel (0 = stop initial)
+    realise_r: float = 0.0     # R déjà encaissés par les sorties partielles
+    reste: float = 1.0         # part de la position encore ouverte
+    tp1_fait: bool = False
+    tp2_fait: bool = False
+    meilleur: float = 0.0      # meilleur prix atteint
+    protege: bool = False      # protection du gain déclenchée
+    derniere_barre: str = ""   # dernière bougie M5 traitée (traitement incrémental)
+    atr_gestion: float = 0.0   # ATR du stop suiveur (H1 en intraday, unité propre en H4 / D1 / W1)
 
 
 #: 2026-10-01 (« trades semi-longs ») : une position shadow d'un agent H4 / D1 / W1 était coupée à 72 h comme un trade
@@ -57,6 +69,9 @@ def delai_max_heures(entry_tf: str, defaut: float = 72.0) -> float:
 class ShadowTrader:
     def __init__(self, store: LearningStore, state_file: Path, risk_money: float = 100.0, max_open: int = 50,
                  max_per_agent: int = 0):
+        # 2026-10-01 : gestion « comme en live » (PMConfig) ; None = stop et cible fixes (comportement d'origine)
+        self.gestion = None
+        self.sans_progression: dict = {}
         self.store = store
         self.file = Path(state_file)
         self.risk_money = risk_money
@@ -201,6 +216,15 @@ class ShadowTrader:
                 continue
             dist = abs(p.entry - p.sl)
             exit_px, reason = None, ""
+            if self.gestion is not None and dist > 0:
+                exit_px, reason = self._gerer(p, bars, side, dist, snap, opened)
+                dirty = True
+                if exit_px is None and timed_out:
+                    exit_px, reason = float(df["close"].iloc[-2]), "timeout"
+                if exit_px is None:
+                    continue
+                self._clore(p, pid, exit_px, reason, side, dist, now, opened, closed)
+                continue
             for b in bars.itertuples():
                 hi, lo = float(b.high), float(b.low)
                 r_hi = side.sign * (hi - p.entry) / dist
@@ -231,6 +255,95 @@ class ShadowTrader:
         if dirty:
             self._save()
         return closed
+
+    def _atr(self, p: ShadowPosition, snap) -> float:
+        """ATR du stop suiveur, comme `Orchestrator._atr_gestion` : unité propre pour H4 / D1 / W1, ATR H1 sinon."""
+        if p.atr_gestion > 0:
+            return p.atr_gestion
+        v = 0.0
+        if p.entry_tf in ("H4", "D1", "W1"):
+            df = snap.frames.get(p.entry_tf) if snap is not None else None
+            if df is not None and len(df) >= 3 and "atr14" in df.columns:
+                x = float(df["atr14"].iloc[-2])
+                v = x if x == x and x > 0 else 0.0
+        if v <= 0:
+            v = float(getattr(snap, "atr_h1", 0.0) or 0.0)
+        if v <= 0:
+            v = abs(p.entry - p.sl)
+        p.atr_gestion = v
+        return v
+
+    def _gerer(self, p: ShadowPosition, bars, side: Side, dist: float, snap, opened: datetime):
+        """Gestion « comme en live », bougie M5 par bougie, sur les seules bougies pas encore traitées : stop (avant tout),
+        cible, sorties partielles, protection du gain (seuil par unité de temps), break-even, verrou, stop suiveur, sortie
+        sans progression. Renvoie (prix de sortie, raison) ou (None, "")."""
+        from ..execution.position_manager import PositionManager
+
+        cfg = self.gestion.for_regime(p.regime)
+        seuil = PositionManager._seuil_protection(cfg, SimpleNamespace(entry_tf=p.entry_tf))
+        atr = self._atr(p, snap)
+        sgn = side.sign
+        mieux = (lambda a, b: max(a, b)) if side is Side.BUY else (lambda a, b: min(a, b))
+        sl = p.sl_courant or p.sl
+        p.meilleur = p.meilleur or p.entry
+        npe = self.sans_progression or {}
+        npe_ok = bool(npe.get("enabled")) and p.entry_tf.upper() in {str(x).upper() for x in (npe.get("timeframes") or [])}
+        depuis = pd.Timestamp(p.derniere_barre) if p.derniere_barre else None
+        for b in bars.itertuples():
+            t = pd.Timestamp(b.time)
+            if depuis is not None and t <= depuis:
+                continue
+            hi, lo, close = float(b.high), float(b.low), float(b.close)
+            if (side is Side.BUY and lo <= sl) or (side is Side.SELL and hi >= sl):
+                p.sl_courant = sl
+                return sl, ("sl" if sl == p.sl else "stop_suiveur")
+            if (side is Side.BUY and hi >= p.tp) or (side is Side.SELL and lo <= p.tp):
+                return p.tp, "tp"
+            fav, defav = (hi, lo) if side is Side.BUY else (lo, hi)
+            p.max_r = max(p.max_r, sgn * (fav - p.entry) / dist)
+            p.min_r = min(p.min_r, sgn * (defav - p.entry) / dist)
+            p.meilleur = mieux(p.meilleur, fav)
+            if not p.tp1_fait and p.max_r >= cfg.tp1_r and cfg.tp1_close_percent > 0:
+                part = min(p.reste, cfg.tp1_close_percent / 100.0)
+                p.realise_r += part * cfg.tp1_r
+                p.reste -= part
+                p.tp1_fait = True
+            if p.tp1_fait and not p.tp2_fait and p.max_r >= cfg.tp2_r and cfg.tp2_close_percent > 0:
+                part = min(p.reste, cfg.tp2_close_percent / 100.0)
+                p.realise_r += part * cfg.tp2_r
+                p.reste -= part
+                p.tp2_fait = True
+            if seuil > 0 and p.max_r >= seuil:
+                p.protege = True
+            plancher = p.entry + sgn * float(cfg.break_even_offset_r or 0.0) * dist
+            if p.protege:
+                verrou = max(float(cfg.protect_profit_lock_ratio or 0.0), float(cfg.protect_profit_lock_fraction or 0.0) * p.max_r)
+                if verrou > 0:
+                    plancher = mieux(plancher, p.entry + sgn * verrou * dist)
+            if cfg.break_even_enabled and (p.max_r >= cfg.break_even_r or p.protege):
+                sl = mieux(sl, plancher)
+            if cfg.trailing_enabled and atr > 0 and (p.max_r >= cfg.trailing_start_r or p.protege):
+                sl = mieux(sl, mieux(p.meilleur - sgn * cfg.trailing_atr_multiplier * atr, plancher))
+            p.sl_courant = sl
+            p.derniere_barre = t.isoformat()
+            if npe_ok and (t.to_pydatetime() - opened).total_seconds() >= float(npe.get("max_hours", 8)) * 3600 \
+                    and p.max_r < float(npe.get("min_r", 0.2)):
+                return close, "sans_progression"
+        return None, ""
+
+    def _clore(self, p: ShadowPosition, pid: str, exit_px: float, reason: str, side: Side, dist: float, now: datetime,
+               opened: datetime, closed: list) -> None:
+        r = p.realise_r + p.reste * side.sign * (exit_px - p.entry) / dist - float(p.cost_r or 0.0)
+        rec = TradeRecord(ticket=0, agent_id=p.agent_id, symbol=p.symbol, side=p.side, entry=p.entry, sl=p.sl, risk_money=self.risk_money,
+                          risk_percent=0.0, result_r=round(r, 4), pnl=round(r * self.risk_money, 2), opened_at=p.opened_at,
+                          closed_at=now.isoformat(), mode=p.mode or "shadow", regime=p.regime, session=p.session, tp=[p.tp],
+                          features={"setup_score": p.setup_score, "gestion": "live", "realise_r": round(p.realise_r, 3),
+                                    **({"paper_reason": p.reason} if p.reason else {})},
+                          mae_r=round(-min(0.0, p.min_r), 3), mfe_r=round(max(0.0, p.max_r), 3),
+                          exit_reason=reason, candidate_id=p.id, duration_sec=round((now - opened).total_seconds(), 1))
+        self.store.record_trade(rec)
+        closed.append(rec)
+        del self.positions[pid]
 
     def summary(self) -> dict:
         return {"open": len(self.positions), "by_agent": {a: sum(1 for p in self.positions.values() if p.agent_id == a) for a in {p.agent_id for p in self.positions.values()}}}
