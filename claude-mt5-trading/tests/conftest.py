@@ -14,6 +14,18 @@ from tradinglab.mt5.mock_adapter import MockBroker  # noqa: E402
 FIXED_NOW = datetime(2026, 1, 20, 10, 0, tzinfo=timezone.utc)  # mardi 10:00 UTC, session LONDON
 
 
+@pytest.fixture(autouse=True)
+def _gestion_backtest_par_defaut_isolee():
+    """2026-10-01 : le pipeline de recherche (orchestrateur, optimiseur) branche la gestion de position par défaut du
+    moteur de backtest (réglage global du module) ; sans remise à l'état initial, un test suivant qui compare
+    `run_backtest(management=None)` à une simulation sans gestion échouait selon l'ordre des tests."""
+    from tradinglab.backtest import engine
+
+    avant = engine.DEFAULT_MANAGEMENT
+    yield
+    engine.DEFAULT_MANAGEMENT = avant
+
+
 @pytest.fixture
 def home(tmp_path):
     shutil.copytree(ROOT / "config", tmp_path / "config")

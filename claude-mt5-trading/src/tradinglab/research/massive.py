@@ -34,7 +34,13 @@ from . import optimizer as opt
 SL_ATR = [0.8, 1.0, 1.2, 1.5, 1.8, 2.0, 2.5, 3.0]
 RR = [1.5, 2.0, 3.0]
 #: paramètres propres à chaque stratégie (produit cartésien) ; {} = rien de plus que stop et cible
+#: 2026-10-01 : fenêtres d'ouverture (UTC) de la famille « cassure de range » (session_breakout) : Asie complète, Sydney,
+#: Tokyo, Francfort, Londres, avant New York, ouverture de New York. Horaires d'été (Londres UTC+1, New York UTC-4).
+FENETRES = [("00:00", "07:00"), ("22:00", "00:00"), ("00:00", "02:00"), ("06:00", "07:00"), ("07:00", "08:00"),
+            ("07:00", "09:00"), ("12:00", "13:30"), ("13:30", "14:00"), ("13:30", "14:30"), ("14:30", "15:00")]
+
 KEY_PARAMS: dict[str, dict[str, list]] = {
+    "session_breakout": {"fenetre": [("00:00", "07:00"), ("07:00", "08:00"), ("13:30", "14:00")], "trend_only": [False, True]},
     "ema_trend": {"adx_min": [15, 20, 25, 30]},
     "mtf_trend_pullback": {"rsi": [(30, 70), (38, 62), (45, 55)]},
     "ema_pullback": {},
@@ -70,6 +76,7 @@ KEY_PARAMS_FIN: dict[str, dict[str, list]] = {
     "sr_rejection": {"tol_atr": [0.15, 0.2, 0.3, 0.4, 0.5], "with_trend": [False, True]},
     "donchian_breakout": {"lookback": [8, 10, 15, 20, 30, 40, 55, 80]},
     "rsi2_reversion": {"rsi2": [(3, 97), (5, 95), (10, 90), (15, 85), (20, 80)]},
+    "session_breakout": {"fenetre": FENETRES, "trend_only": [False, True]},
 }
 # 2026-09-30 (demande utilisateur : « or et tous les autres, sur tous les temps possibles ») : M1, H2 et W1 en plus.
 # MT5 refuse une demande égale à sa limite « Max bars » (100 000 : « Invalid params », constaté le 30/09) : 90 000 M1 ≈ 3 mois ; MN1 n'est jamais une unité d'ENTRÉE (trop peu de mois).
@@ -116,6 +123,8 @@ def expand(strategy: str, fin: bool = False) -> list[dict]:
                 base["rsi_lo"], base["rsi_hi"] = v
             elif k == "rsi2":
                 base["rsi_lo"], base["rsi_hi"] = v
+            elif k == "fenetre":
+                base["start"], base["end"] = v
             else:
                 base[k] = v
         for sl in (SL_ATR_FIN if fin else SL_ATR):
@@ -126,6 +135,7 @@ def expand(strategy: str, fin: bool = False) -> list[dict]:
 
 #: espaces LARGES des réglages clés (2026-09-30, recherche continue : « des milliards de tests ») — tirage aléatoire
 ESPACES: dict[str, dict] = {
+    "session_breakout": {"fenetre": ("fenetre", FENETRES), "trend_only": ("bool",)},
     "ema_trend": {"adx_min": ("int", 8, 40)},
     "mtf_trend_pullback": {"rsi_lo": ("sym", 20, 48)},
     "atr_expansion": {"atr_ratio": ("float", 1.0, 2.5)},
@@ -150,6 +160,16 @@ TF_TOUTES = [("M1", "M5"), ("M1", "M15"), ("M5", "M15"), ("M5", "H1"), ("M15", "
              ("D1", "MN1"), ("D1", "D1"), ("W1", "MN1"), ("W1", "W1")]
 
 
+def _cle_idee(strategie, ut, marches, sessions, params=None) -> tuple:
+    """Identité d'une idée (pas de doublon d'un passage à l'autre). Cassures de range : la fenêtre en fait partie, une
+    cassure d'ouverture de New York n'est pas la même idée qu'une cassure du range asiatique."""
+    cle = (strategie, ut, tuple(sorted(marches)), str(sorted(sessions)))
+    if strategie == "session_breakout":
+        p = params or {}
+        cle += (str(p.get("start", "00:00")), str(p.get("end", "07:00")))
+    return cle
+
+
 def tirage(n_reglages: int, seed: int, strategies: Optional[list] = None, classes: Optional[list] = None,
            sessions: Optional[list] = None) -> list[dict]:
     """Configurations tirées au hasard : pour chaque tirage (stratégie, couple d'unités de temps, réglages clés), toute la
@@ -161,7 +181,8 @@ def tirage(n_reglages: int, seed: int, strategies: Optional[list] = None, classe
     out = []
     for _ in range(n_reglages):
         st = rng.choice(strats)
-        e, t = rng.choice(TF_ALEATOIRES)
+        paires = [x for x in TF_ALEATOIRES if x[0] in ("M1", "M5", "M15", "H1")] if st == "session_breakout" else TF_ALEATOIRES
+        e, t = rng.choice(paires)
         base = {}
         for k, spec in ESPACES[st].items():
             if spec[0] == "int":
@@ -173,6 +194,8 @@ def tirage(n_reglages: int, seed: int, strategies: Optional[list] = None, classe
             elif spec[0] == "sym":                       # seuil bas / haut symétriques (RSI)
                 lo = rng.randint(spec[1], spec[2])
                 base["rsi_lo"], base["rsi_hi"] = lo, 100 - lo
+            elif spec[0] == "fenetre":                   # fenêtre d'ouverture (début, fin) en UTC
+                base["start"], base["end"] = rng.choice(spec[1])
         for c in (classes or list(opt.CLASSES)):
             for sl in SL_ATR_FIN:
                 for rr in RR_FIN:
@@ -549,20 +572,21 @@ def main(argv: Optional[list[str]] = None) -> int:  # pragma: no cover - process
     vus = set()
     for a in reg0.agents.values():
         if a.agent_id.startswith("X"):
-            vus.add((a.base_strategy or a.strategy, a.timeframes.get("entry"), tuple(sorted(a.markets)), str(sorted(a.sessions))))
+            vus.add(_cle_idee(a.base_strategy or a.strategy, a.timeframes.get("entry"), a.markets, a.sessions, a.params))
     fp = s.state_dir / "agent_proposals.jsonl"
     if fp.exists():
         for ligne in fp.read_text(encoding="utf-8").splitlines():
             try:
                 d = json.loads(ligne)
-                vus.add((d.get("base_strategy") or d["strategy"], d["timeframes"]["entry"], tuple(sorted(d["markets"])), str(sorted(d["sessions"]))))
+                vus.add(_cle_idee(d.get("base_strategy") or d["strategy"], d["timeframes"]["entry"], d["markets"], d["sessions"],
+                                  d.get("params")))
             except (ValueError, KeyError):
                 pass
     distinctes = []
     for x in retenues:
         c0 = x[0]
         ses = sorted(c0.get("sessions") or opt.SESSIONS)
-        cle_reg = (c0["strategy"], c0["entry_tf"], tuple(sorted(opt.CLASSES_ALL[c0["asset_class"]])), str(ses))
+        cle_reg = _cle_idee(c0["strategy"], c0["entry_tf"], opt.CLASSES_ALL[c0["asset_class"]], ses, c0.get("params"))
         if cle_reg in vus:
             continue
         vus.add(cle_reg)

@@ -128,3 +128,22 @@ def test_tirage_aleatoire_et_seuil_cumulatif():
     assert all(c["fin"] and c["strategy"] in m.ESPACES for c in a)
     assert m.tirage(5, 43, classes=["forex"]) != m.tirage(5, 42, classes=["forex"])
     assert m.seuil_multiple(10**9) > m.seuil_multiple(10**6)
+
+
+
+def test_famille_cassure_d_ouverture_et_passage_m1_du_week_end():
+    """01/10 (« 6 ok ») : nouvelle famille « cassure de range d'ouverture » dans la recherche, passage M1 le week-end."""
+    from datetime import datetime
+
+    from tradinglab.research.continu import semaine_m1_a_faire
+
+    cfgs = [c for c in m.tirage(120, 3, classes=["forex"]) if c["strategy"] == "session_breakout"]
+    assert cfgs and all(("start" in c["params"]) and ("end" in c["params"]) for c in cfgs)
+    assert all(c["entry_tf"] in ("M1", "M5", "M15", "H1") for c in cfgs), "cassures de range : unités intraday seulement"
+    assert {(c["params"]["start"], c["params"]["end"]) for c in cfgs} <= set(m.FENETRES)
+    ny = m._cle_idee("session_breakout", "M5", ["US500"], ["OVERLAP_LDN_NY"], {"start": "13:30", "end": "14:00"})
+    asie = m._cle_idee("session_breakout", "M5", ["US500"], ["OVERLAP_LDN_NY"], {"start": "00:00", "end": "07:00"})
+    assert ny != asie, "deux fenêtres = deux idées"
+    assert semaine_m1_a_faire(datetime(2026, 10, 1, 12), {}) is None, "jeudi : rien"
+    assert semaine_m1_a_faire(datetime(2026, 10, 3, 12), {}) == "2026-S40"
+    assert semaine_m1_a_faire(datetime(2026, 10, 4, 12), {"week_end_m1": "2026-S40"}) is None, "une fois par week-end"

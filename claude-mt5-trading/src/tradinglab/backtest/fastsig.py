@@ -210,7 +210,7 @@ def compare_signals(slow_fn, fast_fn, df: pd.DataFrame, start: int = 0, tol: flo
 
 
 # stratégies converties par groupes (un module par groupe) ; absentes = repli sur le screener d'origine
-for _m in ("fastsig_g1", "fastsig_g2", "fastsig_g3"):
+for _m in ("fastsig_g1", "fastsig_g2", "fastsig_g3", "fastsig_g4"):
     try:
         __import__(f"{__package__}.{_m}")
     except ImportError as _e:

@@ -29,6 +29,17 @@ def _age_cycle(home: Path):
         return None
 
 
+def semaine_m1_a_faire(maintenant: datetime, etat: dict):
+    """Passage M1 dédié (2026-10-01, décision utilisateur) : une fois par week-end, le samedi ou le dimanche (heure locale),
+    quand les marchés hors crypto sont fermés et que télécharger l'historique M1 ne gêne pas le bot. Renvoie
+    l'identifiant de la semaine si le passage reste à faire, sinon None."""
+    if maintenant.weekday() < 5:
+        return None
+    iso = maintenant.isocalendar()
+    semaine = f"{iso[0]}-S{iso[1]:02d}"
+    return None if etat.get("week_end_m1") == semaine else semaine
+
+
 def main(argv=None) -> int:  # pragma: no cover - pilotage de processus
     ap = argparse.ArgumentParser(description="Recherche continue sur la 3090")
     ap.add_argument("--workers", type=int, default=10)
@@ -46,10 +57,18 @@ def main(argv=None) -> int:  # pragma: no cover - pilotage de processus
             continue
         etat["seed"] += 1
         etat["passages"] += 1
-        cmd = [sys.executable, "-m", "tradinglab.research.massive", "--device", "gpu", "--workers", str(args.workers),
-               "--univers", "--sessions", "--tirage", str(args.reglages), "--seed", str(etat["seed"]),
-               "--m-cumul", str(etat["configurations"]), "--top", str(args.top), "--cache-age-h", "24",
-               "--etiquette", f"continu_{etat['passages']}"]
+        semaine_m1 = semaine_m1_a_faire(datetime.now(), etat)
+        if semaine_m1:
+            # week-end : passage M1 dédié (toutes les stratégies, grille fine, toutes les sessions), une fois
+            cmd = [sys.executable, "-m", "tradinglab.research.massive", "--device", "gpu", "--workers", str(args.workers),
+                   "--univers", "--sessions", "--fin", "--timeframes", "M1:M5,M1:M15",
+                   "--m-cumul", str(etat["configurations"]), "--top", str(args.top), "--cache-age-h", "24",
+                   "--etiquette", f"m1_week_end_{semaine_m1}"]
+        else:
+            cmd = [sys.executable, "-m", "tradinglab.research.massive", "--device", "gpu", "--workers", str(args.workers),
+                   "--univers", "--sessions", "--tirage", str(args.reglages), "--seed", str(etat["seed"]),
+                   "--m-cumul", str(etat["configurations"]), "--top", str(args.top), "--cache-age-h", "24",
+                   "--etiquette", f"continu_{etat['passages']}"]
         print(f"{datetime.now():%d/%m %H:%M} passage {etat['passages']} (graine {etat['seed']}, cumul {etat['configurations']:,})", flush=True)
         creation = 0x00004000 if sys.platform == "win32" else 0
         debut = time.time()
@@ -64,6 +83,8 @@ def main(argv=None) -> int:  # pragma: no cover - pilotage de processus
                     pass
                 break
         etat["configurations"] += testees
+        if semaine_m1 and proc.returncode == 0:
+            etat["week_end_m1"] = semaine_m1
         etat["derniere"] = {"date": datetime.now(timezone.utc).isoformat(), "testees": testees, "code": proc.returncode,
                             "duree_sec": round(time.time() - debut), "sortie": (proc.stdout or "")[-400:]}
         etat_f.write_text(json.dumps(etat, ensure_ascii=False, indent=1), encoding="utf-8")
