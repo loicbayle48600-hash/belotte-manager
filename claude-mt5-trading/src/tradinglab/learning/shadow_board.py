@@ -170,3 +170,42 @@ def recherche(home: Path, derniers: int = 15) -> dict:
             "derniere_date": derniere.get("date"), "derniere_duree_sec": derniere.get("duree_sec"),
             "en_marche": not (home / "state" / "recherche_continue.stop").exists(),
             "passages": passages, "idees": idees[:30], "rapports": len(rapports)}
+
+
+def lignes_rapport_agents(home: Path, strategies_cfg: Optional[dict] = None, max_n: int = 6) -> list[str]:
+    """Lignes « agents » du rapport de 17 h New York (2026-10-01, décision utilisateur) :
+    - prêts pour le live : agents SHADOW au verdict « prêt pour revue live » (≥ `min_shadow` trades, PF ≥ seuil, espérance
+      ≥ seuil), meilleurs d'abord ;
+    - à remettre en shadow : agents LIVE avec au moins 10 trades RÉELS et un facteur de profit sous 0,8."""
+    d = shadow_board(home, strategies_cfg)
+    prets = sorted([a for a in d["agents"] if a["statut"] == "SHADOW" and a["verdict"] == "prêt pour revue live"],
+                   key=lambda a: -a["r"])
+    lignes = []
+    if prets:
+        lignes.append("Prêts pour le live (shadow) : " + ", ".join(
+            f"{a['agent_id']} {a['n']} trades {a['r']:+.1f} R PF {a['pf']:.2f}" if a["pf"] is not None
+            else f"{a['agent_id']} {a['n']} trades {a['r']:+.1f} R" for a in prets[:max_n]))
+    else:
+        lignes.append("Prêts pour le live (shadow) : aucun")
+    status = (_read_json(home / "data" / "agent_status.json", {}) or {}).get("status", {}) or {}
+    perdants = []
+    db = home / "data" / "learning.db"
+    if db.exists():
+        con = sqlite3.connect(f"file:{db.as_posix()}?mode=ro", uri=True)
+        try:
+            rows = con.execute(
+                "select agent_id, count(*), sum(result_r), sum(case when result_r > 0 then result_r else 0 end), "
+                "-sum(case when result_r < 0 then result_r else 0 end) from trades "
+                "where mode = 'live' and result_r is not null group by agent_id").fetchall()
+        finally:
+            con.close()
+        for a, n, r, g, l in rows:
+            if status.get(a) == "LIVE" and n >= 10 and l and (g or 0) / l < 0.8:
+                perdants.append((a, int(n), float(r or 0), (g or 0) / l))
+    perdants.sort(key=lambda x: x[2])
+    if perdants:
+        lignes.append("À remettre en shadow (réel) : " + ", ".join(
+            f"{a} {n} trades {r:+.1f} R PF {pf:.2f}" for a, n, r, pf in perdants[:max_n]))
+    else:
+        lignes.append("À remettre en shadow (réel) : aucun")
+    return lignes

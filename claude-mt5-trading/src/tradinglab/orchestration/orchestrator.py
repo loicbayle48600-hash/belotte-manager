@@ -1090,8 +1090,16 @@ class Orchestrator:
                             nature = self.__class__._nature(r)
                             if nature not in [self.__class__._nature(x) for x in raisons]:
                                 raisons.append(str(r))
-        return daily_report_text(self.s.data_dir / "learning.db", debut, fin, comptes, raisons,
-                                 self.s.system.get("gel_reglages"), day_label)
+        texte = daily_report_text(self.s.data_dir / "learning.db", debut, fin, comptes, raisons,
+                                  self.s.system.get("gel_reglages"), day_label)
+        # 2026-10-01 (décision utilisateur) : agents prêts pour le live et agents à remettre en shadow
+        try:
+            from ..learning.shadow_board import lignes_rapport_agents
+
+            texte = texte + "\n" + "\n".join(lignes_rapport_agents(self.s.home, dict(self.s.learning or {})))
+        except Exception as e:  # noqa: BLE001 - la partie agents ne doit jamais empêcher le rapport
+            self.journal.warn("rapport quotidien : partie agents indisponible", error=f"{type(e).__name__}: {e}")
+        return texte
 
     @staticmethod
     def _nature(raison: str) -> str:

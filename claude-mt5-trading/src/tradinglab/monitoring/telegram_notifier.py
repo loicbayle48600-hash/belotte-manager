@@ -20,6 +20,7 @@ fait attendre, jamais planter.
 from __future__ import annotations
 
 import argparse
+import html
 import json
 import os
 import sys
@@ -130,9 +131,11 @@ def format_event(ev: dict) -> str:
                     f"solde labo {_fmt_nombre(ev.get('balance_after'))} "
                     f"(broker {_fmt_nombre(ev.get('broker_balance'))})")
         if kind == "report_day":
-            return f"📊 <b>Rapport du jour</b>\n{ev.get('text', '')}"
+            # texte brut protégé (2026-10-01) : un « < » ou un « & » dans le rapport faisait refuser tout le message
+            return f"📊 <b>Rapport du jour</b>\n{html.escape(str(ev.get('text', '')), quote=False)}"
         if kind == "report_week":
-            return f"📊 <b>Rapport hebdomadaire</b> {ev.get('week', '')}\n{ev.get('text', '')}"
+            return (f"📊 <b>Rapport hebdomadaire</b> {html.escape(str(ev.get('week', '')), quote=False)}\n"
+                    f"{html.escape(str(ev.get('text', '')), quote=False)}")
         if kind == "error":
             return f"{icone} <b>Erreur</b> {heure}\n{ev.get('message', '')}"
     except Exception:  # noqa: BLE001 - un événement mal formé ne doit pas arrêter le notifieur
