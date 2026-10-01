@@ -55,7 +55,7 @@ from ..research.strategy_author import StrategyAuthor
 from ..risk.correlation_guard import CorrelationGuard, CorrelationLimits
 from ..risk.daily_guard import DailyGuard
 from ..risk.prop_guard import PropGuard, PropProfile
-from ..risk.risk_manager import RiskLimits, RiskManager
+from ..risk.risk_manager import RiskLimits, RiskManager, loss_per_lot, round_volume_down
 from ..shadow.shadow import ShadowTrader
 from .market_router import MarketRouter
 from .scheduler import Scheduler
@@ -686,6 +686,71 @@ class Orchestrator:
                           comment_prefix=str(self.s.system.get("order_comment_prefix", "TLAB")))
         return self.gate.evaluate(ctx)
 
+    def _garde_week_end(self, plan, pos, spec) -> tuple[bool, str]:
+        """Position hors crypto à la veille du week-end : la garder ? (2026-10-01, décision utilisateur)
+
+        Seules les positions SEMI-LONGUES (agents de `weekend_semi_long.timeframes`) restent ouvertes, et seulement si :
+        1. leur stop est au moins au prix d'entrée (profit protégé) ;
+        2. un écart de réouverture « 1 week-end sur 100 » (`gap_p99_atr_d1` × ATR journalier) ne coûterait pas plus de
+           `gap_budget_percent` du capital AU-DELÀ du stop, avec le volume gardé ;
+        3. la moitié du volume (`reduce_percent`) est fermée avant le week-end (une fois), le reste continue.
+        Sinon la position est fermée comme avant. Les suiveurs copient la réduction (« partiel maître suivi »)."""
+        cfg = dict(self.prop.profile.raw.get("weekend_semi_long") or {})
+        if not cfg.get("enabled"):
+            return False, "positions hors crypto fermées avant le week-end"
+        tf = self._invalidation_timeframe(plan.agent_id).upper()
+        if tf not in {str(x).upper() for x in (cfg.get("timeframes") or [])}:
+            return False, f"position intraday ({tf}) : fermée avant le week-end"
+        side = Side(plan.side)
+        stop = float(pos.sl) if pos.has_sl else float(plan.last_sl or 0.0)
+        if not stop:
+            return False, "stop inconnu : fermeture prudente"
+        if bool(cfg.get("require_break_even", True)) and side.sign * (stop - plan.entry) < 0:
+            return False, "stop pas encore au prix d'entrée : fermée avant le week-end"
+        snap = self.snapshots.get(plan.symbol)
+        d1 = snap.frames.get("D1") if snap is not None else None
+        atr_d1 = None
+        if d1 is not None and len(d1) >= 3:
+            try:
+                v = float(last_closed(d1)["atr14"])
+                atr_d1 = v if v == v and v > 0 else None
+            except (KeyError, TypeError, ValueError):
+                atr_d1 = None
+        if atr_d1 is None:
+            return False, "ATR journalier indisponible : fermeture prudente"
+        p99 = dict(cfg.get("gap_p99_atr_d1") or {})
+        ecart = float(p99.get(spec.asset_class, p99.get("default", 1.5))) * atr_d1
+        prix = float(pos.price_current or 0.0) or float(plan.entry)
+        coussin = max(0.0, side.sign * (prix - stop))
+        au_dela = max(0.0, ecart - coussin)
+        marque = f"week-end réduit {self.now_fn().date()}"
+        deja = marque in (plan.notes or [])
+        vol = float(pos.volume)
+        vol_garde = vol
+        reduire = float(cfg.get("reduce_percent", 0) or 0) / 100.0
+        if not deja and reduire > 0:
+            a_fermer = round_volume_down(vol * reduire, spec)
+            if a_fermer >= spec.volume_min and vol - a_fermer >= spec.volume_min:
+                vol_garde = vol - a_fermer
+        perte = loss_per_lot(prix, prix - side.sign * au_dela, spec) * vol_garde if au_dela > 0 else 0.0
+        budget = float(cfg.get("gap_budget_percent", 0.25) or 0.0) / 100.0 * float(self.state.equity or 0.0)
+        if perte > budget:
+            return False, f"écart de réouverture possible trop coûteux ({perte:.0f} $ > {budget:.0f} $) : fermée"
+        if not deja and vol_garde < vol:
+            res = self.broker.close_position(int(pos.ticket), round(vol - vol_garde, 8), comment="TLAB week-end moitie")
+            self.journal.event("weekend_reduce", ticket=int(pos.ticket), symbol=plan.symbol, volume_ferme=round(vol - vol_garde, 4),
+                               volume_garde=round(vol_garde, 4), ok=bool(res.ok), retcode=res.retcode,
+                               ecart_p99=round(ecart, 5), coussin=round(coussin, 5), perte_possible=round(perte, 2))
+            if not res.ok:
+                return False, "réduction avant le week-end refusée : fermeture prudente"
+            plan.notes.append(marque)
+        if f"week-end gardé {self.now_fn().date()}" not in (plan.notes or []):
+            plan.notes.append(f"week-end gardé {self.now_fn().date()}")
+            self.journal.event("weekend_keep", ticket=int(pos.ticket), symbol=plan.symbol, agent_id=plan.agent_id, timeframe=tf,
+                               stop=stop, prix=prix, ecart_p99=round(ecart, 5), perte_possible_au_dela_du_stop=round(perte, 2),
+                               budget=round(budget, 2))
+        return True, "semi-long protégé : gardé le week-end"
+
     #: 2026-10-01 (« trades semi-longs ») : unités d'entrée dont le stop suiveur se cale sur leur propre ATR
     UT_ATR_PROPRE = ("H4", "D1", "W1")
 
@@ -768,11 +833,13 @@ class Orchestrator:
             holding = str(self.prop.profile.raw.get("weekend_holding_allowed", "CRYPTO_ONLY") or "").upper()
             if (holding == "CRYPTO_ONLY" and reste_we is not None and 0 <= reste_we <= limite_we
                     and spec is not None and spec.asset_class != "crypto"):
-                ok = self.pm.close(int(ticket), "week-end FOXX")
-                self.journal.event("weekend_close", ticket=int(ticket), symbol=plan.symbol, minutes_avant_week_end=round(reste_we, 1),
-                                   profit=round(float(pos.profit), 2), ok=bool(ok))
-                if ok:
-                    continue
+                garde, pourquoi = self._garde_week_end(plan, pos, spec)
+                if not garde:
+                    ok = self.pm.close(int(ticket), "week-end FOXX")
+                    self.journal.event("weekend_close", ticket=int(ticket), symbol=plan.symbol, minutes_avant_week_end=round(reste_we, 1),
+                                       profit=round(float(pos.profit), 2), ok=bool(ok), raison=pourquoi)
+                    if ok:
+                        continue
             # rollover (2026-09-24) : une paire exotique n'est pas portée à travers le reset 17:00 New York
             cfg_ro = self._rollover_cfg()
             if cfg_ro and self._is_exotic(spec):

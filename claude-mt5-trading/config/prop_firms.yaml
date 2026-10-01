@@ -121,6 +121,18 @@ prop:
   weekend_holding_allowed: CRYPTO_ONLY
   weekend_no_entry_minutes_before: 60
   weekend_close_minutes_before: 15
+  # 2026-10-01, décision utilisateur (« on ne garde pas la fermeture du vendredi pour le semi-long, mais il faut faire
+  # quelque chose pour l'écart de prix ») : les positions SEMI-LONGUES (agents H4 / D1 / W1) restent ouvertes le week-end,
+  # sous trois protections ; toutes les autres positions hors crypto sont fermées comme avant.
+  weekend_semi_long:
+    enabled: true
+    timeframes: [H4, D1, W1]
+    require_break_even: true        # stop au moins au prix d'entrée (profit protégé), sinon fermeture
+    reduce_percent: 50              # la moitié du volume est fermée avant le week-end (gain encaissé, écart divisé par 2)
+    gap_budget_percent: 0.25        # perte au-delà du stop sur un écart « 1 week-end sur 100 » ≤ 0,25 % du capital
+    # écart de réouverture du lundi « 1 week-end sur 100 », en ATR journalier, mesuré sur l'historique H1 du cache
+    # (mai 2023 - sept. 2026) : métaux 0,77 · indices 1,15 · forex 1,26 · énergie 2,40 → arrondis vers le haut
+    gap_p99_atr_d1: {forex: 1.3, indices: 1.2, metals: 0.8, energies: 2.4, default: 1.5}
 
   # --- Paiements ---
   payout_rules: "1er paiement après 14 jours de trading puis tous les 7 jours ; fenêtre de demande 24 h ; partage 70/30 puis 80/20 puis 90/10 ; retrait max 15 % du solde initial par cycle"
