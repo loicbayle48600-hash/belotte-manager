@@ -5,7 +5,8 @@ system:
   # de sécurité ou demande explicite de l'utilisateur. Suivi : page Qualité du dashboard et rapport de 17 h New York.
   # lab-v1 (25/09 19:26 UTC) close à 96/100 trades : le 01/10, l'utilisateur a demandé le forex court terme en live (Asie,
   # puis toutes les sessions) et les trades semi-longs (stop suiveur des agents H4 / D1 / W1 sur l'ATR de leur unité,
-  # positions semi-longues protégées gardées le week-end, sortie à 8 h des trades M1-M15 qui ne décollent pas)
+  # positions semi-longues protégées gardées le week-end, sortie à 8 h des trades M1-M15 qui ne décollent pas,
+  # protection à 1,0 R pour les agents H1)
   # → nouvelle version lab-v2, nouveau gel de 100 trades.
   gel_reglages:
     version: lab-v2

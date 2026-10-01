@@ -106,6 +106,10 @@ profit_management:
     min_r: 0.2
     timeframes: [M1, M5, M15]
   protect_profit_risk_ratio: 0.5
+  # 2026-10-01, décision utilisateur (« oui ») : agents H1 seulement, protection à 1,0 R. Rejeu des 36 trades H1 réels du
+  # 22/09 au 01/10 : +8,1 R au lieu de +1,7 R ; en contrepartie plus de perdants (34 % au lieu de 28 %), plus de stops
+  # pleins (28 % au lieu de 19 %), drawdown 6,4 R au lieu de 5,1 R. Les autres agents gardent 0,5 R.
+  protect_profit_risk_ratio_by_tf: {H1: 1.0}
   protect_profit_money: 0
   # Verrou : le plus haut de 0,25 R (minimum) et de la MOITIÉ du meilleur profit atteint (monte avec le trade). Une fois
   # à +0,5 R le trade ne peut plus finir en perte ; à +1,2 R il garde au moins 0,6 R. Si le niveau est trop près du prix

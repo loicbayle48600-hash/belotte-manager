@@ -41,6 +41,9 @@ class PMConfig:
     # taille des lots et vaut aussi chez les suiveurs. `protect_profit_money` : seuil absolu en devise du compte,
     # optionnel (le premier atteint déclenche). 0 = désactivé.
     protect_profit_risk_ratio: float = 0.0
+    # 2026-10-01, décision utilisateur : seuil de protection par unité d'entrée de l'agent (ex. {"H1": 1.0}) ; sinon le
+    # seuil général ci-dessus
+    protect_profit_risk_ratio_by_tf: dict | None = None
     protect_profit_money: float = 0.0
     # 2026-09-28, demande utilisateur : « si ça monte à 40 $, je ne veux pas que ça redescende sous 35 $ » → une fois la
     # protection déclenchée, le stop verrouille cette fraction du risque initial (0,14 R = 35 $ pour 250 $ risqués) et
@@ -73,6 +76,7 @@ class MarketContext:
     structure_ok: bool = True                 # structure favorable confirmée (pour BE)
     invalidated: bool = False                 # règle d'invalidation de l'agent déclenchée
     invalidation_reason: str = ""             # règle lue (texte) pour le journal / le post-trade
+    entry_tf: str = ""                        # unité d'entrée de l'agent (seuil de protection par unité, 2026-10-01)
 
 
 def r_multiple(plan: BotPositionPlan, price: float) -> float:
@@ -227,7 +231,7 @@ class PositionManager:
         # 3a. protection du profit (2026-09-28, demande utilisateur) : dès que le profit flottant atteint le seuil
         #     (fraction du risque initial, ou montant absolu), break-even et stop suiveur sont armés (`trailing_forced`,
         #     même mécanique que le bouton break-even), quel que soit le R par ailleurs
-        ratio = float(cfg.protect_profit_risk_ratio or 0.0)
+        ratio = self._seuil_protection(cfg, ctx)
         seuil = float(cfg.protect_profit_money or 0.0)
         if (ratio > 0 or seuil > 0) and not plan.trailing_forced:
             profit = float(getattr(pos, "profit", 0.0) or 0.0)
@@ -246,7 +250,7 @@ class PositionManager:
         #     pas pu être posé au verrou (distance minimale du broker) et que le prix repasse sous le verrou, la position
         #     est fermée au marché — le stop broker, posé au plus près, reste le filet en cas de trou entre deux cycles
         lock = self._lock_r(plan, cfg)
-        if plan.trailing_forced and lock > 0 and plan.max_r >= max(lock, float(cfg.protect_profit_risk_ratio or 0.0)) and r < lock and not jeune:
+        if plan.trailing_forced and lock > 0 and plan.max_r >= max(lock, self._seuil_protection(cfg, ctx)) and r < lock and not jeune:
             verrou = plan.entry + side.sign * lock * abs(plan.entry - plan.initial_sl)
             stop_broker = pos.sl if pos.has_sl else plan.last_sl
             if not stop_broker or not is_tighter_or_equal(side, stop_broker, verrou):
@@ -366,6 +370,17 @@ class PositionManager:
             return (datetime.now(timezone.utc) - t).total_seconds()
         except (TypeError, ValueError):
             return float("inf")
+
+    @staticmethod
+    def _seuil_protection(cfg: PMConfig, ctx: Optional[MarketContext]) -> float:
+        """Seuil de la protection du profit, en R. 2026-10-01 (décision utilisateur, rejeu des 36 trades H1 du 22/09 au
+        01/10 : +8,1 R au lieu de +1,7 R, mais plus de stops pleins) : par unité d'entrée de l'agent si elle est réglée
+        (`protect_profit_risk_ratio_by_tf`, ex. H1 → 1,0 R), sinon le seuil général (0,5 R)."""
+        par_ut = {str(k).upper(): v for k, v in (cfg.protect_profit_risk_ratio_by_tf or {}).items()}
+        tf = str(getattr(ctx, "entry_tf", "") or "").upper()
+        if tf and tf in par_ut:
+            return float(par_ut[tf] or 0.0)
+        return float(cfg.protect_profit_risk_ratio or 0.0)
 
     def _floor_level(self, plan: BotPositionPlan, side: Side, spec: Optional[SymbolSpec], cfg: Optional[PMConfig] = None) -> float:
         """Plancher du stop une fois le profit protégé : le break-even, ou plus haut, le verrou de profit

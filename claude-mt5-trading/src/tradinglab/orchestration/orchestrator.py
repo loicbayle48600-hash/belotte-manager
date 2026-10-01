@@ -877,7 +877,8 @@ class Orchestrator:
                 if ok:
                     continue
             snap = self.snapshots.get(plan.symbol)
-            ctx = MarketContext(atr=self._atr_gestion(plan, snap))
+            ctx = MarketContext(atr=self._atr_gestion(plan, snap),
+                                entry_tf=self._invalidation_timeframe(plan.agent_id) if self.registry.get(plan.agent_id) else "")
             if snap is not None:
                 # L'invalidation des screeners s'exprime sur le tf d'entrée de l'agent (sauf tf explicite dans le
                 # texte, cf. `_invalidation_hit`) : on lit donc ce tf (M5/M15/H1 selon la spec), pas M15 en dur. Un agent H1 était

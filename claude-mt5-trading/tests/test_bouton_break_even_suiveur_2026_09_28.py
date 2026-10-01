@@ -195,3 +195,39 @@ def test_gros_profit_le_bouton_verrouille_le_profit_actuel(broker, tmp_path):
     marge = max(spec.min_stop_distance, spec.tick_size) + spec.tick_size
     assert sl >= broker.tick("EURUSD").bid - marge - 2 * spec.tick_size    # ≈ +2,4 R verrouillés, pas +0,05 R
     assert plan.trailing_forced
+
+
+
+def test_protection_par_unite_h1_a_1_r(broker, tmp_path):
+    """01/10, décision utilisateur : agents H1 → protection à 1,0 R ; les autres gardent le seuil général."""
+    for tf, protege_a_0_7 in (("H1", False), ("M15", True), ("", True)):
+        pm, store = _pm(broker, tmp_path / (tf or "aucune"))
+        pm.cfg = PMConfig(protect_profit_risk_ratio=0.5, protect_profit_risk_ratio_by_tf={"H1": 1.0})
+        pos, plan = _buy(broker, store)
+        spec = broker.symbol_info("EURUSD")
+        dist = pos.price_open - pos.sl
+        broker.set_price("EURUSD", pos.price_open + 0.70 * dist)          # +0,70 R
+        pm.manage(plan, broker.position(pos.ticket), spec, MarketContext(atr=0.0004, structure_ok=True, entry_tf=tf))
+        assert plan.trailing_forced is protege_a_0_7, tf
+        if tf == "H1":
+            broker.set_price("EURUSD", pos.price_open + 1.05 * dist)      # +1,05 R : protection H1 déclenchée
+            pm.manage(plan, broker.position(pos.ticket), spec, MarketContext(atr=0.0004, structure_ok=True, entry_tf=tf))
+            assert plan.trailing_forced
+        pm.close(int(pos.ticket), "fin du test")
+
+
+def test_configuration_protection_h1():
+    import yaml
+
+    pm = yaml.safe_load(open("config/risk.yaml", encoding="utf-8"))
+    def cherche(o):
+        if isinstance(o, dict):
+            if "protect_profit_risk_ratio_by_tf" in o:
+                return o
+            for v in o.values():
+                r = cherche(v)
+                if r is not None:
+                    return r
+        return None
+    c = cherche(pm)
+    assert c["protect_profit_risk_ratio_by_tf"] == {"H1": 1.0} and c["protect_profit_risk_ratio"] == 0.5
