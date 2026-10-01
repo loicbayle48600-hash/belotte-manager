@@ -22,6 +22,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sys
 import time
 import urllib.error
 import urllib.parse
@@ -143,12 +144,41 @@ def format_event(ev: dict) -> str:
 class TelegramSender:
     """Envoi HTTP minimal. Renvoie True/False, ne lève jamais, ne journalise aucun secret."""
 
-    def __init__(self, token: str, chat_id: str, timeout: float = 15.0) -> None:
+    def __init__(self, token: str, chat_id: str, timeout: float = 15.0, state_file: Optional[Path] = None) -> None:
         self.token = token
         self.chat_id = str(chat_id)
         self.timeout = float(timeout)
+        # 2026-10-01 : le groupe de l'utilisateur a été converti en SUPERGROUPE (nouvel identifiant) ; chaque envoi était
+        # refusé (« group chat was upgraded to a supergroup chat ») sans aucune trace. L'identifiant de migration renvoyé
+        # par Telegram est suivi automatiquement et mémorisé ici (jamais dans .env, que seul l'utilisateur modifie).
+        self.state_file = Path(state_file) if state_file else None
+        migre = self._migrations().get(self.chat_id)
+        if migre:
+            self.chat_id = str(migre)
 
-    def send(self, text: str) -> bool:
+    def _migrations(self) -> dict:
+        if self.state_file is None or not self.state_file.exists():
+            return {}
+        try:
+            return dict(json.loads(self.state_file.read_text(encoding="utf-8")).get("chat_migre") or {})
+        except (OSError, ValueError, TypeError):
+            return {}
+
+    def _memoriser_migration(self, ancien: str, nouveau: str) -> None:
+        if self.state_file is None:
+            return
+        try:
+            d = json.loads(self.state_file.read_text(encoding="utf-8")) if self.state_file.exists() else {}
+        except (OSError, ValueError):
+            d = {}
+        d.setdefault("chat_migre", {})[ancien] = nouveau
+        try:
+            self.state_file.parent.mkdir(parents=True, exist_ok=True)
+            self.state_file.write_text(json.dumps(d), encoding="utf-8")
+        except OSError:
+            pass
+
+    def send(self, text: str, _relance: bool = True) -> bool:
         data = urllib.parse.urlencode({
             "chat_id": self.chat_id,
             "text": text[:MAX_MESSAGE_CHARS],
@@ -159,7 +189,23 @@ class TelegramSender:
         try:
             with urllib.request.urlopen(req, timeout=self.timeout) as resp:
                 return json.loads(resp.read().decode("utf-8")).get("ok", False)
-        except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, OSError, ValueError):
+        except urllib.error.HTTPError as e:
+            # corps JSON de Telegram : jamais l'URL (elle contient le token)
+            try:
+                corps = json.loads(e.read().decode("utf-8"))
+            except (OSError, ValueError):
+                corps = {}
+            nouveau = (corps.get("parameters") or {}).get("migrate_to_chat_id")
+            if nouveau and _relance:
+                ancien, self.chat_id = self.chat_id, str(nouveau)
+                self._memoriser_migration(ancien, self.chat_id)
+                print(f"conversation Telegram convertie en supergroupe : nouvel identifiant {self.chat_id} "
+                      f"(à reporter dans .env, TELEGRAM_CHAT_ID)", file=sys.stderr, flush=True)
+                return self.send(text, _relance=False)
+            print(f"envoi Telegram refusé : HTTP {e.code} {corps.get('description', '')}", file=sys.stderr, flush=True)
+            return False
+        except (urllib.error.URLError, TimeoutError, OSError, ValueError) as e:
+            print(f"envoi Telegram impossible : {type(e).__name__}", file=sys.stderr, flush=True)
             return False        # le token ne doit jamais fuir dans un message d'erreur
 
 
@@ -241,7 +287,7 @@ def run(home: Optional[Path] = None, since_now: bool = True, max_tours: Optional
     s = load_settings(home)
     kinds = tuple(k.strip() for k in os.environ.get("TELEGRAM_KINDS", "").split(",") if k.strip()) or DEFAULT_KINDS
     kinds = tuple(dict.fromkeys(kinds + ALWAYS_KINDS))
-    sender = TelegramSender(token, chat)
+    sender = TelegramSender(token, chat, state_file=s.state_dir / "telegram_chat.json")
     tail = JournalTail(s.logs_dir, s.state_dir / "telegram_notifier.json")
     if since_now:
         tail.aller_a_la_fin()               # un démarrage ne rejoue pas la journée
