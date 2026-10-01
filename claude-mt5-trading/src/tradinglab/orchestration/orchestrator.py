@@ -686,6 +686,23 @@ class Orchestrator:
                           comment_prefix=str(self.s.system.get("order_comment_prefix", "TLAB")))
         return self.gate.evaluate(ctx)
 
+    def _sans_progression(self, plan) -> bool:
+        """Trade qui ne décolle pas (2026-10-01, décision utilisateur « oui, mais 8 h ») : agent de
+        `no_progress_exit.timeframes` (M1 / M5 / M15), ouvert depuis `max_hours` (8 h) et dont le meilleur R atteint est
+        resté sous `min_r` (+0,2 R) → fermé au marché. Agent inconnu (position adoptée) ou date illisible : jamais."""
+        cfg = dict((self.s.profit_management or {}).get("no_progress_exit") or {})
+        if not cfg.get("enabled"):
+            return False
+        if self.registry.get(plan.agent_id) is None:
+            return False
+        tf = self._invalidation_timeframe(plan.agent_id).upper()
+        if tf not in {str(x).upper() for x in (cfg.get("timeframes") or [])}:
+            return False
+        age = self._position_age_sec(plan)
+        if age == float("inf"):
+            return False
+        return age >= float(cfg.get("max_hours", 8)) * 3600.0 and float(plan.max_r or 0.0) < float(cfg.get("min_r", 0.2))
+
     def _garde_week_end(self, plan, pos, spec) -> tuple[bool, str]:
         """Position hors crypto à la veille du week-end : la garder ? (2026-10-01, décision utilisateur)
 
@@ -850,6 +867,15 @@ class Orchestrator:
                                        profit=round(float(pos.profit), 2), ok=bool(ok))
                     if ok:
                         continue
+            # sortie sans progression (2026-10-01, décision utilisateur) : voir `_sans_progression`
+            if self._sans_progression(plan):
+                age_h = self._position_age_sec(plan) / 3600.0
+                ok = self.pm.close(int(ticket), "sans progression")
+                self.journal.event("no_progress_exit", ticket=int(ticket), symbol=plan.symbol, agent_id=plan.agent_id,
+                                   max_r=round(float(plan.max_r or 0.0), 3), heures=round(age_h, 2),
+                                   profit=round(float(pos.profit), 2), ok=bool(ok))
+                if ok:
+                    continue
             snap = self.snapshots.get(plan.symbol)
             ctx = MarketContext(atr=self._atr_gestion(plan, snap))
             if snap is not None:
