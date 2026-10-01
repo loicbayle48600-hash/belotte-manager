@@ -1388,6 +1388,8 @@ class Orchestrator:
         La qualité des données reste jugée sur l'unité principale : une unité ajoutée ne bloque jamais un marché."""
         from ..core.clock import TF_SECONDS
 
+        if getattr(self, "feed", None) is None:          # avant startup() ou orchestrateur minimal (tests) : rien à aligner
+            return {}
         base = {str(tf).upper() for tf in self.feed.timeframes}
         statuts = {AgentStatus.SHADOW.value, AgentStatus.CANDIDATE.value, AgentStatus.LIVE.value, AgentStatus.DEGRADED.value}
         besoins: dict[str, list] = {}
@@ -1666,7 +1668,7 @@ class Orchestrator:
                         continue
                     self.registry.set_status(str(d["agent_id"]), statut, str(d.get("reason", "")))
                     self.journal.event("agent_status_applied", agent_id=d["agent_id"], status=statut.value,
-                                       reason=d.get("reason", ""), source="research_worker")
+                                       reason=d.get("reason", ""), source=str(d.get("source") or "research_worker"))
                     n += 1
                 except (ValueError, KeyError, TypeError) as e:
                     self.journal.warn("demande de statut illisible", error=f"{type(e).__name__}: {e}", ligne=ligne[:120])

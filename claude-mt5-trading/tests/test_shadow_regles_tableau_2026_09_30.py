@@ -80,7 +80,8 @@ def test_tableau_shadow_et_page(tmp_path, settings):
     st2 = LearningStore(home / "data" / "learning.db")
     _trades(st2, perdant, [1.0, -1.0, -1.0] * 17)
     _trades(st2, n_agent, [2.0, -1.0] * 25, base=500)
-    (home / "data" / "agent_status.json").write_text(json.dumps({"status": {perdant: "SHADOW", n_agent: "SHADOW"}}), encoding="utf-8")
+    _trades(st2, jeune, [2.0, -1.0] * 50, base=1000)                 # 100 trades, PF 2,0
+    (home / "data" / "agent_status.json").write_text(json.dumps({"status": {perdant: "SHADOW", n_agent: "SHADOW", jeune: "SHADOW"}}), encoding="utf-8")
     (home / "state" / "shadow_positions.json").write_text(json.dumps({"positions": {"a": {"agent_id": "X99"}}}), encoding="utf-8")
     (home / "state" / "recherche_continue.json").write_text(json.dumps({"passages": 3, "configurations": 1234}), encoding="utf-8")
     (home / "reports" / "massive_continu_1_2026-09-30_0725.json").write_text(json.dumps({
@@ -91,9 +92,11 @@ def test_tableau_shadow_et_page(tmp_path, settings):
     d = shadow_board(home, settings.raw.get("learning", {}))
     par_id = {a["agent_id"]: a for a in d["agents"]}
     assert par_id[perdant]["verdict"] == "perdant"
-    assert par_id[n_agent]["verdict"] == "prêt pour revue live"
+    # 2026-10-01, décision utilisateur : 100 trades shadow avant le live (20 avant)
+    assert par_id[n_agent]["verdict"] == "en cours", "50 trades : pas encore jugé"
+    assert par_id[jeune]["verdict"] == "prêt pour revue live"
     assert par_id["X99"]["ouvertes"] == 1 and par_id["X99"]["n"] == 0
-    assert d["criteres"]["min_shadow"] == 20 and d["criteres"]["perdant_n"] == 50
+    assert d["criteres"]["min_shadow"] == 100 and d["criteres"]["perdant_n"] == 50
     fam_n = next(f for f in d["familles"] if f["famille"] == "N")
     assert fam_n["n"] == 50 and fam_n["pf"] == 2.0
     r = d["recherche"]

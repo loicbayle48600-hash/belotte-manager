@@ -15,7 +15,7 @@ import numpy as np
 import pandas as pd
 
 from ..agents.registry import AgentSpec
-from ..agents.screeners import run_screener
+from ..agents.screeners import SCREENERS, _load_own_strategies, run_screener
 from ..backtest.engine import Signal
 from ..core.clock import current_session
 from ..core.types import Regime, Session, Side, SymbolSpec
@@ -143,7 +143,12 @@ def make_signal_fn(spec: AgentSpec, symbol_spec: SymbolSpec, entry_tf: str = "M1
     cache: dict = {"times": None, "e": None, "t": None, "t_times": None}
     # 2026-09-29 : jumeau vectorisé (backtest/fastsig.py) si la stratégie en a un et que l'équivalence est prouvée
     from ..backtest import fastsig as _fs
-    fast_name = spec.strategy if spec.strategy in _fs.FAST else (spec.base_strategy if getattr(spec, "base_strategy", None) in _fs.FAST else None)
+    # 2026-10-01 : jumeau du screener RÉELLEMENT utilisé (même règle que `resolve_screener`). Un agent qui a sa propre
+    # stratégie (B01, C05, les challengers CH…) recevait le jumeau de sa stratégie de base (ema_trend…) : ses backtests
+    # du pipeline étaient faux depuis le 29/09 (182 agents). Sans jumeau de sa stratégie propre : chemin lent, exact.
+    _load_own_strategies()
+    cle_screener = spec.strategy if SCREENERS.get(spec.strategy or "") is not None else getattr(spec, "base_strategy", None)
+    fast_name = cle_screener if cle_screener in _fs.FAST else None
     use_fast = (fast if fast is not None else True) and fast_name is not None         and str((spec.params or {}).get("entry_kind", "MARKET") or "MARKET").upper() == "MARKET"
 
     def _trend_frame(df: pd.DataFrame) -> pd.DataFrame:

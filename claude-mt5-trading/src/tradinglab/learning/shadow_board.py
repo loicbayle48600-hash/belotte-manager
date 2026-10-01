@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import re
 import sqlite3
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
@@ -78,6 +79,7 @@ def shadow_board(home: Path, strategies_cfg: Optional[dict] = None) -> dict:
             ouvertes[a] = ouvertes.get(a, 0) + 1
 
     infos = _infos_agents(home)
+    demandes = demandes_live_en_attente(home)
     agents: list[dict] = []
     db = home / "data" / "learning.db"
     if db.exists():
@@ -99,13 +101,14 @@ def shadow_board(home: Path, strategies_cfg: Optional[dict] = None) -> dict:
                            "ouvertes": ouvertes.get(a, 0), "dernier": last,
                            "progression": min(100, round(100 * n / min_shadow)),
                            "verdict": verdict(int(n), pf, exp, min_shadow, pf_live, exp_live, perdant_n, perdant_pf),
+                           "demande_live": a in demandes,
                            "_g": float(g or 0.0), "_l": float(l or 0.0), "_w": int(w or 0)})
     vus = {x["agent_id"] for x in agents}
     for a, k in ouvertes.items():                          # agents qui n'ont encore que des positions ouvertes
         if a not in vus:
             agents.append({"agent_id": a, "famille": famille(a), "strategie": infos.get(a, ""), "statut": status.get(a, "?"), "n": 0,
                            "r": 0.0, "pf": None, "esperance": 0.0, "reussite": 0.0, "ouvertes": k, "dernier": None,
-                           "progression": 0, "verdict": "en cours", "_g": 0.0, "_l": 0.0, "_w": 0})
+                           "progression": 0, "verdict": "en cours", "demande_live": a in demandes, "_g": 0.0, "_l": 0.0, "_w": 0})
     agents.sort(key=lambda x: -x["r"])
 
     fams: dict[str, dict] = {}
@@ -142,6 +145,57 @@ def shadow_board(home: Path, strategies_cfg: Optional[dict] = None) -> dict:
     return {"resume": resume, "familles": familles, "agents": agents, "recherche": recherche(home),
             "criteres": {"min_shadow": min_shadow, "min_sample": n_req, "pf_live": pf_live, "exp_live": exp_live,
                          "perdant_n": perdant_n, "perdant_pf": perdant_pf}}
+
+
+_ID_AGENT = re.compile(r"^[A-Z][A-Z0-9_]{0,23}$")
+PRET = "prêt pour revue live"
+
+
+def demandes_live_en_attente(home: Path) -> set[str]:
+    """Agents dont le passage en LIVE est demandé mais pas encore appliqué par l'orchestrateur."""
+    out: set[str] = set()
+    for nom in ("agent_status_requests.jsonl", "agent_status_requests.processing"):
+        try:
+            lignes = (home / "state" / nom).read_text(encoding="utf-8").splitlines()
+        except OSError:
+            continue
+        for ligne in lignes:
+            try:
+                d = json.loads(ligne)
+            except ValueError:
+                continue
+            if isinstance(d, dict) and str(d.get("status")) == "LIVE":
+                out.add(str(d.get("agent_id")))
+    return out
+
+
+def demander_passage_live(home: Path, strategies_cfg: Optional[dict], agent_id: str, source: str = "dashboard") -> dict:
+    """Passage en LIVE validé par l'utilisateur pour un agent au verdict « prêt pour revue live » (2026-10-01, demande
+    utilisateur : valider depuis le dashboard le passage en live des agents prêts).
+
+    Le verdict est recalculé ici, jamais repris de la page. La demande est ajoutée à `state/agent_status_requests.jsonl`,
+    que l'orchestrateur, seul écrivain du registre, applique à son cycle suivant. Aucun ordre, aucun réglage modifié."""
+    aid = str(agent_id or "").strip().upper()
+    if not _ID_AGENT.match(aid):
+        return {"ok": False, "error": "identifiant d'agent invalide"}
+    ligne = next((a for a in shadow_board(home, strategies_cfg)["agents"] if a["agent_id"] == aid), None)
+    if ligne is None:
+        return {"ok": False, "error": f"{aid} : aucun trade shadow"}
+    if ligne["statut"] not in ("SHADOW", "CANDIDATE"):
+        return {"ok": False, "error": f"{aid} est {ligne['statut']} : seul un agent en shadow peut passer en live"}
+    if ligne["verdict"] != PRET:
+        return {"ok": False, "error": f"{aid} n'est pas prêt ({ligne['verdict']}, {ligne['n']} trades shadow)"}
+    if aid in demandes_live_en_attente(home):
+        return {"ok": True, "agent_id": aid, "message": f"{aid} : passage en live déjà demandé, appliqué au prochain cycle du bot"}
+    pf = f"PF {ligne['pf']:.2f}" if ligne["pf"] is not None else "sans perte"
+    raison = f"validé par l'utilisateur ({source}) : {ligne['n']} trades shadow, {ligne['r']:+.1f} R, {pf}"
+    f = home / "state" / "agent_status_requests.jsonl"
+    f.parent.mkdir(parents=True, exist_ok=True)
+    with f.open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps({"agent_id": aid, "status": "LIVE", "reason": raison, "source": source,
+                             "ts": datetime.now(timezone.utc).isoformat()}, ensure_ascii=False) + "\n")
+    return {"ok": True, "agent_id": aid, "raison": raison,
+            "message": f"{aid} : passage en live demandé, appliqué au prochain cycle du bot (quelques secondes)"}
 
 
 def recherche(home: Path, derniers: int = 15) -> dict:

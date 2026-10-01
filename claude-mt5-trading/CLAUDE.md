@@ -107,7 +107,7 @@ Claude Code / agents LLM (TIER_A/B/C)  ──lecture, propositions──┐
 | `monitoring/watchdog.py` | processus indépendant, `state/watchdog.json`, action directe sur SL manquant |
 | `api/commands.py`, `api/cli.py` | commandes lecture/action, `python -m tradinglab.api.cli <CMD>` |
 | `mcp/server.py` | outils MCP (lecture + commandes de sécurité + `propose_trade`) |
-| `dashboards/server.py` | dashboard HTTPS authentifié (`0.0.0.0:8765`, cookie, `DASHBOARD_AUTH_*`/`DASHBOARD_TLS`) : lecture (`/api/state`, `/api/stats`) + panneau de contrôle (`/api/command` whitelist, `/api/restart`, `/api/copy/follower`) — jamais d'`order_send` |
+| `dashboards/server.py` | dashboard HTTPS authentifié (`0.0.0.0:8765`, cookie, `DASHBOARD_AUTH_*`/`DASHBOARD_TLS`) : lecture (`/api/state`, `/api/stats`) + panneau de contrôle (`/api/command` whitelist, `/api/restart`, `/api/copy/follower`), validation du passage en live des agents prêts (`/api/shadow/live`, page `/shadow`, via `state/agent_status_requests.jsonl`) — jamais d'`order_send` |
 | `scripts/*.ps1`, `scripts/smoke_test_demo.py` | audit/installation/démarrage/arrêt/autostart Windows, smoke test DEMO |
 | `tests/` | ≈ 990 tests pytest (mock) : risque/gate, prop FOXX, market data, news, backtest, orchestrateur, watchdog, audits datés |
 
@@ -266,7 +266,10 @@ jamais retiré, jamais placé au-delà du prix courant/`stops_level`.
   modification après une seule perte ; `challenger_needed` seulement avec ≥ `min_sample_size` (40) trades.
 - Pipeline (`research/pipeline.py`) : `IDEA → BACKTEST → OUT_OF_SAMPLE → WALK_FORWARD → MONTE_CARLO → SHADOW → STATISTICAL_REVIEW →
   RISK_REVIEW → PROMOTION`, persisté dans `data/research/<agent_id>.json` (historique/rollback). Seuils `config/strategies.yaml` :
-  PF ≥ 1.2, expectancy ≥ 0.10R, DD ≤ 15R, échantillon ≥ 40 ; `live_self_mutation: false`, `shadow_required: true`.
+  PF ≥ 1.2, expectancy ≥ 0.10R, DD ≤ 15R, échantillon ≥ 40 ; `live_self_mutation: false`, `shadow_required: true` ;
+  étape SHADOW et verdict « prêt pour revue live » : `min_shadow_trades` = **100** trades shadow (décision utilisateur
+  du 2026-10-01, 20 avant). Le jumeau vectorisé d'un backtest est celui du screener réellement utilisé (`resolve_screener`) :
+  un agent à stratégie propre sans jumeau passe par le chemin lent.
 - Dégradation (`DegradationManager`) : `LIVE → DEGRADED` (score ≥ 0.5, historique ≥ 60), `DEGRADED → SUSPENDED` (≥ 0.75,
   `auto_suspend_degraded`), retour `LIVE` (< 0.25). Challengers : jitter ±20 % des paramètres numériques, max 3 par cycle.
 - Shadow (`shadow/shadow.py`) : agents `SHADOW/CANDIDATE` ouvrent des positions virtuelles (jamais d'ordre), SL/TP sur barres M5, timeout 72 h.

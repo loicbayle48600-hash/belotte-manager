@@ -120,8 +120,13 @@ def test_shadow_stage_needs_sample_and_full_promotion(settings, broker, home):
     for s in (Stage.BACKTEST, Stage.OUT_OF_SAMPLE, Stage.WALK_FORWARD):
         p._set(rec, s, True, {"symbol": "EURUSD", "sample_size": 30, "max_drawdown_r": 5.0, "expectancy_r": 0.3})
     p._set(rec, Stage.MONTE_CARLO, True, {"p95_max_dd_r": 6.0, "prob_negative": 0.1, "p05_total_r": 2.0})
-    for i in range(25):
+    # 2026-10-01, décision utilisateur : 100 trades shadow exigés (20 avant)
+    n_req = int(settings.learning["min_shadow_trades"])
+    assert n_req == 100
+    for i in range(n_req - 1):
         st.record_trade(TradeRecord(0, ch.agent_id, "EURUSD", "BUY", 1.0, 0.99, 100, 0, 1.0 if i % 3 else -1.0, 0, "t", "t", mode="shadow"))
+    assert not p.stage_shadow(ch).passed(Stage.SHADOW), "99 trades shadow : pas encore"
+    st.record_trade(TradeRecord(0, ch.agent_id, "EURUSD", "BUY", 1.0, 0.99, 100, 0, 1.0, 0, "t", "t", mode="shadow"))
     assert p.stage_shadow(ch).passed(Stage.SHADOW)
     assert p.stage_statistical_review(ch).passed(Stage.STATISTICAL_REVIEW)
     assert p.stage_risk_review(ch).passed(Stage.RISK_REVIEW)

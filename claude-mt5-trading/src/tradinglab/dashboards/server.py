@@ -1529,7 +1529,8 @@ SECURITY_HEADERS = (
     ("X-Content-Type-Options", "nosniff"),
     ("Cache-Control", "no-store"),
 )
-API_POST_ROUTES = ("/api/command", "/api/copy/follower", "/api/restart", "/api/copy/factor", "/api/copy/remove")
+API_POST_ROUTES = ("/api/command", "/api/copy/follower", "/api/restart", "/api/copy/factor", "/api/copy/remove",
+                   "/api/shadow/live")
 
 
 class DashboardHandler(BaseHTTPRequestHandler):
@@ -1736,7 +1737,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 return
             {"/api/command": self._post_command, "/api/copy/follower": self._post_follower,
              "/api/restart": self._post_restart, "/api/copy/factor": self._post_factor,
-             "/api/copy/remove": self._post_remove_follower}[path]()
+             "/api/copy/remove": self._post_remove_follower, "/api/shadow/live": self._post_shadow_live}[path]()
             return
         if path != "/login" or self.server.auth_token is None:
             self._refuse()
@@ -1869,6 +1870,39 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return
         self._send_json({"ok": True, **out, "note": "Facteur mis à jour — appliqué aux prochaines ouvertures (les positions déjà copiées gardent leur taille)."})
 
+    def _post_shadow_live(self) -> None:
+        """Validation, depuis la page Shadow, du passage en LIVE d'un agent prêt (2026-10-01, demande utilisateur).
+        Le verdict est recalculé côté serveur ; la demande passe par `state/agent_status_requests.jsonl`, appliquée par
+        l'orchestrateur (seul écrivain du registre) à son cycle suivant. Jamais d'ordre, jamais de réglage modifié."""
+        if not self._authorized():
+            self._send_json({"ok": False, "error": "authentification requise"}, HTTPStatus.UNAUTHORIZED)
+            return
+        try:
+            length = min(int(self.headers.get("Content-Length", "0") or 0), 4096)
+            payload = json.loads(self.rfile.read(length).decode("utf-8") or "{}")
+            agent_id = str(payload.get("agent_id", ""))
+        except (ValueError, UnicodeDecodeError, AttributeError):
+            self._send_json({"ok": False, "error": "corps JSON invalide"}, HTTPStatus.BAD_REQUEST)
+            return
+        from ..learning.shadow_board import demander_passage_live
+
+        data = self.server.data
+        try:
+            out = demander_passage_live(data.home, dict(data.settings.learning or {}), agent_id)
+        except Exception as exc:  # noqa: BLE001 - jamais de trace de pile vers le client
+            self._send_json({"ok": False, "error": f"erreur interne: {type(exc).__name__}"}, HTTPStatus.INTERNAL_SERVER_ERROR)
+            return
+        if out.get("ok"):
+            data._shadow_cache = None                     # la page relue affiche « demandé » tout de suite
+            try:
+                from ..core.journal import Journal
+
+                Journal(data.home / "logs", component="dashboard").event("agent_live_demande", agent_id=out["agent_id"],
+                                                                         reason=out.get("raison", ""))
+            except Exception:  # noqa: BLE001 - la demande est écrite ; le journal ne doit pas la faire échouer
+                pass
+        self._send_json(out, HTTPStatus.OK if out.get("ok") else HTTPStatus.BAD_REQUEST)
+
     def _post_remove_follower(self) -> None:
         """Suppression complète d'un compte suiveur depuis le panneau (2026-09-24), après confirmation côté page :
         config, fichiers d'état et identifiants .env du suiveur. Les positions déjà copiées ne sont pas fermées."""
@@ -1988,11 +2022,16 @@ SHADOW_HTML = r"""<!doctype html><html lang="fr"><head><meta charset="utf-8">
 .mini{display:inline-block;width:70px;height:8px;background:#0f172a;border:1px solid var(--line);border-radius:4px;overflow:hidden;vertical-align:middle}
 .mini div{height:100%;background:var(--sky)}.filt{display:flex;gap:.5rem;flex-wrap:wrap;margin:.5rem 0}
 .filt input,.filt select{background:var(--panel);color:var(--txt);border:1px solid var(--line);border-radius:6px;padding:.3rem .5rem}
-td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}</style></head><body><div class="wrap">
+td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}
+.golive{background:var(--green);color:#0f172a;border:0;border-radius:6px;padding:.25rem .6rem;font-weight:700;cursor:pointer;min-height:32px;white-space:nowrap}
+.golive.sec{background:transparent;color:var(--mut);border:1px solid var(--line);font-weight:400}
+.golive:focus-visible{outline:2px solid var(--sky);outline-offset:2px}.golive:disabled{opacity:.6;cursor:wait}
+.msg{margin:.5rem 0;padding:.5rem .75rem;border:1px solid var(--line);border-radius:8px;background:var(--panel)}</style></head><body><div class="wrap">
 <h1>👻 Shadow &amp; recherche</h1>
 <div class="crumb"><a href="/">← Tableau de bord</a> · <a href="/stats">Statistiques</a> · <a href="/qualite">Qualité</a> · <a href="/control">Panneau de contrôle</a> · trades shadow <b>clôturés</b> (positions virtuelles, aucun ordre), mise à jour toutes les 60 s</div>
 <div id="err" class="errbox" hidden></div>
 <div class="cards" id="cards"></div>
+<div id="msg" class="msg" role="status" hidden></div>
 <div class="paybox" id="regle"></div>
 <h2>Par famille</h2>
 <div class="tablewrap"><table><thead><tr><th>Famille</th><th class="num">Agents actifs</th><th class="num">Trades</th><th class="num">Résultat</th><th class="num">PF</th><th class="num hide-sm">Réussite</th><th class="num hide-sm">Ouvertes</th></tr></thead>
@@ -2001,7 +2040,7 @@ td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}</style></head>
 <div class="filt"><input id="q" placeholder="Filtrer (agent, stratégie)…" aria-label="Filtrer">
 <select id="fst" aria-label="Statut"><option value="SHADOW">En shadow</option><option value="">Tous</option><option value="LIVE">Live</option><option value="SUSPENDED">Suspendus</option></select>
 <select id="fv" aria-label="Verdict"><option value="">Tous les verdicts</option><option>prêt pour revue live</option><option>shadow validé</option><option>en cours</option><option>pas concluant</option><option>perdant</option></select></div>
-<div class="tablewrap"><table><thead><tr><th>Agent</th><th class="hide-sm">Stratégie</th><th>Statut</th><th class="num">Trades</th><th class="num">Résultat</th><th class="num">PF</th><th class="num hide-sm">Espérance</th><th class="num hide-sm">Réussite</th><th class="num hide-sm">Ouvertes</th><th>Vers le live</th><th>Verdict</th></tr></thead>
+<div class="tablewrap"><table><thead><tr><th>Agent</th><th class="hide-sm">Stratégie</th><th>Statut</th><th class="num">Trades</th><th class="num">Résultat</th><th class="num">PF</th><th class="num hide-sm">Espérance</th><th class="num hide-sm">Réussite</th><th class="num hide-sm">Ouvertes</th><th>Vers le live</th><th>Verdict</th><th>Décision</th></tr></thead>
 <tbody id="agents"></tbody></table></div>
 <h2>Recherche GPU</h2>
 <div class="cards" id="rcards"></div>
@@ -2022,13 +2061,18 @@ const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&g
 const nf=v=>v===null||v===undefined?'—':Number(v).toLocaleString('fr-FR');
 const hm=s=>{if(!s)return '—';const d=new Date(s);return d.toLocaleString('fr-FR',{timeZone:'Europe/Paris',day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'})};
 function vb(v){const c={'prêt pour revue live':'v-ok','perdant':'v-ko','shadow validé':'v-val','pas concluant':'v-wait'}[v]||'v-few';return `<span class="verdict ${c}">${esc(v)}</span>`}
+function liveCell(a){
+  if(a.demande_live)return '<span class="mut">live demandé</span>';
+  if(a.verdict!=='prêt pour revue live'||!['SHADOW','CANDIDATE'].includes(a.statut))return '';
+  return `<button type="button" class="golive" data-act="ask" data-id="${esc(a.agent_id)}">Valider le live</button>`}
+function note(t,bad){const m=$('msg');m.textContent=(bad?'❌ ':'✅ ')+t;m.hidden=false}
 function renderAgents(){if(!D)return;const q=$('q').value.toLowerCase(),st=$('fst').value,fv=$('fv').value;
   const rows=(D.agents||[]).filter(a=>(!st||a.statut===st)&&(!fv||a.verdict===fv)&&(!q||(a.agent_id+' '+a.strategie).toLowerCase().includes(q)));
   $('agents').innerHTML=rows.length?rows.map(a=>`<tr><td><b>${esc(a.agent_id)}</b></td><td class="hide-sm mut">${esc(a.strategie)}</td><td>${esc(a.statut)}</td>
   <td class="num">${a.n}</td><td class="num ${cls(a.r)}">${sg(a.r)} R</td><td class="num">${a.pf===null?(a.n?'<span class="mut">sans perte</span>':'—'):f(a.pf)}</td>
   <td class="num hide-sm ${cls(a.esperance)}">${sg(a.esperance,2)}</td><td class="num hide-sm">${f(a.reussite,0)} %</td><td class="num hide-sm">${a.ouvertes||''}</td>
-  <td><span class="mini"><div style="width:${a.progression}%"></div></span> <span class="mut">${Math.min(a.n,D.criteres.min_shadow)}/${D.criteres.min_shadow}</span></td><td>${vb(a.verdict)}</td></tr>`).join('')
-  :'<tr><td colspan="11" class="mut">Aucun agent pour ce filtre.</td></tr>'}
+  <td><span class="mini"><div style="width:${a.progression}%"></div></span> <span class="mut">${Math.min(a.n,D.criteres.min_shadow)}/${D.criteres.min_shadow}</span></td><td>${vb(a.verdict)}</td><td>${liveCell(a)}</td></tr>`).join('')
+   :'<tr><td colspan="12" class="mut">Aucun agent pour ce filtre.</td></tr>'}
 async function load(){
   try{const r=await fetch('/api/shadow',{credentials:'same-origin',cache:'no-store'});
     if(r.status===401){$('err').innerHTML='Session expirée — <a href="/login">se reconnecter</a>';$('err').hidden=false;return}
@@ -2041,7 +2085,7 @@ async function load(){
       ['Perdants',s.perdants,`≥ ${c.perdant_n} trades, PF < ${f(c.perdant_pf,1)}`]];
     $('cards').innerHTML=cards.map(([t,v,x])=>`<div class="card"><small>${t}</small><b>${v}</b><span class="sub">${x}</span></div>`).join('');
     $('regle').innerHTML=`<p><b>Passage en live</b> : au moins <b>${c.min_shadow} trades shadow</b> avec espérance positive et PF ≥ 1, puis <b>${c.min_sample} trades au total</b> (backtest + shadow),
-      PF ≥ ${f(c.pf_live,1)}, espérance ≥ ${f(c.exp_live,2)} R et drawdown limité. Jamais de passage direct : chaque étape du pipeline est vérifiée.
+      PF ≥ ${f(c.pf_live,1)}, espérance ≥ ${f(c.exp_live,2)} R et drawdown limité. Chaque étape du pipeline est vérifiée ; un agent prêt passe aussi en live sur validation manuelle (bouton « Valider le live », appliquée au cycle suivant du bot).
       Un agent shadow à ${c.perdant_n} trades avec un PF sous ${f(c.perdant_pf,1)} est suspendu automatiquement.</p>`;
     $('fams').innerHTML=(D.familles||[]).filter(x=>x.n||x.ouvertes).map(x=>`<tr><td><b>${esc(x.famille)}</b> <span class="mut">${esc(x.nom)}</span></td><td class="num">${x.actifs}</td><td class="num">${x.n}</td>
       <td class="num ${cls(x.r)}">${sg(x.r)} R</td><td class="num">${f(x.pf)}</td><td class="num hide-sm">${f(x.reussite,0)} %</td><td class="num hide-sm">${x.ouvertes||''}</td></tr>`).join('');
@@ -2056,6 +2100,19 @@ async function load(){
       :'<tr><td colspan="8" class="mut">Aucune idée nouvelle.</td></tr>';
   }catch(e){$('err').textContent='Erreur de chargement : '+e;$('err').hidden=false}}
 ['q','fst','fv'].forEach(id=>$(id).addEventListener('input',renderAgents));
+$('agents').addEventListener('click',async e=>{
+  const b=e.target.closest('button[data-act]');if(!b)return;
+  const id=b.dataset.id,td=b.closest('td');
+  if(b.dataset.act==='ask'){td.innerHTML=`<button type="button" class="golive" data-act="go" data-id="${esc(id)}">Confirmer ${esc(id)}</button> <button type="button" class="golive sec" data-act="no">Annuler</button>`;td.querySelector('button').focus();return}
+  if(b.dataset.act==='no'){renderAgents();return}
+  b.disabled=true;
+  try{const r=await fetch('/api/shadow/live',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:JSON.stringify({agent_id:id})});
+    if(r.status===401){note('Session expirée : se reconnecter puis recommencer',true);renderAgents();return}
+    const d=await r.json();note(d.ok?d.message:(d.error||'demande refusée'),!d.ok);
+    if(d.ok){const a=(D.agents||[]).find(x=>x.agent_id===id);if(a)a.demande_live=true;setTimeout(load,15000)}
+    renderAgents();
+  }catch(err){note('Erreur réseau : la demande n\'est pas partie',true);renderAgents()}
+});
 load();setInterval(load,60000);
 </script></body></html>"""
 

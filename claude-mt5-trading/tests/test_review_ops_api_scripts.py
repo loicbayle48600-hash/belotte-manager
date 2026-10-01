@@ -147,6 +147,11 @@ def test_watchdog_stale_ticks_add_reason_and_request_safe_mode(settings, broker)
     wd = Watchdog(settings, broker, store, Journal(settings.logs_dir, component="wd"), reference_symbol="EURUSD")
     rep = wd.check_once()
     assert rep.data_fresh is False
+    # 29/09 : alerte et SAFE_MODE seulement une fois le flux figé confirmé pendant `stale_confirm_sec` (30 s)
+    assert not rep.safe_mode_request and not any("données périmées" in r for r in rep.reasons)
+    wd.stale_confirm_sec = 0.0
+    rep = wd.check_once()
+    assert rep.data_fresh is False
     assert any("données périmées" in r for r in rep.reasons) and rep.safe_mode_request
     assert read_watchdog_report(settings.state_dir)["safe_mode_request"] is True
 

@@ -940,7 +940,7 @@ def test_page_shadow_et_recherche_repond_sans_erreur(home: Path):
     d = DashboardData(home).shadow()
     assert "erreur" not in d, d.get("erreur")
     assert {"resume", "familles", "agents", "recherche", "criteres"} <= set(d)
-    assert d["criteres"]["min_shadow"] == 20 and d["criteres"]["perdant_n"] == 50
+    assert d["criteres"]["min_shadow"] == 100 and d["criteres"]["perdant_n"] == 50      # 100 trades depuis le 01/10
 
 
 

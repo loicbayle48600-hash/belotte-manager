@@ -30,6 +30,9 @@ learning:
   champion_challenger: true
   live_self_mutation: false
   shadow_required: true
+  # 2026-10-01, décision utilisateur : 100 trades shadow (20 avant) pour valider l'étape SHADOW du pipeline et pour le
+  # verdict « prêt pour revue live » du tableau de bord et du rapport de 17 h ; la famille N reste signalée à 50 trades
+  min_shadow_trades: 100
   min_sample_size: 40
   min_profit_factor: 1.2
   min_expectancy_r: 0.10

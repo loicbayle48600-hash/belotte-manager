@@ -120,7 +120,7 @@ def _validate_all(p, st, ch):
     for s in (Stage.BACKTEST, Stage.OUT_OF_SAMPLE, Stage.WALK_FORWARD):
         p._set(rec, s, True, {"symbol": "EURUSD", "sample_size": 30, "max_drawdown_r": 5.0, "expectancy_r": 0.3})
     p._set(rec, Stage.MONTE_CARLO, True, {"p95_max_dd_r": 6.0, "prob_negative": 0.1, "p05_total_r": 2.0})
-    for i in range(25):
+    for i in range(int(p.cfg.get("min_shadow_trades", 20))):       # 100 trades shadow exigés depuis le 01/10
         st.record_trade(TradeRecord(0, ch.agent_id, "EURUSD", "BUY", 1.0, 0.99, 100, 0, 1.0 if i % 3 else -1.0, 0, "t",
                                     (NOW - timedelta(days=1)).isoformat(), mode="shadow"))
     assert p.stage_shadow(ch).passed(Stage.SHADOW)
@@ -139,7 +139,7 @@ def test_rollback_requires_full_revalidation_before_live_again(settings, broker,
     rec = p.record(ch.agent_id)
     assert not rec.passed(Stage.SHADOW) and not rec.passed(Stage.RISK_REVIEW) and rec.history[-1]["stages"]
     # le cycle de recherche suivant (advance) ne doit pas re-promouvoir : une NOUVELLE période shadow est exigée
-    # (les 25 trades shadow antérieurs au rollback ne comptent plus)
+    # (les trades shadow antérieurs au rollback ne comptent plus)
     for _ in range(4):
         p.advance(ch.agent_id)
     assert reg.get(ch.agent_id).status != "LIVE"

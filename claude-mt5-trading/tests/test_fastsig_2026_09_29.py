@@ -95,3 +95,24 @@ def test_backtest_complet_identique(strategy):
         assert cle[0] == cle[1], (strategy, nom)
         total += len(cle[0])
     assert total > 0, strategy
+
+
+
+def test_agent_a_strategie_propre_jamais_sur_le_jumeau_de_sa_base(tmp_path):
+    """2026-10-01 : B01 (stratégie propre, base ema_trend) recevait le jumeau d'ema_trend : signaux d'une autre stratégie
+    dans les backtests du pipeline. Le jumeau suit désormais le screener réellement utilisé (`resolve_screener`)."""
+    from tradinglab.agents.registry import AgentRegistry
+
+    reg = AgentRegistry(status_file=tmp_path / "agent_status.json")
+    b01 = reg.get("B01")
+    assert b01.strategy == "B01" and b01.base_strategy == "ema_trend"
+    df = _synth(1400, 1)
+    propre = make_signal_fn(b01, SPEC_SYM, "M15")
+    propre.prepare(df)
+    assert propre.fast_arrays() is None, "stratégie propre sans jumeau : chemin lent"
+    lent = make_signal_fn(b01, SPEC_SYM, "M15", fast=False)
+    lent.prepare(df)
+    assert not fastsig.compare_signals(lent, propre, df, start=250)
+    generique = make_signal_fn(_spec("ema_trend", {}, "M15", "H1"), SPEC_SYM, "M15")
+    generique.prepare(df)
+    assert generique.fast_arrays() is not None, "stratégie générique : jumeau conservé"
