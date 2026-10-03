@@ -2904,6 +2904,23 @@ function pdfSafe(s) {
   return String(s == null ? '' : s).replace(/\u2212/g, '-').replace(/[^\x20-\x7E -ÿŒœ€–—‘’“”…•]/g, '?');
 }
 
+/** Charge les enregistrements de plusieurs registres en UNE passe de curseur,
+ *  en jetant au vol les champs lourds (photos d'étiquettes, contenu des
+ *  documents) dont les tableaux PDF n'affichent que la présence : avec des
+ *  mois de photos, un chargement d'un bloc saturait la mémoire de la tablette
+ *  et Android tuait l'application au démarrage. Mémoire constante ici. */
+async function chargerRegistresLeger(types, from, to) {
+  const par = {};
+  types.forEach(t => { par[t] = []; });
+  await DB.eachRecord(r => {
+    if (!par[r.type] || !r.date || r.date < from || r.date > to) return;
+    if (r.photo) r.photo = 'OUI'; // la colonne n'affiche que OUI/NON
+    if (r.data) { r.data = ''; r.dataOmise = true; }
+    par[r.type].push(r);
+  });
+  return par;
+}
+
 /** Génère le document PDF (A4 paysage) pour un ou plusieurs registres :
  *  en-tête officiel (établissement, registre, période, visa) + tableau,
  *  lignes non conformes en rouge. Retourne { blob, total } (total = 0 si vide). */
@@ -2912,9 +2929,10 @@ async function buildRegistresPDF(types, from, to) {
   const doc = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
   let first = true;
   let total = 0;
+  const parType = await chargerRegistresLeger(types, from, to);
 
   for (const type of types) {
-    const recs = (await DB.getByTypeAndRange(type, from, to)).sort((a, b) => (a.date + (a.time || '')).localeCompare(b.date + (b.time || '')));
+    const recs = parType[type].sort((a, b) => (a.date + (a.time || '')).localeCompare(b.date + (b.time || '')));
     if (!recs.length) continue;
     if (!first) doc.addPage();
     first = false;
@@ -4310,6 +4328,15 @@ async function refroidTick() {
 
 /* ---------- Démarrage ---------- */
 (async function init() {
+  // GARDE ANTI-BOUCLE DE PLANTAGE : si l'application a été tuée plusieurs
+  // fois de suite moins de 90 s après l'ouverture (manque de mémoire…), on
+  // suspend les tâches automatiques de la session (mode sans échec) — la
+  // tablette reste utilisable et la mise à jour correctrice peut s'installer.
+  const demarrages = Number(localStorage.getItem('haccp-boots') || 0) + 1;
+  localStorage.setItem('haccp-boots', String(demarrages));
+  setTimeout(() => localStorage.setItem('haccp-boots', '0'), 90 * 1000);
+  const modeSansEchec = demarrages >= 3;
+
   await loadSettings();
   document.querySelectorAll('.nav-btn').forEach(b => b.addEventListener('click', () => navigate(b.dataset.view)));
   // Protéger IndexedDB de l'éviction par le système (photos, registres) —
@@ -4321,9 +4348,12 @@ async function refroidTick() {
   // Sauvegarde automatique quotidienne. La tablette reste souvent allumée en
   // continu : on retente au retour au premier plan et toutes les heures
   // (idempotent : une seule sauvegarde par jour grâce à haccp-drive-last).
-  const tryBackup = () => maybeAutoBackup().catch(e => console.warn('backup auto', e));
-  const tryMenuSync = () => maybeMenuSync().catch(e => console.warn('menu sync', e));
-  const tryMaj = () => maybeCheckUpdate().catch(e => console.warn('maj', e));
+  const tryBackup = () => { if (!modeSansEchec) maybeAutoBackup().catch(e => console.warn('backup auto', e)); };
+  const tryMenuSync = () => { if (!modeSansEchec) maybeMenuSync().catch(e => console.warn('menu sync', e)); };
+  const tryMaj = () => maybeCheckUpdate().catch(e => console.warn('maj', e)); // la vérif. de MàJ reste active : c'est elle qui apporte le correctif
+  if (modeSansEchec) {
+    setTimeout(() => UI.toast('⚠️ Mode sans échec : démarrages interrompus répétés — sauvegardes automatiques suspendues pour cette session. Fais la mise à jour de l’application (Réglages → 🔄).', 'bad'), 1200);
+  }
   setTimeout(tryBackup, 2500);
   setTimeout(tryMenuSync, 5000);
   setTimeout(tryMaj, 8000);
