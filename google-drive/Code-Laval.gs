@@ -8,14 +8,13 @@
  * Installation : voir la notice GOOGLE-DRIVE.md (5 minutes).
  */
 
-// Nom du dossier créé dans ton Drive pour ranger les sauvegardes.
-// POUR UN AUTRE ÉTABLISSEMENT (ex. AET Laval) : installer ce même script sur
-// LE COMPTE GOOGLE DE CET ÉTABLISSEMENT et changer ce nom (ex.
-// 'Sauvegardes HACCP AET Laval'), puis coller l'URL de SON déploiement dans
-// les Réglages de SA tablette.
-var DOSSIER = 'Sauvegardes HACCP EHPAD Grandrieu';
-// Ancien nom : renommé automatiquement à la première sauvegarde (contenu conservé).
-var ANCIEN_DOSSIER = 'Sauvegardes HACCP';
+// SCRIPT DE L'ÉTABLISSEMENT AET LAVAL — à créer comme DEUXIÈME projet sur le
+// même compte Google (script.google.com -> Nouveau projet « Sauvegarde HACCP
+// Laval »), à déployer en application web, puis coller SON URL (…/exec) dans
+// les Réglages de la tablette de Laval.
+var DOSSIER = 'Sauvegardes HACCP AET Laval';
+// Pas de migration pour ce script (le dossier Grandrieu vit sur le même compte).
+var ANCIEN_DOSSIER = '';
 
 // Nombre de sauvegardes à conserver (les plus anciennes sont supprimées).
 var MAX_FICHIERS = 60;

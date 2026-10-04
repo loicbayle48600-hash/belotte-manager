@@ -92,18 +92,29 @@ jobs:
         run: |
           python3 - <<'EOF'
           import base64, glob, json, os, urllib.request
-          url = 'https://script.google.com/macros/s/AKfycbxj5g6bW-hnOyhJNLlf65l04uYrZp9e2Pofo60F8ja1ijZcwFEG9Je1Kmd4jQVJildbjg/exec'
-          def envoyer(d):
+          # Un script (= une URL /exec) PAR ÉTABLISSEMENT ; tous reçoivent
+          # l'APK, la version et le menu. Ajouter ici l'URL du déploiement
+          # AET Laval dès qu'il existe.
+          urls = [
+              'https://script.google.com/macros/s/AKfycbxj5g6bW-hnOyhJNLlf65l04uYrZp9e2Pofo60F8ja1ijZcwFEG9Je1Kmd4jQVJildbjg/exec',  # EHPAD Grandrieu
+          ]
+          def envoyer(url, d):
               d.update({'app': 'haccp-cuisine', 'type': 'fichier-app', 'cle': 'haccp-maj-2026'})
               req = urllib.request.Request(url, data=json.dumps(d).encode(), headers={'Content-Type': 'text/plain;charset=utf-8'})
               print(d['quoi'], '->', urllib.request.urlopen(req, timeout=300).read()[:200])
           run = os.environ['GITHUB_RUN_NUMBER']
-          envoyer({'quoi': 'apk', 'data': base64.b64encode(open('out/haccp-cuisine.apk', 'rb').read()).decode()})
+          apk = base64.b64encode(open('out/haccp-cuisine.apk', 'rb').read()).decode()
           menus = sorted(glob.glob('menus/*.xlsx'))
-          if menus:
-              envoyer({'quoi': 'menu', 'data': base64.b64encode(open(menus[0], 'rb').read()).decode()})
-          # la version en DERNIER : les tablettes ne la voient qu'une fois l'APK en place
-          envoyer({'quoi': 'version', 'texte': json.dumps({'versionCode': int(run), 'versionName': '1.' + run})})
+          menu = base64.b64encode(open(menus[0], 'rb').read()).decode() if menus else None
+          for url in urls:
+              try:
+                  envoyer(url, {'quoi': 'apk', 'data': apk})
+                  if menu:
+                      envoyer(url, {'quoi': 'menu', 'data': menu})
+                  # la version en DERNIER : les tablettes ne la voient qu'une fois l'APK en place
+                  envoyer(url, {'quoi': 'version', 'texte': json.dumps({'versionCode': int(run), 'versionName': '1.' + run})})
+              except Exception as e:
+                  print('échec pour', url, ':', e)
           EOF
         continue-on-error: true
 
