@@ -774,6 +774,8 @@ function openTempModal(equipId, queue) {
   UI.modal(
     '<h2>' + UI.esc(eq.name) + (queue ? ' <span class="pill info">' + (queue.length + 1) + ' restante' + (queue.length ? 's' : '') + '</span>' : '') + '</h2>' +
     '<p class="muted" style="margin-bottom:14px">' + (eq.cible != null ? 'Valeur cible : ' + eq.cible + ' °C · ' : '') + 'Limites critiques : ' + eq.min + ' à ' + eq.max + ' °C — relevé quotidien du matin (PMS)</p>' +
+    '<label class="field"><span class="lbl">📅 Date du relevé (modifiable si saisie le lendemain)</span>' +
+    '<input type="date" data-f="dateReleve" value="' + UI.todayISO() + '" max="' + UI.todayISO() + '"></label>' +
     '<label class="field"><span class="lbl">Température relevée (°C)</span>' +
     UI.tempInputHTML('temp', { placeholder: eq.type === 'negatif' ? '-18.0' : '3.0', hint: eq.type === 'negatif' ? 'Enceinte négative : pense au signe − (bouton ±)' : '' }) + '</label>' +
     agentField() +
@@ -807,7 +809,7 @@ function openTempModal(equipId, queue) {
             m2.querySelector('[data-x="s2"]').onclick = async () => {
               const motif = UI.segValue(m2, 'motif') || 'dégivrage';
               await DB.addRecord({
-                type: 'temp', date: UI.todayISO(), time: UI.nowHM(),
+                type: 'temp', date: m.querySelector('[data-f="dateReleve"]').value || UI.todayISO(), time: UI.nowHM(),
                 equipId: eq.id, equipName: eq.name, statut: 'hs', motif, agent,
               });
               if (motif === 'panne') {
@@ -851,7 +853,7 @@ function openTempModal(equipId, queue) {
         const action = m.querySelector('[data-f="action"]').value.trim();
         if (!ok && !action) { UI.toast('Indique l’action corrective', 'bad'); return; }
         await DB.addRecord({
-          type: 'temp', date: UI.todayISO(), time: UI.nowHM(),
+          type: 'temp', date: m.querySelector('[data-f="dateReleve"]').value || UI.todayISO(), time: UI.nowHM(),
           equipId: eq.id, equipName: eq.name, temp: v,
           conforme: ok, action: ok ? '' : action, agent,
         });
@@ -898,6 +900,8 @@ async function openReceptionModal() {
 
   UI.modal(
     '<h2>🚚 Nouvelle réception</h2>' +
+    '<label class="field"><span class="lbl">📅 Date de la réception (modifiable si saisie le lendemain)</span>' +
+    '<input type="date" data-f="dateRec" value="' + UI.todayISO() + '" max="' + UI.todayISO() + '"></label>' +
     '<label class="field"><span class="lbl">Fournisseur</span>' +
     '<input type="text" data-f="fournisseur" list="dl-fourn" placeholder="Nom du fournisseur" autocomplete="off">' +
     '<datalist id="dl-fourn">' + fournisseurs.map(f => '<option value="' + UI.esc(f) + '">').join('') + '</datalist>' +
@@ -968,7 +972,7 @@ async function openReceptionModal() {
         if (!ok && !action) { UI.toast('Indique l’action corrective (refus, réserve…)', 'bad'); return; }
         if (ok && tolere && !action) { UI.toast('Indique le résultat du contrôle de la T° à cœur', 'bad'); return; }
         await DB.addRecord({
-          type: 'reception', date: UI.todayISO(), time: UI.nowHM(),
+          type: 'reception', date: m.querySelector('[data-f="dateRec"]').value || UI.todayISO(), time: UI.nowHM(),
           fournisseur, produit, famille: fam,
           lot: m.querySelector('[data-f="lot"]').value.trim(),
           temp: isNaN(t) ? null : t, etat: UI.segValue(m, 'etat'),
@@ -1513,6 +1517,32 @@ function openIssueModal(rec, depasse, motifDepasse) {
   );
 }
 
+/* Bloc « 📷 photo d'étiquette » réutilisable dans un formulaire (décongélation,
+ * congélation…). La photo est enregistrée comme ÉTIQUETTE normale : classée au
+ * classeur par jour, déposée sur le Drive, soumise à la conservation 6 mois. */
+function photoEtiquetteHTML() {
+  return '<div class="row" style="margin-bottom:12px"><button type="button" class="btn secondary" data-x="photo-eti">📷 Photo de l’étiquette (optionnel)</button>' +
+    '<span data-photo-eti-apercu></span></div>';
+}
+function photoEtiquetteWire(m) {
+  const etat = { photo: null };
+  const btn = m.querySelector('[data-x="photo-eti"]');
+  if (btn) btn.addEventListener('click', () => openCameraCapture(p => {
+    etat.photo = p;
+    const ap = m.querySelector('[data-photo-eti-apercu]');
+    if (ap) ap.innerHTML = '<img src="' + p + '" style="height:56px;border-radius:8px;vertical-align:middle"> <span class="pill ok">photo prise ✔</span>';
+  }));
+  return etat;
+}
+async function enregistrerPhotoEtiquette(etat, produit, jour, agent) {
+  if (!etat.photo) return;
+  await DB.addRecord({
+    type: 'etiquette', date: UI.todayISO(), time: UI.nowHM(),
+    photo: etat.photo, produit: produit || '', destineLe: jour || UI.todayISO(), agent,
+  });
+  if (VIEWS.tracabilite._state) VIEWS.tracabilite._state._meta = null;
+}
+
 function openDecongelModal() {
   const connus = (SETTINGS.fournisseurs || []).map(f => f.name);
   const now = new Date();
@@ -1525,18 +1555,28 @@ function openDecongelModal() {
     '<div class="row"><div class="grow"><label class="field"><span class="lbl">Fournisseur (optionnel)</span>' +
     '<input type="text" data-f="fournisseur" list="dl-dec-f" autocomplete="off"><datalist id="dl-dec-f">' + connus.map(f => '<option value="' + UI.esc(f) + '">').join('') + '</datalist></label></div>' +
     '<div class="grow"><label class="field"><span class="lbl">N° de lot (optionnel)</span><input type="text" data-f="lot"></label></div></div>' +
-    '<label class="field"><span class="lbl">À utiliser avant (48 h par défaut)</span><input type="date" data-f="limite" value="' + limISO + '"></label>' +
+    '<div class="row"><div class="grow"><label class="field"><span class="lbl">📅 Mise en décongélation le</span>' +
+    '<input type="date" data-f="dateDec" value="' + UI.todayISO() + '" max="' + UI.todayISO() + '"></label></div>' +
+    '<div class="grow"><label class="field"><span class="lbl">À utiliser avant (48 h par défaut)</span><input type="date" data-f="limite" value="' + limISO + '"></label></div></div>' +
+    photoEtiquetteHTML() +
     agentField() +
     '<p class="muted" style="font-size:13px">Rappels PMS : décongélation en chambre froide à 3 °C, à l’abri de toute contamination, évacuer l’eau de décongélation, recongélation interdite.</p>' +
     '<div class="actions"><button class="btn ghost" data-x="cancel">Annuler</button><button class="btn" data-x="save">Enregistrer</button></div>',
     (m, close) => {
+      const etatPhoto = photoEtiquetteWire(m);
+      // date antidatée -> la limite de 48 h suit automatiquement (si non modifiée)
+      m.querySelector('[data-f="dateDec"]').addEventListener('change', e => {
+        const lim = m.querySelector('[data-f="limite"]');
+        if (lim.value === limISO && e.target.value) lim.value = UI.addDays(e.target.value, Math.round(RULES.decongelHeures / 24));
+      });
       m.querySelector('[data-x="cancel"]').onclick = close;
       m.querySelector('[data-x="save"]').onclick = async () => {
         const produit = m.querySelector('[data-f="produit"]').value.trim();
         if (!produit) { UI.toast('Indique le produit', 'bad'); return; }
         const agent = requireAgent(m); if (!agent) return;
+        const jour = m.querySelector('[data-f="dateDec"]').value || UI.todayISO();
         await DB.addRecord({
-          type: 'decongel', date: UI.todayISO(), time: UI.nowHM(),
+          type: 'decongel', date: jour, time: UI.nowHM(),
           produit,
           fournisseur: m.querySelector('[data-f="fournisseur"]').value.trim(),
           lot: m.querySelector('[data-f="lot"]').value.trim(),
@@ -1544,6 +1584,7 @@ function openDecongelModal() {
           limiteTime: UI.nowHM(),
           statut: 'encours', agent,
         });
+        await enregistrerPhotoEtiquette(etatPhoto, produit, jour, agent);
         close();
         UI.toast('Décongélation enregistrée ✔', 'ok');
         render();
@@ -1594,20 +1635,22 @@ function openCongelModal() {
     '<input type="text" data-f="produit" placeholder="Ex. : pain, sauté de veau (excédent)…"></label>' +
     '<label class="field"><span class="lbl">Date de congélation</span>' +
     '<input type="date" data-f="date" value="' + UI.todayISO() + '"></label>' +
+    photoEtiquetteHTML() +
     agentField() +
     '<div class="actions"><button class="btn ghost" data-x="cancel">Annuler</button><button class="btn" data-x="save">Enregistrer</button></div>',
     (m, close) => {
+      const etatPhoto = photoEtiquetteWire(m);
       m.querySelector('[data-x="cancel"]').onclick = close;
       m.querySelector('[data-x="save"]').onclick = async () => {
         const produit = m.querySelector('[data-f="produit"]').value.trim();
         if (!produit) { UI.toast('Indique le nom du produit', 'bad'); return; }
         const agent = requireAgent(m); if (!agent) return;
+        const jour = m.querySelector('[data-f="date"]').value || UI.todayISO();
         await DB.addRecord({
-          type: 'congel',
-          date: m.querySelector('[data-f="date"]').value || UI.todayISO(),
-          time: UI.nowHM(),
+          type: 'congel', date: jour, time: UI.nowHM(),
           produit, agent,
         });
+        await enregistrerPhotoEtiquette(etatPhoto, produit, jour, agent);
         close();
         UI.toast('Congélation enregistrée ✔', 'ok');
         render();
@@ -2184,7 +2227,7 @@ VIEWS.tracabilite = async function (el) {
   const joursSemaine = [];
   for (let i = 0; i < 7; i++) joursSemaine.push(UI.addDays(semaine, i));
 
-  el.innerHTML = headerHTML('Traçabilité des étiquettes', 'Classées par semaine et par jour de destination — conservation illimitée (≥ 6 mois réglementaires)' + (total ? ' · ' + total + ' étiquettes archivées' + (plusAncienne ? ' depuis le ' + UI.frDate(plusAncienne) : '') : ''),
+  el.innerHTML = headerHTML('Traçabilité des étiquettes', 'Classées par semaine et par jour de destination — conservation 6 mois (durée réglementaire), purge automatique au-delà, ici comme sur le Drive' + (total ? ' · ' + total + ' étiquettes archivées' + (plusAncienne ? ' depuis le ' + UI.frDate(plusAncienne) : '') : ''),
       '<button class="btn" id="new-eti">📷 Nouvelle étiquette</button>') +
 
     '<div class="card"><div class="row">' +
@@ -2627,6 +2670,8 @@ VIEWS.huiles = async function (el) {
       '<div class="big">🍟</div>' +
       '<div class="body"><div class="title">' + UI.esc(r.friteuse) + ' — ' + (ACTION_LABEL[r.action] || r.action) + '</div>' +
       '<div class="meta">' + UI.frDate(r.date) + ' ' + UI.esc(r.time) + ' — huile : ' + (ETAT_LABEL[r.etat] || r.etat) +
+      (r.agl === 'achanger' ? ' — AGL ≥ 3 ⚠️' : (r.agl === 'degradee' ? ' — AGL dégradée' : (r.agl === 'bonne' ? ' — AGL bonne ✔' : ''))) +
+      (r.aglValeur != null ? ' (' + r.aglValeur + ' mg KOH/g)' : '') +
       (r.polaires === 'nok' ? ' — polaires > 25 % ⚠️' : (r.polaires === 'ok' ? ' — polaires ≤ 25 % ✔' : '')) +
       (r.polairesPct != null ? ' (' + r.polairesPct + ' %)' : '') +
       (r.volume != null || r.destination ? ' — usagée : ' + (r.volume != null ? r.volume + ' L ' : '') + UI.esc(r.destination || '') + (r.bon ? ' (bon ' + UI.esc(r.bon) + ')' : '') : '') +
@@ -2655,14 +2700,15 @@ function openHuileModal() {
       { value: 'moyen', label: '≈ À surveiller' },
       { value: 'a-changer', label: '✘ À changer', bad: true },
     ], 'bon') + '</label>' +
-    '<label class="field"><span class="lbl">Test composés polaires (critère réglementaire : ≤ 25 %)</span>' +
-    UI.segHTML('polaires', [
+    '<label class="field"><span class="lbl">Test bandelette AGL — acides gras libres (mg KOH/g)</span>' +
+    UI.segHTML('agl', [
       { value: '', label: 'Non testé' },
-      { value: 'ok', label: '✔ ≤ 25 %' },
-      { value: 'nok', label: '✘ > 25 %', bad: true },
+      { value: 'bonne', label: '🟢 Bonne (0 – 0,5)' },
+      { value: 'degradee', label: '🟠 Dégradée (1,5 – 2,5)' },
+      { value: 'achanger', label: '🔴 À changer (≥ 3)', bad: true },
     ], '') + '</label>' +
-    '<label class="field"><span class="lbl">Valeur mesurée (%, optionnel)</span>' +
-    '<input type="number" step="0.5" inputmode="decimal" data-f="polairesPct" placeholder="Ex. : 18"></label>' +
+    '<label class="field"><span class="lbl">Valeur lue sur l’échelle (optionnel : 0 · 0,3 · 0,5 · 1,5 · 2,5 · 3 · 5)</span>' +
+    '<input type="number" step="0.1" inputmode="decimal" data-f="aglValeur" placeholder="Ex. : 1,5"></label>' +
     '<div data-elimination style="display:none">' +
     '<hr class="sep"><div class="lbl" style="margin-bottom:8px">Traçabilité de l’huile usagée (changement)</div>' +
     '<div class="row"><div class="grow"><label class="field"><span class="lbl">Volume (L)</span><input type="number" step="0.5" inputmode="decimal" data-f="volume"></label></div>' +
@@ -2682,20 +2728,24 @@ function openHuileModal() {
       const actionField = m.querySelector('[data-action-field]');
       const elimination = m.querySelector('[data-elimination]');
 
-      // Verdict : > 25 % de composés polaires (ou % saisi > 25) = huile impropre
+      // Verdict selon la bandelette AGL : ≥ 3 mg KOH/g = huile impropre,
+      // 1,5 – 2,5 = dégradée (à surveiller / filtrer, changement à prévoir)
       const evalHuile = () => {
-        const pct = parseFloat(m.querySelector('[data-f="polairesPct"]').value);
-        const seg = UI.segValue(m, 'polaires') || '';
-        const nok = seg === 'nok' || (!isNaN(pct) && pct > 25);
+        const v = parseFloat(m.querySelector('[data-f="aglValeur"]').value);
+        const seg = UI.segValue(m, 'agl') || '';
+        const nok = seg === 'achanger' || (!isNaN(v) && v >= 3);
+        const degradee = !nok && (seg === 'degradee' || (!isNaN(v) && v >= 1.5));
         verdict.innerHTML = nok
-          ? '<p class="pill bad" style="margin-bottom:12px">✘ NON CONFORME — huile impropre (&gt; 25 % de composés polaires) : changement obligatoire</p>'
-          : (seg === 'ok' || !isNaN(pct) ? '<p class="pill ok" style="margin-bottom:12px">✔ Polarité conforme</p>' : '');
+          ? '<p class="pill bad" style="margin-bottom:12px">✘ NON CONFORME — huile impropre (AGL ≥ 3 mg KOH/g) : changement obligatoire</p>'
+          : degradee
+            ? '<p class="pill warn" style="margin-bottom:12px">⚠ Huile dégradée (1,5 – 2,5 mg KOH/g) : filtrer, prévoir le changement</p>'
+            : (seg === 'bonne' || !isNaN(v) ? '<p class="pill ok" style="margin-bottom:12px">✔ Huile bonne (≤ 0,5 mg KOH/g)</p>' : '');
         actionField.style.display = nok ? 'block' : 'none';
         elimination.style.display = UI.segValue(m, 'action') === 'changement' ? 'block' : 'none';
         return nok;
       };
       m.addEventListener('click', () => setTimeout(evalHuile, 30));
-      m.querySelector('[data-f="polairesPct"]').addEventListener('input', evalHuile);
+      m.querySelector('[data-f="aglValeur"]').addEventListener('input', evalHuile);
 
       m.querySelector('[data-x="cancel"]').onclick = close;
       m.querySelector('[data-x="save"]').onclick = async () => {
@@ -2704,14 +2754,14 @@ function openHuileModal() {
         const action = m.querySelector('[data-f="action"]').value.trim();
         if (nok && !action) { UI.toast('Indique l’action corrective (changement de l’huile…)', 'bad'); return; }
         const t = parseFloat(m.querySelector('[data-f="temp"]').value);
-        const pct = parseFloat(m.querySelector('[data-f="polairesPct"]').value);
+        const vAgl = parseFloat(m.querySelector('[data-f="aglValeur"]').value);
         const vol = parseFloat(m.querySelector('[data-f="volume"]').value);
         await DB.addRecord({
           type: 'huile', date: UI.todayISO(), time: UI.nowHM(),
           friteuse: m.querySelector('[data-f="friteuse"]').value,
           action: UI.segValue(m, 'action'), etat: UI.segValue(m, 'etat'),
-          polaires: UI.segValue(m, 'polaires') || '',
-          polairesPct: isNaN(pct) ? null : pct,
+          agl: UI.segValue(m, 'agl') || '',
+          aglValeur: isNaN(vAgl) ? null : vAgl,
           volume: isNaN(vol) ? null : vol,
           destination: m.querySelector('[data-f="destination"]').value.trim(),
           bon: m.querySelector('[data-f="bon"]').value.trim(),
@@ -2750,7 +2800,9 @@ VIEWS.nonconformites = async function (el) {
       objet: TYPE_LABELS[r.type] + ' — ' + (r.equipName || r.friteuse || r.produit || r.plat || ''),
       description: r.type === 'temp' ? 'Relevé ' + UI.fmtTemp(r.temp)
         : r.type === 'refroid' ? UI.fmtTemp(r.tempStart) + ' → ' + UI.fmtTemp(r.tempEnd) + ' en ' + r.durationMin + ' min'
-        : r.type === 'huile' ? 'Composés polaires > 25 %' + (r.polairesPct != null ? ' (' + r.polairesPct + ' %)' : '')
+        : r.type === 'huile' ? (r.agl || r.aglValeur != null
+            ? 'Huile impropre — AGL ≥ 3 mg KOH/g' + (r.aglValeur != null ? ' (' + r.aglValeur + ')' : '')
+            : 'Composés polaires > 25 %' + (r.polairesPct != null ? ' (' + r.polairesPct + ' %)' : ''))
         : 'Relevé ' + UI.fmtTemp(r.temp),
       action: r.actionCorrective || r.action, agent: r.agent, auto: true,
     }));
@@ -2871,7 +2923,7 @@ const EXPORT_COLUMNS = {
   congel: [['Date de congélation', r => UI.frDate(r.date)], ['Heure', r => r.time], ['Produit', r => r.produit], ['Agent', r => r.agent]],
   etiquette: [['Date photo', r => UI.frDate(r.date)], ['Heure', r => r.time], ['Destiné au', r => r.destineLe ? UI.frDate(r.destineLe) : UI.frDate(r.date)], ['Produit', r => r.produit], ['Lot', r => r.lot], ['DLC', r => r.dlc ? UI.frDate(r.dlc) : ''], ['Photo', r => r.photo ? 'OUI' : 'NON'], ['Agent', r => r.agent]],
   nettoyage: [['Date', r => UI.frDate(r.date)], ['Heure', r => r.time], ['Tâche', r => r.taskName], ['Zone', r => r.zone], ['Fréquence', r => r.freq], ['Agent', r => r.agent]],
-  huile: [['Date', r => UI.frDate(r.date)], ['Heure', r => r.time], ['Friteuse', r => r.friteuse], ['Opération', r => r.action], ['État huile', r => r.etat], ['Polarité', r => r.polaires === 'nok' ? '> 25 % NON CONFORME' : (r.polaires === 'ok' ? '≤ 25 %' : '') + (r.polairesPct != null ? ' (' + r.polairesPct + ' %)' : '')], ['Huile usagée', r => r.volume != null || r.destination ? (r.volume != null ? r.volume + ' L' : '') + (r.destination ? ' → ' + r.destination : '') + (r.bon ? ' (bon ' + r.bon + ')' : '') : ''], ['Température (°C)', r => r.temp], ['Action corrective', r => r.actionCorrective], ['Remarque', r => r.remarque], ['Agent', r => r.agent]],
+  huile: [['Date', r => UI.frDate(r.date)], ['Heure', r => r.time], ['Friteuse', r => r.friteuse], ['Opération', r => r.action], ['État huile', r => r.etat], ['Test AGL (mg KOH/g)', r => (r.agl === 'achanger' ? '≥ 3 NON CONFORME' : (r.agl === 'degradee' ? '1,5–2,5 dégradée' : (r.agl === 'bonne' ? '≤ 0,5 bonne' : ''))) + (r.aglValeur != null ? ' (' + r.aglValeur + ')' : '')], ['Polarité (ancien test)', r => r.polaires === 'nok' ? '> 25 % NON CONFORME' : (r.polaires === 'ok' ? '≤ 25 %' : '') + (r.polairesPct != null ? ' (' + r.polairesPct + ' %)' : '')], ['Huile usagée', r => r.volume != null || r.destination ? (r.volume != null ? r.volume + ' L' : '') + (r.destination ? ' → ' + r.destination : '') + (r.bon ? ' (bon ' + r.bon + ')' : '') : ''], ['Température (°C)', r => r.temp], ['Action corrective', r => r.actionCorrective], ['Remarque', r => r.remarque], ['Agent', r => r.agent]],
   nonconf: [['Date', r => UI.frDate(r.date)], ['Heure', r => r.time], ['Objet', r => r.objet], ['Lieu', r => r.lieu], ['Lot', r => r.lot], ['Péremption', r => r.peremption ? UI.frDate(r.peremption) : ''], ['Description', r => r.description], ['Action corrective', r => r.action], ['Statut', r => r.statut], ['Agent', r => r.agent]],
   verif: [['Date', r => UI.frDate(r.date)], ['Heure', r => r.time], ['Instrument', r => r.instrument], ['Méthode', r => r.methode], ['Écart constaté (°C)', r => r.ecart], ['Conforme (|écart| ≤ 1 °C)', r => r.conforme === false ? 'NON' : 'OUI'], ['Action corrective', r => r.action], ['Agent', r => r.agent]],
   document: [['Date', r => UI.frDate(r.date)], ['Titre', r => r.nom], ['Catégorie', r => r.categorie], ['Fichier', r => r.fichier], ['Taille', r => r.taille ? Math.round(r.taille / 1024) + ' Ko' : ''], ['Note', r => r.note], ['Agent', r => r.agent]],
@@ -3052,7 +3104,7 @@ const PMS_MEMO = [
   ['🍽️ Service', 'Liaison chaude ≥ 63 °C. Liaison froide cible 3 °C, limite 6 °C, tolérée 10 °C si consommation < 2 h. Plat témoin ≥ 100 g par plat et par service, 5 jours à 3 °C.'],
   ['⏳ Décongélation', 'En enceinte à 3 °C uniquement, 48 h maximum, jamais à température ambiante, jamais de recongélation.'],
   ['📦 Produits entamés', 'Étiqueter à l’ouverture (date + DLC interne) : lait/crème 2-3 j, mayonnaise 3 semaines, IV gamme 1-2 j, charcuterie tranchée 2 j, plats cuisinés 3 j, excédents 24 h.'],
-  ['🍟 Huiles de friture', 'Contrôle visuel à chaque service, composés polaires ≤ 25 % (test), T° de friture ≤ 175 °C. Huile usagée : collecteur agréé, bon d’enlèvement conservé.'],
+  ['🍟 Huiles de friture', 'Contrôle visuel à chaque service, test bandelette AGL : ≤ 0,5 mg KOH/g bonne · 1,5–2,5 dégradée (filtrer, prévoir le changement) · ≥ 3 CHANGER. T° de friture ≤ 175 °C. Huile usagée : collecteur agréé, bon d’enlèvement conservé.'],
   ['🧽 Nettoyage', 'Plan par zone (57 tâches), produits homologués, TACT (température, action, concentration, temps). Tracer chaque tâche (date + agent).'],
   ['🌡️ Thermomètres', 'Vérification périodique (eau glacée 0 °C / eau bouillante 100 °C), conforme si écart ≤ 1 °C, au moins une fois par an.'],
 ];
@@ -4310,6 +4362,25 @@ async function telechargerMaj() {
   UI.toast('Téléchargement lancé — ouvre ensuite le fichier haccp-cuisine.apk et confirme l’installation (les données sont conservées)', 'ok');
 }
 
+/* ---------- Conservation des étiquettes : 6 mois puis purge ---------- */
+/** Une fois par jour : supprime de l'application les étiquettes dont le jour
+ *  de destination a plus de 6 mois (183 j) — la durée réglementaire est
+ *  respectée, la mémoire de la tablette est préservée. Le Drive est purgé de
+ *  son côté par Code.gs (dossiers de semaines de plus de 6 mois). */
+async function maybePurgeEtiquettes() {
+  const today = UI.todayISO();
+  if (localStorage.getItem('haccp-purge-eti') === today) return;
+  const limite = UI.addDays(today, -183);
+  const ids = [];
+  await DB.eachRecord(r => { if (r.type === 'etiquette' && (r.destineLe || r.date || '') < limite) ids.push(r.id); });
+  for (const id of ids) await DB.deleteRecord(id);
+  localStorage.setItem('haccp-purge-eti', today);
+  if (ids.length) {
+    if (VIEWS.tracabilite._state) VIEWS.tracabilite._state._meta = null;
+    UI.toast(ids.length + ' étiquette(s) de plus de 6 mois supprimée(s) (conservation réglementaire atteinte)', 'ok');
+  }
+}
+
 /* ---------- Écran : veille normale, sauf refroidissement en cours ---------- */
 // L'application ne bloque plus la mise en veille (l'écran s'éteint selon le
 // réglage Android). Exception : pendant un refroidissement/une remise en T°
@@ -4397,9 +4468,12 @@ async function refroidTick() {
   if (modeSansEchec) {
     setTimeout(() => UI.toast('⚠️ Mode sans échec : démarrages interrompus répétés — sauvegardes automatiques suspendues pour cette session. Fais la mise à jour de l’application (Réglages → 🔄).', 'bad'), 1200);
   }
+  const tryPurge = () => { if (!modeSansEchec) maybePurgeEtiquettes().catch(e => console.warn('purge étiquettes', e)); };
   setTimeout(tryBackup, 2500);
   setTimeout(tryMenuSync, 5000);
   setTimeout(tryMaj, 8000);
+  setTimeout(tryPurge, 15000);
+  setInterval(tryPurge, 6 * 60 * 60 * 1000);
   setInterval(tryBackup, 60 * 60 * 1000);
   setInterval(tryMenuSync, 60 * 60 * 1000);
   setInterval(tryMaj, 60 * 60 * 1000);

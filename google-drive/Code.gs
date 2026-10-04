@@ -40,9 +40,10 @@ function doPost(e) {
     var dossierJson = sousDossierPar_(dossierAnnee, 'Sauvegardes quotidiennes');
     dossierJson.createFile(nom, contenu, 'application/json');
     var photos = extrairePhotos_(racine, data);
+    var purgees = purgerVieillesPhotos_(racine);
     nettoyer_(dossierJson);
 
-    return json_({ ok: true, fichier: nom, photos: photos });
+    return json_({ ok: true, fichier: nom, photos: photos, semainesPurgees: purgees });
   } catch (err) {
     return json_({ ok: false, erreur: String(err) });
   }
@@ -131,6 +132,37 @@ function anneeSemaineISO_(d) {
   var j = new Date(d.getTime());
   j.setDate(j.getDate() + 3 - ((j.getDay() + 6) % 7));
   return j.getFullYear();
+}
+
+/** Conservation 6 mois : met à la corbeille les dossiers de photos des
+ *  semaines de plus de ~27 semaines (10 dossiers max par passage, pour rester
+ *  dans la limite de temps d'exécution). */
+function purgerVieillesPhotos_(racine) {
+  var limite = new Date();
+  limite.setDate(limite.getDate() - 190);
+  var supprimes = 0;
+  var annees = racine.getFolders();
+  while (annees.hasNext() && supprimes < 10) {
+    var a = annees.next();
+    if (!/^\d{4}$/.test(a.getName())) continue;
+    var it = a.getFoldersByName('Photos étiquettes');
+    if (!it.hasNext()) continue;
+    var semaines = it.next().getFolders();
+    while (semaines.hasNext() && supprimes < 10) {
+      var s = semaines.next();
+      var m = s.getName().match(/^Semaine (\d{1,2}) (\d{4})$/);
+      if (!m) continue;
+      if (lundiSemaineISO_(Number(m[1]), Number(m[2])) < limite) { s.setTrashed(true); supprimes++; }
+    }
+  }
+  return supprimes;
+}
+
+// Lundi de la semaine ISO n° num de l'année donnée.
+function lundiSemaineISO_(num, annee) {
+  var jan4 = new Date(annee, 0, 4, 12);
+  var lundiS1 = new Date(jan4.getTime() - ((jan4.getDay() + 6) % 7) * 86400000);
+  return new Date(lundiS1.getTime() + (num - 1) * 7 * 86400000);
 }
 
 // Récupère (ou crée) un sous-dossier par son nom.

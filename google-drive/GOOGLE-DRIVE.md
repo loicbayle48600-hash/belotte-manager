@@ -75,8 +75,9 @@ image**, rangée **par semaine** — la même organisation que le classeur de tr
 ```
 
 Les photos sont classées selon le **jour de destination du produit** (choisi à la
-prise de photo), comme le classeur papier. Conservation illimitée (≥ 6 mois
-réglementaires) — rien n'est supprimé automatiquement. Chaque photo n'est déposée
+prise de photo), comme le classeur papier. **Conservation : 6 mois** (durée
+réglementaire) — au-delà, les dossiers de semaines sont mis à la corbeille
+automatiquement, sur le Drive comme dans l'application. Chaque photo n'est déposée
 qu'une seule fois ; au maximum 100 nouvelles photos par sauvegarde (le reste part
 avec la suivante).
 
