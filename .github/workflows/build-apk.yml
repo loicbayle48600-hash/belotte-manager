@@ -97,6 +97,7 @@ jobs:
           # AET Laval dès qu'il existe.
           urls = [
               'https://script.google.com/macros/s/AKfycbxj5g6bW-hnOyhJNLlf65l04uYrZp9e2Pofo60F8ja1ijZcwFEG9Je1Kmd4jQVJildbjg/exec',  # EHPAD Grandrieu
+              'https://script.google.com/macros/s/AKfycbwh5gaT2191rCF6fbvH98twmqyh8VK6cWBm2dBVOMdSKSnBQZvOjoKFjiLcTXKIk3fr/exec',  # AET Laval
           ]
           def envoyer(url, d):
               d.update({'app': 'haccp-cuisine', 'type': 'fichier-app', 'cle': 'haccp-maj-2026'})
