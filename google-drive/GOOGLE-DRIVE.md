@@ -50,18 +50,14 @@ image**, rangée **par semaine** — la même organisation que le classeur de tr
     │   └── …
     ├── 📁 Registres PDF
     │   ├── registres-haccp-30j-….pdf       ← PDF global des 30 derniers jours (hebdomadaire)
-    │   ├── 📁 Enceintes froides            ← 1 PDF par MOIS, conservé POUR TOUJOURS
-    │   │   ├── enceintes-froides-2026-07.pdf
-    │   │   └── enceintes-froides-2026-08.pdf  ← le mois en cours est mis à jour chaque jour
-    │   ├── 📁 Réceptions                   ← 1 PDF par mois, toujours
-    │   ├── 📁 Refroidissement              ← 1 PDF par mois, toujours
-    │   ├── 📁 Service                      ← 1 PDF par SEMAINE, toujours
-    │   │   └── service-semaine-33-2026.pdf
-    │   ├── 📁 Décongélation                ← 1 PDF par mois, toujours
-    │   ├── 📁 Congélation                  ← 1 PDF par mois, mis à jour au fil de l'eau, toujours
-    │   ├── 📁 Nettoyage                    ← 1 PDF par semaine, toujours
-    │   ├── 📁 Huiles                       ← 1 PDF par mois, mis à jour au fil de l'eau, toujours
-    │   └── 📁 Non-conformités              ← 1 PDF par mois, mis à jour au fil de l'eau, toujours
+    │   ├── 📁 août 2026                    ← UN DOSSIER PAR MOIS, créé au fil de l'eau
+    │   │   ├── enceintes-froides-2026-08.pdf   ← 1 PDF par registre et par mois, POUR TOUJOURS
+    │   │   ├── receptions-2026-08.pdf          (le mois en cours est mis à jour chaque jour)
+    │   │   ├── refroidissement-2026-08.pdf
+    │   │   ├── service-semaine-33-2026.pdf     ← les hebdomadaires (service, nettoyage) aussi
+    │   │   ├── decongelation-2026-08.pdf · congelation-2026-08.pdf
+    │   │   └── huiles-2026-08.pdf · non-conformites-2026-08.pdf
+    │   └── 📁 septembre 2026
     ├── 📁 Documents                        ← PMS, rapports labo, autocontrôles (PDF)
     │   ├── 📁 PMS
     │   ├── 📁 Analyses laboratoire         ← documents photographiés ou importés dans l'appli

@@ -4205,10 +4205,14 @@ async function maybeArchivePdfsToDrive() {
   _pdfArchEnCours = true;
   try {
     let toutOk = true;
+    const MOIS_FR = ['janvier', 'février', 'mars', 'avril', 'mai', 'juin', 'juillet', 'août', 'septembre', 'octobre', 'novembre', 'décembre'];
     for (const reg of ARCHIVES_PDF) {
       for (const per of periodesArchives(reg.periode, today)) {
-        // dossier maître par année (année de la période archivée)
-        const annee = per.suffixe.startsWith('semaine-') ? per.suffixe.split('-').pop() : per.suffixe.slice(0, 4);
+        // dossier maître par année, puis UN DOSSIER PAR MOIS (« janvier 2026 »…)
+        // créé au fur et à mesure — les noms de fichiers portent le registre.
+        // Pour les registres hebdomadaires, le mois est celui du lundi.
+        const annee = per.from.slice(0, 4);
+        const mois = MOIS_FR[Number(per.from.slice(5, 7)) - 1] + ' ' + annee;
         let res;
         try { res = await buildRegistresPDF([reg.type], per.from, per.to); }
         catch { toutOk = false; continue; }
@@ -4225,7 +4229,7 @@ async function maybeArchivePdfsToDrive() {
           body: JSON.stringify({
             app: 'haccp-cuisine', type: 'pdf',
             filename: reg.slug + '-' + per.suffixe + '.pdf',
-            dossier: annee + '/Registres PDF/' + reg.dossier,
+            dossier: annee + '/Registres PDF/' + mois,
             remplacer: true,
             data: b64,
           }),
