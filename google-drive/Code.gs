@@ -9,7 +9,13 @@
  */
 
 // Nom du dossier créé dans ton Drive pour ranger les sauvegardes.
-var DOSSIER = 'Sauvegardes HACCP';
+// POUR UN AUTRE ÉTABLISSEMENT (ex. AET Laval) : installer ce même script sur
+// LE COMPTE GOOGLE DE CET ÉTABLISSEMENT et changer ce nom (ex.
+// 'Sauvegardes HACCP AET Laval'), puis coller l'URL de SON déploiement dans
+// les Réglages de SA tablette.
+var DOSSIER = 'Sauvegardes HACCP EHPAD Grandrieu';
+// Ancien nom : renommé automatiquement à la première sauvegarde (contenu conservé).
+var ANCIEN_DOSSIER = 'Sauvegardes HACCP';
 
 // Nombre de sauvegardes à conserver (les plus anciennes sont supprimées).
 var MAX_FICHIERS = 60;
@@ -271,7 +277,12 @@ function doGet(e) {
 
 function getDossier_() {
   var it = DriveApp.getFoldersByName(DOSSIER);
-  return it.hasNext() ? it.next() : DriveApp.createFolder(DOSSIER);
+  if (it.hasNext()) return it.next();
+  // Migration : l'ancien dossier est simplement renommé (tout son contenu —
+  // sauvegardes, photos, PDF — reste en place).
+  var ancien = DriveApp.getFoldersByName(ANCIEN_DOSSIER);
+  if (ancien.hasNext()) { var d = ancien.next(); d.setName(DOSSIER); return d; }
+  return DriveApp.createFolder(DOSSIER);
 }
 
 // Conserve seulement les MAX_FICHIERS sauvegardes les plus récentes.

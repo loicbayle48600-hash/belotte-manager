@@ -43,7 +43,7 @@ En plus du fichier JSON, le script dépose chaque photo d'étiquette en **vrai f
 image**, rangée **par semaine** — la même organisation que le classeur de traçabilité :
 
 ```
-📁 Sauvegardes HACCP
+📁 Sauvegardes HACCP EHPAD Grandrieu
 └── 📁 2026                                 ← DOSSIER MAÎTRE PAR ANNÉE (2027 se créera tout seul)
     ├── 📁 Sauvegardes quotidiennes
     │   ├── haccp_…_2026-08-14_07-32.json   ← sauvegarde complète du jour (60 conservées)
@@ -87,7 +87,7 @@ avec la suivante).
 
 ## Résultat
 
-- Un dossier **« Sauvegardes HACCP »** apparaît dans ton Google Drive.
+- Un dossier **« Sauvegardes HACCP EHPAD Grandrieu »** apparaît dans ton Google Drive (l'ancien dossier « Sauvegardes HACCP » est renommé automatiquement, contenu conservé).
 - À l'intérieur, un fichier `haccp_…_AAAA-MM-JJ_HH-mm.json` par sauvegarde.
 - L'application envoie automatiquement une sauvegarde **une fois par jour**, au premier
   démarrage sur la tablette (si Internet est disponible). Tu peux aussi lancer une
