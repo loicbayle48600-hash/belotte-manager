@@ -1,0 +1,11 @@
+{
+  "appId": "fr.cuisine.haccp",
+  "appName": "HACCP Cuisine",
+  "webDir": "www",
+  "android": {},
+  "plugins": {
+    "CapacitorHttp": {
+      "enabled": true
+    }
+  }
+}

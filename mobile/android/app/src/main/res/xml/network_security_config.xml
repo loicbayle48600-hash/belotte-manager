@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+    <!-- Le « serveur maison » de sauvegarde peut être en http:// sur le réseau
+         local (Android bloque sinon tout HTTP non-TLS depuis Android 9).
+         Toutes les destinations intégrées (Drive, Dropbox, GitHub) restent en HTTPS. -->
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>
