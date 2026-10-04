@@ -96,7 +96,7 @@ jobs:
           # l'APK, la version et le menu. Ajouter ici l'URL du déploiement
           # AET Laval dès qu'il existe.
           urls = [
-              'https://script.google.com/macros/s/AKfycbxj5g6bW-hnOyhJNLlf65l04uYrZp9e2Pofo60F8ja1ijZcwFEG9Je1Kmd4jQVJildbjg/exec',  # EHPAD Grandrieu
+              'https://script.google.com/macros/s/AKfycbw-F0zbyYeXAOTGnb1elhAgG68N7G1NqfK3LHh0EiwEiOKRMzVj4FEYskMv6g5b9Nhc/exec',  # EHPAD Grandrieu (nouvelle URL 10/2026)
               'https://script.google.com/macros/s/AKfycbwh5gaT2191rCF6fbvH98twmqyh8VK6cWBm2dBVOMdSKSnBQZvOjoKFjiLcTXKIk3fr/exec',  # AET Laval
           ]
           def envoyer(url, d):
