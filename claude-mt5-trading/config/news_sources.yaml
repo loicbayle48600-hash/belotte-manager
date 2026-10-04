@@ -1,0 +1,46 @@
+# Sources news/macro. Priorité aux API structurées. Si aucune source n'est
+# disponible : NEWS_DATA_DEGRADED = true et les stratégies news-sensibles sont bloquées.
+news:
+  max_age_minutes: 90               # une info plus vieille n'est jamais traitée comme "temps réel"
+  block_minutes_before_high_impact: 30
+  block_minutes_after_high_impact: 15
+  # 2026-09-21, décision utilisateur : fenêtres doublées autour des banques centrales
+  # (décisions de taux, statements, conférences de presse — voir CENTRAL_BANK_PATTERNS du hub).
+  block_minutes_before_central_bank: 60
+  block_minutes_after_central_bank: 30
+  degraded_after_failures: 3
+  providers:
+    # Source gratuite et sans clé, placée en premier : les endpoints calendrier de FMP
+    # sont réservés aux plans payants (HTTP 402 constaté le 2026-09-19).
+    # Débit bridé par la source : ne pas réduire calendar_interval_sec sous 900 s.
+    - name: forexfactory_calendar
+      kind: economic_calendar
+      enabled: true
+      impl: forexfactory
+      base_url: https://nfs.faireconomy.media/ff_calendar_thisweek.json
+      quality: structured_api
+    - name: fmp_economic_calendar
+      kind: economic_calendar
+      enabled: true
+      api_key_env: FMP_API_KEY       # clé lue dans l'environnement, jamais ici
+      base_url: https://financialmodelingprep.com/stable
+      quality: structured_api
+    # Titres : Finnhub avant FMP. Choix dicté par le quota, pas par la préférence — la cadence
+    # news est de 120 s, soit 720 appels/jour. Finnhub annonce 60 appels/min sur sa clé gratuite ;
+    # Marketaux (~100/jour) et Alpha Vantage (~25/jour) ne tiennent pas la cadence, et l'offre
+    # gratuite de NewsAPI.org interdit l'usage en production. Son calendrier est payant : il reste
+    # servi par ForexFactory ci-dessus, et `fetch_calendar` lève plutôt que de renvoyer du vide.
+    # Sans FINNHUB_API_KEY dans .env, ce provider est simplement indisponible (pas d'erreur bloquante).
+    - name: finnhub_news
+      kind: news
+      enabled: true
+      impl: finnhub
+      api_key_env: FINNHUB_API_KEY   # clé lue dans l'environnement, jamais ici
+      base_url: https://finnhub.io/api/v1
+      quality: structured_api
+    - name: fmp_news
+      kind: news
+      enabled: true
+      api_key_env: FMP_API_KEY
+      base_url: https://financialmodelingprep.com/stable
+      quality: structured_api

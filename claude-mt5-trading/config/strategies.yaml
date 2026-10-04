@@ -1,0 +1,80 @@
+# Paramètres de validation / promotion des stratégies (champion/challenger)
+learning:
+  enabled: true
+  # 2026-09-25, demande utilisateur (« mets les agents en avant ») : leurs candidats passent AVANT les autres (revue IA
+  # et entrée, une seule position par symbole). Le gate reste seul juge et le risque par trade est inchangé.
+  agents_prioritaires: [E05, F06, B02, C06, B04, E01, D06, D07, C08]
+  # agents avancés dans le pipeline de recherche à chaque passage (2 jusqu'au 2026-09-25 : toujours K01/K02, qui
+  # échouaient au backtest, aucun autre agent n'avançait) ; un échec n'est retenté qu'après `research_retry_hours`
+  research_agents_per_cycle: 5     # mode interne (research_external: false) : 5 agents par passage
+  # 2026-09-27 : la recherche tourne dans un processus séparé (research/worker.py, priorité basse) : plus aucune charge
+  # dans la boucle de trading ; 20 agents par passage (toutes les 30 min) au lieu de 5
+  research_external: true
+  # 2026-09-28 (décision utilisateur) : un signal d'agent LIVE non pris pour une raison de CAPACITÉ (verrou de pertes,
+  # plafond de concentration, symbole déjà porté, créneaux de revue, plafond d'entrées) est suivi en papier (mode « paper »)
+  # pour que l'agent accumule son échantillon ; jugement possible sur « live+paper »
+  paper_trades_live_agents: true
+  # 2026-09-28 au soir, demande utilisateur (« continue les tests en shadow, booste-les ») : 20 → 40 agents par passage,
+  # nouvel essai après 8 h au lieu de 24 (les passages ne traitaient plus que 0 à 10 agents, la file était vide)
+  research_worker_agents_per_cycle: 40
+  research_retry_hours: 8
+  # positions VIRTUELLES (aucun ordre) : 50 places ne suffisaient plus pour 115 agents SHADOW (2026-09-25)
+  shadow_max_open: 600            # 400 → 600 le 2026-09-28 au soir (boost des tests en ombre, demande utilisateur)
+  shadow_max_open_per_agent: 6    # 4 → 6, même décision
+  # 2026-10-01, décision utilisateur : positions shadow et papier gérées comme en live (sorties partielles, break-even,
+  # protection du gain, stop suiveur, sortie sans progression) pour juger les agents sur la même base que le réel.
+  # Avant : stop et cible fixes (E05 : −10 R en papier, +3,8 R en réel).
+  shadow_avec_gestion: true
+  # verdict post-trade « spread élevé » aligné sur le gate 07b (2026-09-25)
+  max_spread_sl_ratio: 0.20
+  champion_challenger: true
+  live_self_mutation: false
+  shadow_required: true
+  # 2026-10-01, décision utilisateur : 100 trades shadow (20 avant) pour valider l'étape SHADOW du pipeline et pour le
+  # verdict « prêt pour revue live » du tableau de bord et du rapport de 17 h ; la famille N reste signalée à 50 trades
+  min_shadow_trades: 100
+  min_sample_size: 40
+  min_profit_factor: 1.2
+  min_expectancy_r: 0.10
+  max_drawdown_r: 15.0
+  degradation:
+    # 2026-09-28 au soir (décision utilisateur) : la dégradation / suspension automatique juge un agent LIVE sur ses trades
+    # réels ET ses trades papier (signaux non pris faute de capacité), pour atteindre les 40 trades plus vite. Le papier
+    # ignore glissement et spread réel : les seuils restent conservateurs. "live" pour revenir à l'ancien comportement.
+    trades_mode: live+paper
+    windows: [20, 30, 50]
+    min_history: 60
+    pf_drop_ratio: 0.6          # PF récent < 60 % du PF long terme → dégradation
+    expectancy_drop_r: 0.15
+    auto_suspend_degraded: true
+    # 2026-09-24, décision utilisateur : un agent LIVE qui perd nettement est suspendu sans attendre 60 trades
+    fast_suspend_min_trades: 10  # réactivé le 2026-09-25 (demande utilisateur)
+    fast_suspend_max_profit_factor: 0.5
+    # 2026-09-30, décisions utilisateur : agent SHADOW suspendu automatiquement à 50 trades avec un PF < 0,8 ;
+    # famille N (saisonnalité) signalée pour une revue live à 50 trades avec un PF >= 1,3 (jamais promue directement)
+    shadow_suspend_min_trades: 50
+    shadow_suspend_max_profit_factor: 0.8
+    shadow_review_families: [N]
+    shadow_review_min_trades: 50
+    shadow_review_min_profit_factor: 1.3
+  challenger_generation:
+    max_new_per_cycle: 3
+    parameter_jitter_percent: 20
+# 2026-09-24 (point 1) : filtre d'extension MESURÉ seulement. Chaque candidat porte la distance entrée / EMA20 du
+# tf d'entrée en ATR ; le rapport hebdomadaire compare les trades qu'il aurait refusés aux autres. Aucun refus réel
+# tant que mode = measure.
+entry_extension_filter:
+  mode: measure
+  max_atr: 1.5
+
+backtest:
+  # 2026-09-27 : le backtest applique la gestion du bot (risk.profit_management : break-even, TP partiels, stop
+  # suiveur) au lieu d'une sortie SL / TP fixe — c'est ce que le bot fait vraiment
+  use_position_management: true
+  # 2026-09-25 : chaque agent est testé sur 3 symboles de son marché (1 seul donnait 2 à 6 trades)
+  symbols_per_agent: 3
+  default_spread_points: 12
+  commission_per_lot: 7.0          # IC Markets Raw Spread : ~3,5 USD par lot et par sens
+  slippage_points: 3
+  walk_forward_folds: 4
+  monte_carlo_runs: 500

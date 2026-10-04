@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "mt5-trading-lab": {
+      "command": "python",
+      "args": ["-m", "tradinglab.mcp.server"],
+      "env": {
+        "TRADINGLAB_HOME": "${TRADINGLAB_HOME}",
+        "PYTHONPATH": "src"
+      }
+    }
+  }
+}
