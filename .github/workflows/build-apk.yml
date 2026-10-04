@@ -84,6 +84,29 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      # Dépôt GitHub PRIVÉ : les tablettes ne peuvent plus lire la release ni
+      # le fichier brut. Le build dépose donc aussi l'APK, le numéro de version
+      # et le menu sur le Google Drive de l'établissement (via le script
+      # Code.gs) — les tablettes se mettent à jour par là.
+      - name: Publier aussi sur Google Drive (script Code.gs)
+        run: |
+          python3 - <<'EOF'
+          import base64, glob, json, os, urllib.request
+          url = 'https://script.google.com/macros/s/AKfycbxj5g6bW-hnOyhJNLlf65l04uYrZp9e2Pofo60F8ja1ijZcwFEG9Je1Kmd4jQVJildbjg/exec'
+          def envoyer(d):
+              d.update({'app': 'haccp-cuisine', 'type': 'fichier-app', 'cle': 'haccp-maj-2026'})
+              req = urllib.request.Request(url, data=json.dumps(d).encode(), headers={'Content-Type': 'text/plain;charset=utf-8'})
+              print(d['quoi'], '->', urllib.request.urlopen(req, timeout=300).read()[:200])
+          run = os.environ['GITHUB_RUN_NUMBER']
+          envoyer({'quoi': 'apk', 'data': base64.b64encode(open('out/haccp-cuisine.apk', 'rb').read()).decode()})
+          menus = sorted(glob.glob('menus/*.xlsx'))
+          if menus:
+              envoyer({'quoi': 'menu', 'data': base64.b64encode(open(menus[0], 'rb').read()).decode()})
+          # la version en DERNIER : les tablettes ne la voient qu'une fois l'APK en place
+          envoyer({'quoi': 'version', 'texte': json.dumps({'versionCode': int(run), 'versionName': '1.' + run})})
+          EOF
+        continue-on-error: true
+
       # Release « apk » à lien stable : téléchargeable directement depuis la
       # tablette via https://github.com/<repo>/releases/latest
       - name: Publier l'APK en release GitHub

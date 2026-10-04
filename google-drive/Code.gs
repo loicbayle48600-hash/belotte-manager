@@ -24,6 +24,12 @@ function doPost(e) {
       return recevoirPdf_(getDossier_(), data);
     }
 
+    // Fichiers de l'application (APK, menu, version) déposés par le build :
+    // les tablettes se mettent à jour via le Drive, même dépôt GitHub privé.
+    if (data && data.type === 'fichier-app') {
+      return recevoirFichierApp_(getDossier_(), data);
+    }
+
     var etab = (data.etablissement || 'cuisine').toString().replace(/[^\w\-À-ÿ ]+/g, '').trim() || 'cuisine';
     var horodatage = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd_HH-mm');
     var nom = 'haccp_' + etab.replace(/\s+/g, '-') + '_' + horodatage + '.json';
@@ -182,8 +188,52 @@ function empreinte_(base64) {
   return hex;
 }
 
-// Permet de vérifier que le script répond (ouverture de l'URL dans un navigateur).
-function doGet() {
+/* ---- Mises à jour de l'application via le Drive (dépôt GitHub privé) ----
+ * Le build dépose ici l'APK, le menu et le numéro de version (dossier
+ * « Application ») ; les tablettes les récupèrent par les adresses ci-dessous. */
+var CLE_FICHIERS = 'haccp-maj-2026';
+
+function recevoirFichierApp_(racine, data) {
+  if (data.cle !== CLE_FICHIERS) return json_({ ok: false, erreur: 'clé invalide' });
+  var dossier = sousDossierPar_(racine, 'Application');
+  var noms = { apk: 'haccp-cuisine.apk', menu: 'menu.xlsx', version: 'version.json' };
+  var nom = noms[data.quoi];
+  if (!nom) return json_({ ok: false, erreur: 'type de fichier inconnu' });
+  var anciens = dossier.getFilesByName(nom);
+  while (anciens.hasNext()) anciens.next().setTrashed(true);
+  var fichier;
+  if (data.quoi === 'version') {
+    fichier = dossier.createFile(nom, String(data.texte || '{}'), 'application/json');
+  } else {
+    var mime = data.quoi === 'apk' ? 'application/vnd.android.package-archive'
+      : 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+    fichier = dossier.createFile(Utilities.newBlob(Utilities.base64Decode(data.data), mime, nom));
+  }
+  // lien direct indispensable pour installer l'APK depuis la tablette
+  fichier.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+  return json_({ ok: true, fichier: nom });
+}
+
+// Répond aussi aux tablettes : ?q=version (numéro publié), ?q=apkurl (lien de
+// téléchargement de l'APK), ?q=menub64 (menu de l'année en base64).
+function doGet(e) {
+  var q = e && e.parameter && e.parameter.q;
+  if (q) {
+    var dossier = sousDossierPar_(getDossier_(), 'Application');
+    var fichierDe = function (nom) { var it = dossier.getFilesByName(nom); return it.hasNext() ? it.next() : null; };
+    if (q === 'version') {
+      var fv = fichierDe('version.json');
+      return fv ? ContentService.createTextOutput(fv.getBlob().getDataAsString()).setMimeType(ContentService.MimeType.JSON) : json_({ ok: false });
+    }
+    if (q === 'apkurl') {
+      var fa = fichierDe('haccp-cuisine.apk');
+      return fa ? json_({ ok: true, url: 'https://drive.google.com/uc?export=download&id=' + fa.getId() }) : json_({ ok: false });
+    }
+    if (q === 'menub64') {
+      var fm = fichierDe('menu.xlsx');
+      return fm ? ContentService.createTextOutput(Utilities.base64Encode(fm.getBlob().getBytes())).setMimeType(ContentService.MimeType.TEXT) : json_({ ok: false });
+    }
+  }
   return json_({ ok: true, message: 'Service de sauvegarde HACCP actif.' });
 }
 

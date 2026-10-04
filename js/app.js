@@ -4059,9 +4059,18 @@ async function maybeMenuSync(force) {
   if (!force && localStorage.getItem('haccp-menu-check') === today) return;
   _menuSyncEnCours = true;
   try {
-    const resp = await fetch(url, { cache: 'no-store' });
-    if (!resp.ok) { if (force) UI.toast('Menu introuvable (' + resp.status + ') — vérifie l’URL', 'bad'); return; }
-    const buf = await resp.arrayBuffer();
+    // 1) fichier GitHub (dépôt public) ; 2) secours : copie déposée sur le
+    // Drive par le build (fonctionne même dépôt GitHub privé)
+    let buf = null;
+    try {
+      const resp = await fetch(url, { cache: 'no-store' });
+      if (resp.ok) buf = await resp.arrayBuffer();
+    } catch { /* GitHub inaccessible */ }
+    if (!buf) {
+      const b64 = await scriptGet('menub64');
+      if (b64 && !b64.trim().startsWith('{')) buf = base64VersBuffer(b64);
+    }
+    if (!buf) { if (force) UI.toast('Menu introuvable (GitHub inaccessible et pas encore de copie sur le Drive) — vérifie l’URL ou mets à jour Code.gs', 'bad'); return; }
     // empreinte du fichier : réimport seulement s'il a changé
     const digest = await crypto.subtle.digest('SHA-256', buf);
     // 'v2:' = version du parseur (correctif fuseau horaire) : forcer un réimport
@@ -4199,6 +4208,36 @@ function isNativeApp() {
   return !!(c && c.isNativePlatform && c.isNativePlatform());
 }
 
+/** GET léger sur le script Google Drive (?q=…) — null si pas configuré/joignable. */
+async function scriptGet(q) {
+  const base = (SETTINGS.driveUrl || '').trim();
+  if (!base) return null;
+  try {
+    const resp = await fetch(base + (base.includes('?') ? '&' : '?') + 'q=' + q, { cache: 'no-store' });
+    if (!resp.ok) return null;
+    return await resp.text();
+  } catch { return null; }
+}
+
+function base64VersBuffer(b64) {
+  const bin = atob(String(b64).replace(/\s+/g, ''));
+  const a = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) a[i] = bin.charCodeAt(i);
+  return a.buffer;
+}
+
+/** Dernière version publiée : d'abord via le script Drive (fonctionne même
+ *  dépôt GitHub privé), sinon directement sur GitHub (dépôt public). */
+async function infoDerniereVersion() {
+  const txt = await scriptGet('version');
+  if (txt) { try { const v = JSON.parse(txt); if (v && Number(v.versionCode)) return v; } catch { /* réponse inattendue */ } }
+  try {
+    const resp = await fetch(APK_VERSION_URL, { cache: 'no-store' });
+    if (resp.ok) { const v = await resp.json(); if (v && Number(v.versionCode)) return v; }
+  } catch { /* GitHub inaccessible */ }
+  return null;
+}
+
 let _majDispo = null; // { versionCode, versionName } si une version plus récente existe
 async function maybeCheckUpdate(force) {
   // Uniquement l'APK (la PWA navigateur se met à jour via le service worker)
@@ -4208,9 +4247,8 @@ async function maybeCheckUpdate(force) {
   const dernier = Number(localStorage.getItem('haccp-maj-last-ts') || 0);
   if (!force && Date.now() - dernier < 55 * 60 * 1000) return;
   try {
-    const resp = await fetch(APK_VERSION_URL, { cache: 'no-store' });
-    if (!resp.ok) return;
-    const v = await resp.json();
+    const v = await infoDerniereVersion();
+    if (!v) return;
     localStorage.setItem('haccp-maj-last-ts', String(Date.now())); // posé seulement après une réponse valide
     const dispo = v && Number(v.versionCode) > Number(window.APP_VERSION_CODE);
     const changement = dispo !== !!_majDispo;
@@ -4260,10 +4298,15 @@ async function verifierMajManuel() {
   }
 }
 
-/** Ouvre le téléchargement de l'APK dans le navigateur de la tablette. */
-function telechargerMaj() {
-  const w = window.open(APK_TELECHARGEMENT, '_blank');
-  if (!w) window.location.href = APK_TELECHARGEMENT;
+/** Ouvre le téléchargement de l'APK dans le navigateur de la tablette :
+ *  lien Drive (déposé par le build, marche même dépôt GitHub privé),
+ *  sinon la page GitHub. */
+async function telechargerMaj() {
+  let cible = APK_TELECHARGEMENT;
+  const txt = await scriptGet('apkurl');
+  if (txt) { try { const j = JSON.parse(txt); if (j && j.url) cible = j.url; } catch { /* réponse inattendue */ } }
+  const w = window.open(cible, '_blank');
+  if (!w) window.location.href = cible;
   UI.toast('Téléchargement lancé — ouvre ensuite le fichier haccp-cuisine.apk et confirme l’installation (les données sont conservées)', 'ok');
 }
 
