@@ -1538,8 +1538,8 @@ function openIssueModal(rec, depasse, motifDepasse) {
 /* Bloc « 📷 photo d'étiquette » réutilisable dans un formulaire (décongélation,
  * congélation…). La photo est enregistrée comme ÉTIQUETTE normale : classée au
  * classeur par jour, déposée sur le Drive, soumise à la conservation 6 mois. */
-function photoEtiquetteHTML() {
-  return '<div class="row" style="margin-bottom:12px"><button type="button" class="btn secondary" data-x="photo-eti">📷 Photo de l’étiquette (optionnel)</button>' +
+function photoEtiquetteHTML(libelle) {
+  return '<div class="row" style="margin-bottom:12px"><button type="button" class="btn secondary" data-x="photo-eti">' + (libelle || '📷 Photo de l’étiquette (optionnel)') + '</button>' +
     '<span data-photo-eti-apercu></span></div>';
 }
 function photoEtiquetteWire(m) {
@@ -2837,7 +2837,7 @@ VIEWS.nonconformites = async function (el) {
       '<button class="btn" id="new-nc">➕ Signaler</button>') +
     (rows.length ? '<div class="rec-list">' + rows.map(r =>
       '<div class="rec-item bad">' +
-      '<div class="big">⚠️</div>' +
+      (r.photo && !r.auto ? '<img src="' + UI.esc(r.photo) + '" data-nc-photo="' + r.id + '" style="height:56px;width:56px;object-fit:cover;border-radius:8px;cursor:zoom-in">' : '<div class="big">⚠️</div>') +
       '<div class="body"><div class="title">' + UI.esc(r.objet) + (r.auto ? ' <span class="pill info">auto</span>' : (r.statut === 'cloturee' ? ' <span class="pill ok">clôturée</span>' : ' <span class="pill warn">ouverte</span>')) + '</div>' +
       '<div class="meta">' + UI.frDate(r.date) + ' ' + UI.esc(r.time || '') + ' — ' + UI.esc(r.description || '') +
       (r.action ? ' — Action : ' + UI.esc(r.action) : '') + ' — ' + UI.esc(r.agent || '') + '</div></div>' +
@@ -2846,6 +2846,13 @@ VIEWS.nonconformites = async function (el) {
     ).join('') + '</div>' : '<div class="empty"><span class="e-ico">✅</span>Aucune non-conformité sur les 30 derniers jours. Continue comme ça !</div>');
 
   el.querySelector('#new-nc').addEventListener('click', openNCModal);
+  el.querySelectorAll('[data-nc-photo]').forEach(img => img.addEventListener('click', async () => {
+    const r = await DB.getRecord(Number(img.dataset.ncPhoto));
+    if (!r || !r.photo) return;
+    UI.modal('<h2>' + UI.esc(r.objet || 'Non-conformité') + '</h2><img src="' + UI.esc(r.photo) + '" class="photo-full">' +
+      '<div class="actions"><button class="btn ghost" data-x="close">Fermer</button></div>',
+      (m, close) => { m.querySelector('[data-x="close"]').onclick = close; });
+  }));
   el.querySelectorAll('[data-close-nc]').forEach(b => b.addEventListener('click', async () => {
     const rec = await DB.getRecord(Number(b.dataset.closeNc));
     if (rec) { rec.statut = 'cloturee'; await DB.updateRecord(rec); UI.toast('Non-conformité clôturée ✔', 'ok'); render(); }
@@ -2865,9 +2872,11 @@ function openNCModal() {
     '<textarea data-f="description" placeholder="Décris le problème constaté"></textarea></label>' +
     '<label class="field"><span class="lbl">Action corrective mise en place</span>' +
     '<textarea data-f="action" placeholder="Ex. : denrées isolées et étiquetées « NE PAS UTILISER », dépanneur appelé…"></textarea></label>' +
+    photoEtiquetteHTML('📷 Photo du problème (optionnel)') +
     agentField() +
     '<div class="actions"><button class="btn ghost" data-x="cancel">Annuler</button><button class="btn" data-x="save">Enregistrer</button></div>',
     (m, close) => {
+      const etatPhoto = photoEtiquetteWire(m);
       m.querySelector('[data-x="cancel"]').onclick = close;
       m.querySelector('[data-x="save"]').onclick = async () => {
         const objet = m.querySelector('[data-f="objet"]').value.trim();
@@ -2881,6 +2890,7 @@ function openNCModal() {
           peremption: m.querySelector('[data-f="peremption"]').value,
           description: m.querySelector('[data-f="description"]').value.trim(),
           action: m.querySelector('[data-f="action"]').value.trim(),
+          photo: etatPhoto.photo || '',
           statut: 'ouverte', agent,
         });
         close();
@@ -2945,7 +2955,7 @@ const EXPORT_COLUMNS = {
   etiquette: [['Date photo', r => UI.frDate(r.date)], ['Heure', r => r.time], ['Destiné au', r => r.destineLe ? UI.frDate(r.destineLe) : UI.frDate(r.date)], ['Produit', r => r.produit], ['Lot', r => r.lot], ['DLC', r => r.dlc ? UI.frDate(r.dlc) : ''], ['Photo', r => r.photo ? 'OUI' : 'NON'], ['Agent', r => r.agent]],
   nettoyage: [['Date', r => UI.frDate(r.date)], ['Heure', r => r.time], ['Tâche', r => r.taskName], ['Zone', r => r.zone], ['Fréquence', r => r.freq], ['Agent', r => r.agent]],
   huile: [['Date', r => UI.frDate(r.date)], ['Heure', r => r.time], ['Friteuse', r => r.friteuse], ['Opération', r => r.action], ['État huile', r => r.etat], ['Test AGL (mg KOH/g)', r => (r.agl === 'achanger' ? '≥ 3 NON CONFORME' : (r.agl === 'degradee' ? '1,5–2,5 dégradée' : (r.agl === 'bonne' ? '≤ 0,5 bonne' : ''))) + (r.aglValeur != null ? ' (' + r.aglValeur + ')' : '')], ['Polarité (ancien test)', r => (r.polaires === 'nok' ? '> 25 % NON CONFORME' : (r.polaires === 'ok' ? '≤ 25 %' : '')) + (r.polairesPct != null ? ' (' + r.polairesPct + ' %)' : '')], ['Huile usagée', r => r.volume != null || r.destination ? (r.volume != null ? r.volume + ' L' : '') + (r.destination ? ' → ' + r.destination : '') + (r.bon ? ' (bon ' + r.bon + ')' : '') : ''], ['Température (°C)', r => r.temp], ['Action corrective', r => r.actionCorrective], ['Remarque', r => r.remarque], ['Agent', r => r.agent]],
-  nonconf: [['Date', r => UI.frDate(r.date)], ['Heure', r => r.time], ['Objet', r => r.objet], ['Lieu', r => r.lieu], ['Lot', r => r.lot], ['Péremption', r => r.peremption ? UI.frDate(r.peremption) : ''], ['Description', r => r.description], ['Action corrective', r => r.action], ['Statut', r => r.statut], ['Agent', r => r.agent]],
+  nonconf: [['Date', r => UI.frDate(r.date)], ['Heure', r => r.time], ['Objet', r => r.objet], ['Lieu', r => r.lieu], ['Lot', r => r.lot], ['Péremption', r => r.peremption ? UI.frDate(r.peremption) : ''], ['Description', r => r.description], ['Action corrective', r => r.action], ['Photo', r => r.photo ? 'OUI' : ''], ['Statut', r => r.statut], ['Agent', r => r.agent]],
   verif: [['Date', r => UI.frDate(r.date)], ['Heure', r => r.time], ['Instrument', r => r.instrument], ['Méthode', r => r.methode], ['Écart constaté (°C)', r => r.ecart], ['Conforme (|écart| ≤ 1 °C)', r => r.conforme === false ? 'NON' : 'OUI'], ['Action corrective', r => r.action], ['Agent', r => r.agent]],
   document: [['Date', r => UI.frDate(r.date)], ['Titre', r => r.nom], ['Catégorie', r => r.categorie], ['Fichier', r => r.fichier], ['Taille', r => r.taille ? Math.round(r.taille / 1024) + ' Ko' : ''], ['Note', r => r.note], ['Agent', r => r.agent]],
   fermeture: [['Date', r => UI.frDate(r.date)], ['Motif', r => r.motif], ['Agent', r => r.agent]],
