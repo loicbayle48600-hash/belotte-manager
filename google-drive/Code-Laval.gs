@@ -202,11 +202,17 @@ function recevoirPdf_(dossier, data) {
   var blob = Utilities.newBlob(Utilities.base64Decode(data.data), 'application/pdf', nom);
   cible.createFile(blob);
 
-  // rotation UNIQUEMENT pour le PDF global historique (jamais pour les archives par registre)
-  if (!data.dossier) {
+  // Rotation UNIQUEMENT pour le PDF global hebdomadaire « registres-haccp-30j-… »
+  // (12 conservés) — jamais pour les archives par registre/mois, gardées pour
+  // toujours. Repérée par le nom de fichier : le PDF global arrive désormais
+  // lui aussi avec un chemin « <année>/Registres PDF ».
+  if (nom.indexOf('registres-haccp-30j-') === 0) {
     var fichiers = [];
     var files = cible.getFiles();
-    while (files.hasNext()) fichiers.push(files.next());
+    while (files.hasNext()) {
+      var f = files.next();
+      if (f.getName().indexOf('registres-haccp-30j-') === 0) fichiers.push(f);
+    }
     fichiers.sort(function (a, b) { return b.getDateCreated() - a.getDateCreated(); });
     for (var i = 12; i < fichiers.length; i++) fichiers[i].setTrashed(true);
   }

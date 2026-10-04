@@ -129,6 +129,6 @@ jobs:
             --repo "$GITHUB_REPOSITORY" \
             --title "📱 HACCP Cuisine — dernier APK (build ${GITHUB_RUN_NUMBER})" \
             --notes "**haccp-cuisine.apk** : l'application Android à installer sur la tablette (installer par-dessus conserve les données).
-          **menu-2025-ehpad-fam.xlsx** : le fichier des menus de l'année, à importer dans l'appli (module 🍲 Menu → 📥 Importer)."
+          **menu-2026-ehpad-fam.xlsx** : le fichier des menus de l'année, à importer dans l'appli (module 🍲 Menu → 📥 Importer)."
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

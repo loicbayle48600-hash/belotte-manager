@@ -48,7 +48,7 @@ const DEFAULT_SETTINGS = {
   ecran: 'auto', // veille : 'auto' (éveillé pendant un refroidissement), 'toujours', 'normal'
   // Synchronisation du menu depuis GitHub : l'appli vérifie une fois par jour
   // si le fichier a changé et réimporte automatiquement.
-  menuUrl: 'https://raw.githubusercontent.com/loicbayle48600-hash/belotte-manager/claude/haccp-android-tablet-app-sk7oa1/menus/menu-2025-ehpad-fam.xlsx',
+  menuUrl: 'https://raw.githubusercontent.com/loicbayle48600-hash/belotte-manager/claude/haccp-android-tablet-app-sk7oa1/menus/menu-2026-ehpad-fam.xlsx',
   menuAutoSync: true,
   equipements: [
     { id: 'e1', name: 'Chambre froide négative', ...NEG },
@@ -324,8 +324,8 @@ const PLAT_CATS = [
 const PLAT_CAT_LABEL = Object.fromEntries(PLAT_CATS.map(c => [c.value, c.label]));
 
 /** Noms des plats prévus au menu du jour (midi + soir), pour aujourd'hui. */
-async function getTodayMenuNames() {
-  const today = UI.todayISO();
+async function getTodayMenuNames(jour) {
+  const today = jour || UI.todayISO();
   const menus = await DB.getByTypeAndRange('menu', today, today);
   const names = [];
   menus.forEach(mn => (mn.items || []).forEach(n => { if (!names.includes(n)) names.push(n); }));
@@ -363,7 +363,18 @@ function setLastAutoBackupDate(d) { localStorage.setItem('haccp-drive-last', d |
 async function buildBackup(opts) {
   const withDocData = !opts || opts.withDocData !== false;
   const photosJours = (opts && opts.photosJours) || 0;
+  const sansSecrets = !!(opts && opts.sansSecrets);
   let records = await DB.getAllRecords();
+  // Envois cloud : le PIN, le jeton Dropbox et le mot de passe WebDAV ne
+  // doivent pas être répliqués en clair vers toutes les destinations.
+  let settings = SETTINGS;
+  if (sansSecrets) {
+    settings = JSON.parse(JSON.stringify(SETTINGS));
+    settings.pin = '';
+    if (settings.dropbox) settings.dropbox.token = '';
+    if (settings.webdav) settings.webdav.pass = '';
+    settings.secretsOmis = true; // à re-saisir après une restauration depuis le cloud
+  }
   if (!withDocData) {
     records = records.map(r => (r.type === 'document' && r.data)
       ? Object.assign({}, r, { data: '', dataOmise: true })
@@ -385,7 +396,7 @@ async function buildBackup(opts) {
       ? Object.assign({}, r, { photo: '', photoOmise: true })
       : r);
   }
-  return { app: 'haccp-cuisine', version: 1, exportedAt: new Date().toISOString(), etablissement: SETTINGS.etablissement, settings: SETTINGS, records };
+  return { app: 'haccp-cuisine', version: 1, exportedAt: new Date().toISOString(), etablissement: SETTINGS.etablissement, settings, records };
 }
 
 /** Export local : le JSON est assemblé enregistrement par enregistrement en
@@ -500,7 +511,7 @@ async function sendBackupAll() {
   if (!navigator.onLine) return { ok: false, results: [], message: 'Pas de connexion Internet' };
   // Blob assemblé par morceaux + photos limitées aux 60 derniers jours (24 Mo
   // max) : jamais de chaîne géante en mémoire, voir buildBackup.
-  const payload = await buildBackupBlob({ withDocData: false, photosJours: 60 });
+  const payload = await buildBackupBlob({ withDocData: false, photosJours: 60, sansSecrets: true });
   const results = [];
   for (const t of targets) {
     const r = await t.send(payload);
@@ -697,6 +708,7 @@ VIEWS.dashboard = async function (el) {
     '<button class="btn secondary" data-go="service">🍽️ T° de service</button>' +
     '<button class="btn secondary" data-go="menu">🍲 Menu</button>' +
     '<button class="btn secondary" data-go="decongel">⏳ Décongélation</button>' +
+    '<button class="btn secondary" data-go="congelation">🧊 Congélation</button>' +
     '<button class="btn secondary" data-go="tracabilite">🏷️ Étiquettes</button>' +
     '<button class="btn secondary" data-go="nettoyage">🧽 Nettoyage</button>' +
     '<button class="btn secondary" data-go="huiles">🍟 Huiles</button>' +
@@ -723,7 +735,9 @@ VIEWS.dashboard = async function (el) {
     const res = await sendBackupAll();
     res.results.forEach(r => UI.toast((r.ok ? '✔ ' : '✘ ') + r.name + (r.ok ? ' : sauvegarde envoyée' : ' : ' + r.message), r.ok ? 'ok' : 'bad'));
     if (res.ok) {
-      setLastAutoBackupDate(UI.todayISO());
+      // marqueur quotidien posé seulement si TOUT a réussi : en cas de succès
+      // partiel, le retry horaire doit repasser pour la destination en échec
+      if (res.allOk) setLastAutoBackupDate(UI.todayISO());
       maybeWeeklyPdfToDrive().catch(() => {});
       maybeArchivePdfsToDrive().catch(() => {});
       render();
@@ -1275,7 +1289,7 @@ VIEWS.service = async function (el) {
 async function openServiceEditModal(id) {
   const r = await DB.getRecord(id);
   if (!r) return;
-  const menuNames = await getTodayMenuNames();
+  const menuNames = await getTodayMenuNames(r.date); // menu du jour du contrôle
   UI.modal(
     '<h2>✏️ Modifier le contrôle</h2>' +
     '<p class="muted" style="margin-bottom:12px">' + UI.frDate(r.date) + ' — enregistré par ' + UI.esc(r.agent || '') + '</p>' +
@@ -1334,10 +1348,14 @@ async function openServiceEditModal(id) {
         const ok = liaison === 'chaude' ? v >= RULES.chaudMin : v <= RULES.froidMax;
         const action = m.querySelector('[data-f="action"]').value.trim();
         if (!ok && !action) { UI.toast('Indique l’action corrective', 'bad'); return; }
+        const heureChoisie = UI.segValue(m, 'heure') || r.time;
         Object.assign(r, {
           plat, liaison, temp: v,
           date: m.querySelector('[data-f="dateCtrl"]').value || r.date,
-          time: UI.segValue(m, 'heure') || r.time,
+          time: heureChoisie,
+          // le service suit l'heure (12 h = midi, 18 h = soir) : un contrôle
+          // déplacé au soir ne doit plus compter dans le bilan du midi
+          service: heureChoisie === '18:00' ? 'soir' : 'midi',
           platTemoin: UI.segValue(m, 'temoin') === 'oui',
           tolere: liaison === 'froide' && ok && v > RULES.froidLimite,
           conforme: ok, action: ok ? '' : action, agent,
@@ -1354,7 +1372,7 @@ async function openServiceEditModal(id) {
 async function openServiceModal(prefillPlat, svc, jour) {
   const service = svc || (new Date().getHours() < 14 ? 'midi' : 'soir');
   const dateCtrl = jour || UI.todayISO();
-  const menuNames = await getTodayMenuNames();
+  const menuNames = await getTodayMenuNames(dateCtrl); // menu du jour AFFICHÉ (rattrapage de la veille compris)
   UI.modal(
     '<h2>🍽️ Contrôle au service</h2>' +
     dishInputHTML('plat', 'Plat', 'Ex. : purée, salade de betteraves…', menuNames, prefillPlat || '') +
@@ -1996,13 +2014,16 @@ async function applyImport({ days, catalog }) {
   SETTINGS.plats.sort((a, b) => a.name.localeCompare(b.name, 'fr'));
   await saveSettings();
 
-  // Menus du jour : remplace les enregistrements existants pour chaque date+service importé
+  // Menus du jour : remplace les enregistrements existants pour chaque
+  // date+service importé. Les menus en place sont chargés UNE seule fois
+  // (365 requêtes par jour importé rendaient la synchro très lente).
+  const existants = new Map();
+  (await DB.getByType('menu')).forEach(m => existants.set(m.date + '|' + m.service, m));
   for (const iso of Object.keys(days)) {
-    const existing = await DB.getByTypeAndRange('menu', iso, iso);
     for (const service of ['midi', 'soir']) {
       const items = [...days[iso][service]];
       if (!items.length) continue;
-      const prev = existing.find(m => m.service === service);
+      const prev = existants.get(iso + '|' + service);
       if (prev) { prev.items = items; await DB.updateRecord(prev); }
       else await DB.addRecord({ type: 'menu', date: iso, service, items });
     }
@@ -2923,7 +2944,7 @@ const EXPORT_COLUMNS = {
   congel: [['Date de congélation', r => UI.frDate(r.date)], ['Heure', r => r.time], ['Produit', r => r.produit], ['Agent', r => r.agent]],
   etiquette: [['Date photo', r => UI.frDate(r.date)], ['Heure', r => r.time], ['Destiné au', r => r.destineLe ? UI.frDate(r.destineLe) : UI.frDate(r.date)], ['Produit', r => r.produit], ['Lot', r => r.lot], ['DLC', r => r.dlc ? UI.frDate(r.dlc) : ''], ['Photo', r => r.photo ? 'OUI' : 'NON'], ['Agent', r => r.agent]],
   nettoyage: [['Date', r => UI.frDate(r.date)], ['Heure', r => r.time], ['Tâche', r => r.taskName], ['Zone', r => r.zone], ['Fréquence', r => r.freq], ['Agent', r => r.agent]],
-  huile: [['Date', r => UI.frDate(r.date)], ['Heure', r => r.time], ['Friteuse', r => r.friteuse], ['Opération', r => r.action], ['État huile', r => r.etat], ['Test AGL (mg KOH/g)', r => (r.agl === 'achanger' ? '≥ 3 NON CONFORME' : (r.agl === 'degradee' ? '1,5–2,5 dégradée' : (r.agl === 'bonne' ? '≤ 0,5 bonne' : ''))) + (r.aglValeur != null ? ' (' + r.aglValeur + ')' : '')], ['Polarité (ancien test)', r => r.polaires === 'nok' ? '> 25 % NON CONFORME' : (r.polaires === 'ok' ? '≤ 25 %' : '') + (r.polairesPct != null ? ' (' + r.polairesPct + ' %)' : '')], ['Huile usagée', r => r.volume != null || r.destination ? (r.volume != null ? r.volume + ' L' : '') + (r.destination ? ' → ' + r.destination : '') + (r.bon ? ' (bon ' + r.bon + ')' : '') : ''], ['Température (°C)', r => r.temp], ['Action corrective', r => r.actionCorrective], ['Remarque', r => r.remarque], ['Agent', r => r.agent]],
+  huile: [['Date', r => UI.frDate(r.date)], ['Heure', r => r.time], ['Friteuse', r => r.friteuse], ['Opération', r => r.action], ['État huile', r => r.etat], ['Test AGL (mg KOH/g)', r => (r.agl === 'achanger' ? '≥ 3 NON CONFORME' : (r.agl === 'degradee' ? '1,5–2,5 dégradée' : (r.agl === 'bonne' ? '≤ 0,5 bonne' : ''))) + (r.aglValeur != null ? ' (' + r.aglValeur + ')' : '')], ['Polarité (ancien test)', r => (r.polaires === 'nok' ? '> 25 % NON CONFORME' : (r.polaires === 'ok' ? '≤ 25 %' : '')) + (r.polairesPct != null ? ' (' + r.polairesPct + ' %)' : '')], ['Huile usagée', r => r.volume != null || r.destination ? (r.volume != null ? r.volume + ' L' : '') + (r.destination ? ' → ' + r.destination : '') + (r.bon ? ' (bon ' + r.bon + ')' : '') : ''], ['Température (°C)', r => r.temp], ['Action corrective', r => r.actionCorrective], ['Remarque', r => r.remarque], ['Agent', r => r.agent]],
   nonconf: [['Date', r => UI.frDate(r.date)], ['Heure', r => r.time], ['Objet', r => r.objet], ['Lieu', r => r.lieu], ['Lot', r => r.lot], ['Péremption', r => r.peremption ? UI.frDate(r.peremption) : ''], ['Description', r => r.description], ['Action corrective', r => r.action], ['Statut', r => r.statut], ['Agent', r => r.agent]],
   verif: [['Date', r => UI.frDate(r.date)], ['Heure', r => r.time], ['Instrument', r => r.instrument], ['Méthode', r => r.methode], ['Écart constaté (°C)', r => r.ecart], ['Conforme (|écart| ≤ 1 °C)', r => r.conforme === false ? 'NON' : 'OUI'], ['Action corrective', r => r.action], ['Agent', r => r.agent]],
   document: [['Date', r => UI.frDate(r.date)], ['Titre', r => r.nom], ['Catégorie', r => r.categorie], ['Fichier', r => r.fichier], ['Taille', r => r.taille ? Math.round(r.taille / 1024) + ' Ko' : ''], ['Note', r => r.note], ['Agent', r => r.agent]],
@@ -3839,7 +3860,8 @@ VIEWS.parametres = async function (el) {
     } else if (res.message) {
       UI.toast(res.message, 'bad');
     }
-    if (res.ok) { setLastAutoBackupDate(UI.todayISO()); render(); }
+    if (res.allOk) setLastAutoBackupDate(UI.todayISO()); // partiel : le retry horaire repassera
+    if (res.ok) render();
   });
 
   // Agents
@@ -4133,10 +4155,14 @@ async function maybeMenuSync(force) {
       return;
     }
     const sheets = await readWorkbookFromBuffer(buf);
-    if (!isGridMenuWorkbook(sheets)) { if (force) UI.toast('Le fichier en ligne n’est pas au format menu hebdomadaire', 'bad'); return; }
+    if (!isGridMenuWorkbook(sheets)) {
+      localStorage.setItem('haccp-menu-check', today); // fichier illisible : on réessaiera demain (pas toutes les heures)
+      if (force) UI.toast('Le fichier en ligne n’est pas au format menu hebdomadaire', 'bad');
+      return;
+    }
     const { days, catalog } = parseGridMenus(sheets);
     const dates = Object.keys(days);
-    if (!dates.length) return;
+    if (!dates.length) { localStorage.setItem('haccp-menu-check', today); return; }
     await applyImport({ days, catalog });
     localStorage.setItem('haccp-menu-check', today);
     localStorage.setItem('haccp-menu-hash', hash);
