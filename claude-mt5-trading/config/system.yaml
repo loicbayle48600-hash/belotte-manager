@@ -1,0 +1,111 @@
+# Configuration système — valeurs initiales recommandées (section 40 du master prompt)
+system:
+  # Gel des réglages de trading (plan pro du 2026-09-25, point 2, accord utilisateur) : la version en cours n'est jugée
+  # qu'après `trades_requis` trades live clôturés depuis `depuis`. Pas de changement de trading d'ici là, sauf correctif
+  # de sécurité ou demande explicite de l'utilisateur. Suivi : page Qualité du dashboard et rapport de 17 h New York.
+  # lab-v1 (25/09 19:26 UTC) close à 96/100 trades : le 01/10, l'utilisateur a demandé le forex court terme en live (Asie,
+  # puis toutes les sessions) et les trades semi-longs (stop suiveur des agents H4 / D1 / W1 sur l'ATR de leur unité,
+  # positions semi-longues protégées gardées le week-end, sortie à 8 h des trades M1-M15 qui ne décollent pas,
+  # protection à 1,0 R pour les agents H1)
+  # → nouvelle version lab-v2, nouveau gel de 100 trades.
+  # lab-v3 (01/10, décisions utilisateur) : risque par trade remis à 0,125 % (forex 0,0625 %), verrou à 3 pertes, perte
+  # journalière interne 2,5 %, agents shadow S22 / S24 / CH158 / CH115 passés en live ; lab-v2 close après moins d'un jour.
+  gel_reglages:
+    version: lab-v3
+    depuis: "2026-10-01T09:30:00+00:00"
+    trades_requis: 100
+  # début des statistiques des comptes suiveurs (comptes démo remis à 500 000 $ le 2026-09-25)
+  accounts_stats_since: "2026-09-25T12:55:22+00:00"
+  # début du compte maître actuel : les statistiques du maître (dashboard) repartent de cette date
+  master_account_since: "2026-09-25T12:55:22+00:00"
+  autonomous_demo: true          # AUTONOMOUS_TRADING_DEMO
+  autonomous_prop: true          # AUTONOMOUS_TRADING_PROP — activé sur demande explicite de l'utilisateur le 2026-09-21 (règles vérifiées le 2026-09-19, EA approuvé)
+  safe_mode_on_startup: true
+  magic_number: 51000            # identifie les positions du bot dans MT5
+  order_comment_prefix: "TLAB"
+  heartbeat_max_age_sec: 45      # au-delà, le watchdog considère l'orchestrateur mort
+  data_max_age_sec: 60           # fraîcheur maximale d'un tick pour autoriser une entrée — 30→60 le 2026-09-22 sur accord utilisateur : sur le flux DEMO, EURUSD passe 31-43 s sans tick la nuit et le watchdog battait (SAFE_MODE/AUTO toutes les ~10 min)
+  min_bars_required: 250
+  # 2026-09-29 (agents M1, famille S) : unités de temps chargées pour quelques symboles seulement (1 lecture / min chacun)
+  extra_timeframes:
+    M1: [BTCUSD, ETHUSD, US500, USTEC, DE40, XAUUSD]
+  timezone_local: "Europe/Paris"
+
+scheduler:
+  watchdog_interval_sec: 3
+  position_manager_interval_sec: 15
+  fast_scanner_interval_sec: 60
+  news_interval_sec: 120
+  calendar_interval_sec: 900
+  research_interval_sec: 900     # 3600 -> 1800 le 25/09, 1800 -> 900 le 28/09 au soir (boost des tests en ombre, demande utilisateur)
+  timeframes: ["M5", "M15", "H1", "H4", "D1"]
+
+execution:
+  # 2026-09-25, décision utilisateur « reviens au 19 septembre, ça marchait mieux » (option stratégies du 19) :
+  # les filtres d'entrée ajoutés après le 19/09 ne refusent plus rien (ils restent journalisés pour comparer),
+  # et seules les invalidations EMA50 d'origine ferment une position avant son stop. Risque 628 $, règles FOXX
+  # choisies le 25/09, compte maître IC et copie inchangés. Pour annuler : vider la liste, invalidation_levels: true.
+  gate_checks_disabled: [06b_rr_live, 11b_risque_utile]   # 07b réactivé le 2026-09-25 (demande utilisateur)
+  invalidation_levels: false
+  max_spread_atr_ratio: 0.15     # spread / ATR(14) maximal
+  # 2026-09-27, accord utilisateur (« je veux des trades ») : plafond spread / ATR H1 propre à la crypto. SOL (0,185 ATR)
+  # était refusé alors que son coût réel ne fait que 12 % du stop (07b) ; 07b reste le vrai garde-fou du coût.
+  max_spread_atr_ratio_by_class: {crypto: 0.25}
+  # part maximale du RISQUE (distance entrée→stop) que le spread peut consommer — 2026-09-22, accord
+  # utilisateur. Complète max_spread_atr_ratio, qui ne voit pas un stop bien plus serré que l'ATR :
+  # mesuré sur le journal, GBPTRY proposait un spread médian de 4 126 pts pour un stop médian de 38 pts.
+  # 0.35 → 0.20 le 2026-09-25, accord utilisateur (plan pro, point 4) : coût d'entrée moyen 10 % du risque, jusqu'à 28 %
+  max_spread_sl_ratio: 0.20
+  # crypto: 800 ajoute le 2026-09-20 sur decision explicite. BTCUSD cote ~500 points chez
+  # IC Markets, soit 5 USD sur 80 000 (0,006 %) : le defaut a 40 bloquait toute la crypto.
+  # Le garde-fou max_spread_atr_ratio (0.15) reste inchange et continue de proteger.
+  # crypto: 6000 (2026-09-20, décision explicite). La mesure en POINTS n'est pas comparable
+  # d'une crypto à l'autre : 3874 pts sur BTCUSD = 0,048 % du prix, 449 pts sur KSMUSD = 11 %.
+  # Le plafond en points est donc neutralisé pour cette classe ; c'est max_spread_atr_ratio
+  # (0.15), relatif et donc pertinent, qui tranche. Le garde-fou forex à 40 points est intact.
+  max_spread_points: {default: 40, XAU: 60, indices: 100, crypto: 6000}
+  slippage_deviation_points: 20
+  min_sl_atr_ratio: 0.25         # SL minimum = 0.25 x ATR
+  # 2026-09-27, accord utilisateur (« fais-le si c'est mieux ») : rejeu des 7 derniers jours — refuser les stops < 0,75 ATR H1
+  # améliorait la semaine de +13 R (98 → 54 trades, DD 35 → 22 R). Hors crypto seulement : les agents crypto M5/M15
+  # (P16-P23) ont par construction des stops de 1,5 ATR de leur unité de temps, soit 0,4-0,75 ATR H1.
+  min_sl_atr_ratio_by_class: {forex: 0.75, indices: 0.75, metals: 0.75, energies: 0.75}
+  # 2026-09-27, accord utilisateur : revues IA par cycle 3 → 5 (« monte à 10 si besoin »). En parallèle, bornées à 25 s.
+  max_llm_reviews_per_cycle: 5
+  # 2026-09-28 au soir, décisions utilisateur après revue par agents :
+  # - un agent revu par l'IA au moins N fois sans jamais un APPROVE (B06 : 829 revues, 0 ; C05 : 1 121, 1) cesse d'être
+  #   soumis à l'IA (verdict déterministe seul) — il libère les créneaux de revue ; compteur par version d'agent
+  llm_skip_never_approved_after: 30
+  # - le forex en M1/M5/M15 perd en réel (120 trades, −0,25 R/trade ; l'optimiseur ne retient rien en M15) : ses signaux
+  #   sont suivis en papier seulement, jamais exécutés ; H1/H4 et les autres classes continuent
+  # 2026-10-01, décision utilisateur (« sur tous les marchés en réel ») : plus de papier pour le forex court terme, dans
+  # toutes les sessions. Avertissement donné : en papier, Londres −12 R (73 trades) et New York −20 R (51 trades) avant
+  # spread ; filets : gate complet (07b coût ≤ 20 % du risque), risque forex 0,025 %, suspension automatique des perdants.
+  forex_short_term_paper_only: false
+  # 2026-10-01, demande utilisateur (« en Asie mets les agents en live, pas sur papier ») : pendant la session ASIE, le forex
+  # court terme (M1/M5/M15) passe en LIVE (gate complet : 07b coût ≤ 20 % du risque, risque forex 0,025 %). Papier ASIE du
+  # 29 au 30/09 : 77 trades, +29,2 R brut, ≈ +20 R après commission (spread non mesuré en papier), PF 1,46 puis 1,36.
+  forex_short_term_live_sessions: [ASIA]
+  # - heures UTC interdites aux entrées forex (refus avant revue IA). Mesuré : −21 R concentrés sur 09–11 h et 13–14 h UTC
+  #   en 8 jours, échantillon court. Décision utilisateur 28/09 au soir : le forex garde le droit de trader à ces heures →
+  #   liste vide (le réglage reste disponible, ex. [9, 10, 13]).
+  forex_blocked_hours_utc: []
+  max_sl_atr_ratio: 4.0
+  min_rr_required: 1.5
+  required_setup_score: 65       # score minimal pour candidat sérieux (0-100)
+  # 2026-09-26, demande explicite de l'utilisateur (« baisse-le juste pour aujourd'hui », valeur choisie : 55) :
+  # exception au gel lab-v1, limitée à la journée FOXX du samedi 26/09. Retour automatique à 65 à 17 h New York.
+  # 2026-09-27 : reconduit pour la journée du dimanche (accord utilisateur), retour à 65 à 17 h New York
+  required_setup_score_temporaire: {valeur: 55, jusqu_a: "2026-09-27T21:00:00+00:00"}
+
+commands:
+  panic_close_all_bot_positions: true
+
+# Compte attendu (informations NON secrètes ; le mot de passe n'est jamais ici).
+# Le smoke test refuse tout compte qui ne correspond pas ou qui n'est pas DEMO.
+account_expected:
+  login: 53068680          # compte DÉMO maître depuis le 2026-09-24, Hedge, 500 000 USD (ancien 53060800 = « compte test 1 », archivé)
+  server: "ICMarketsEU-Demo"
+  trade_mode: DEMO
+  currency: USD
+  hedging: true

@@ -1,0 +1,146 @@
+# Profil prop firm — valeurs RELEVÉES sur la documentation officielle.
+# Source unique de vérité pour le code : voir docs/prop/foxx_funded_regles.md pour la transcription
+# complète et la méthode de relevé. Toute valeur non confirmée doit rester UNKNOWN (bloquante).
+prop:
+  prop_firm: FOXX_FUNDED
+  program: 1_STEP
+  account_size: 500000
+  profit_target_percent: 7.0                      # 10 % pour le programme en 2 phases
+  max_daily_loss_hard_percent: 4.0                # en % du SOLDE INITIAL, pas de l'equity du jour
+  max_overall_loss_hard_percent: 8.0              # en % du SOLDE INITIAL, drawdown STATIQUE
+  prop_rules_verified: true                       # PROP_RULES_VERIFIED (relevé du 2026-09-19)
+  user_explicitly_authorized_prop_automation: true    # autorisé explicitement par l'utilisateur le 2026-09-21 (« AUTONOMOUS_PROP active le »)
+  rules_source_url: "https://www.foxx-funded.com/fr/faqs"
+  rules_version: "faq-2026-09-19"
+  rules_verified_at: "2026-09-19"
+
+  # --- Définition de la journée de trading ---
+  trading_day_definition: "reset quotidien à 17:00 America/New_York (heure de New York)"
+  trading_day_reset_hour: 17
+  trading_day_reset_minute: 0
+  trading_day_timezone: "America/New_York"
+
+  # --- Bases de calcul des pertes ---
+  daily_loss_basis: "max(solde, equity) au reset moins 4 % du solde initial"
+  daily_loss_reference: MAX_BALANCE_EQUITY_AT_RESET   # base du plancher journalier
+  loss_reference_balance: INITIAL_BALANCE             # dénominateur des 4 % et des 8 %
+  drawdown_type: STATIC                               # ni trailing en 1 phase, ni en 2 phases
+  floating_equity_counts: true                        # l'equity flottante compte dans la perte totale
+
+  # --- Idée de trade (agrégation) ---
+  max_risk_per_trade_idea_percent: 2.0            # perte max par idée de trade, en % du solde initial
+  trade_idea_aggregation_minutes: 10              # rouvrir dans le même sens sous 10 min = même idée
+  max_profit_per_trade_percent: 1.5
+
+  # --- Cohérence ---
+  consistency_rule: "aucune idée de trade ne peut dépasser 25 % du profit total ; vérifié au paiement, non disqualifiant"
+  consistency_max_share_percent: 25.0
+  consistency_checked_at: PAYOUT                  # contrôlée au paiement, pas en continu
+  consistency_blocking: false                     # dépasser le seuil n'élimine pas : il faut continuer à trader
+  # Application en direct (décision utilisateur 2026-09-23) : une fois le profit net du cycle >= 1 % du solde
+  # initial, aucune nouvelle idée ne peut viser plus de 25 % du profit total (gain plafonné = profit des
+  # autres idées / 3 : le risque est réduit en conséquence) et une idée ouverte qui atteint ce plafond est
+  # fermée. En dessous du seuil la règle est mathématiquement inapplicable (la première idée = 100 %).
+  consistency_enforced: true  # réactivé le 2026-09-25 (demande utilisateur)
+  consistency_enforce_from_profit_percent: 0.3     # 1.0 → 0.3 le 2026-09-24 (décision utilisateur : protéger la cohérence plus tôt)
+
+  # --- Taille de lots maximale « pour le respect de la cohérence » (FAQ relevée le 2026-09-23) ---
+  # Clé = taille de compte (USD) ; la ligne appliquée est la plus grande clé <= account_size.
+  # Le plafond s'applique aux lots OUVERTS d'une même idée (même symbole, même sens) : positions déjà
+  # ouvertes + nouvel ordre. Un sous-jacent inconnu prend la colonne la plus stricte.
+  max_lots_by_account_size_desactive:  # retour à l'état du 23/09 (demande utilisateur 2026-09-25)
+    5000:   {forex: 0.5,  commodities: 0.15, indices: 0.38, crypto: 0.2}
+    10000:  {forex: 1.0,  commodities: 0.3,  indices: 0.75, crypto: 0.38}
+    25000:  {forex: 2.5,  commodities: 0.75, indices: 1.5,  crypto: 0.75}
+    50000:  {forex: 5.0,  commodities: 1.5,  indices: 3.0,  crypto: 1.5}
+    100000: {forex: 10.0, commodities: 3.0,  indices: 6.0,  crypto: 3.0}
+    200000: {forex: 10.0, commodities: 3.0,  indices: 6.0,  crypto: 3.0}
+    300000: {forex: 10.0, commodities: 3.0,  indices: 6.0,  crypto: 3.0}
+    500000: {forex: 10.0, commodities: 3.0,  indices: 6.0,  crypto: 3.0}
+
+  # --- Pratiques interdites (page « Ce qu'on n'autorise pas » + politique de jeu, relevées le 2026-09-23) ---
+  hedging_allowed: false  # réactivé le 2026-09-25 (demande utilisateur)
+  reversal_after_loss_cooldown_minutes: 0  # retour à l'état du 23/09 (demande utilisateur 2026-09-25)
+  min_hold_seconds: 60                            # « maintenir les positions ouvertes plus d'une minute »
+  copy_trading_own_trades_allowed: true           # logiciel de copy trading autorisé pour SES trades ; signaux tiers interdits
+  max_order_layers_per_idea: 4                    # > 4 couches sur la même idée avec > 2 % d'exposition = interdit
+
+  # --- Levier maximal fixe (FAQ relevée le 2026-09-23), évaluation et financé ---
+  leverage_by_class: {forex: 100, indices: 20, commodities: 20, crypto: 2}
+
+  # --- Commissions (FAQ relevée le 2026-09-23), par lot aller-retour, USD ---
+  commissions_per_lot: {forex: 7.0, commodities: 7.0, indices: 0.0, crypto: 3.0}
+  # crypto en % de la valeur du trade (2026-09-26) : 3 $ par lot BTC (~84 000 $) ≈ 0,004 %. Par lot, la commission
+  # valait 150 % à 16 700 % du risque sur les cryptos à petit lot (SOL, XRP, ADA…) et bloquait tout sauf le BTC.
+  crypto_commission_percent_of_notional: 0.004
+
+  # --- Cycle de paiement automatique (décision utilisateur 2026-09-23 : « je trade tous les jours et tous
+  # les 7 jours je retire tous mes bénéfices ; les comptes démo font comme un compte financé ») ---
+  # Dès que le cycle compte assez de jours de trading (14 pour le 1er paiement, 7 ensuite) et que le solde
+  # dépasse le solde initial : entrées verrouillées (PAYOUT_WINDOW), positions du bot fermées (FOXX exige
+  # aucune position ouverte à la demande), puis retrait de TOUT le profit (plafonné à 15 % du solde initial
+  # par cycle) — simulé sur DEMO (`simulated_withdrawal`), demandé à l'humain sur un compte financé
+  # (`payout_ready`, puis commande PAYOUT_DONE <montant>). Cohérence 25 % non respectée → pas de retrait,
+  # on continue à trader (règle FOXX). Le nouveau cycle démarre au retrait.
+  payout_auto_cycle: true  # réactivé le 2026-09-25 (demande utilisateur)
+  payout_withdraw_all_profit: true
+  payout_requires_no_open_positions: true
+  payout_demo_as_funded: true
+
+  # --- Activité minimale ---
+  min_trading_days: 5
+  min_trades_per_week: 1
+  time_limit_days: null                           # période de trading illimitée
+
+  # --- Stratégies et outils ---
+  stop_loss_mandatory: true
+  max_trades_without_sl: 3                        # 3 transactions sans SL = rupture immédiate
+  martingale_allowed: false
+  # hedging_allowed : voir « Pratiques interdites » ci-dessus (false depuis la page « Ce qu'on n'autorise pas », 2026-09-23)
+  high_frequency_trading_allowed: false
+  copy_trading_allowed: true                      # entre comptes personnels du titulaire
+  ea_allowed: true
+  ea_requires_approval: true                      # approbation explicite du support après achat du défi
+  ea_approval_obtained: true                      # approbation de l'EA confirmée par l'utilisateur le 2026-09-21 (démarche humaine auprès de la prop firm)
+
+  # --- News ---
+  news_trading_allowed_during_evaluation: true
+  # true le 2026-09-26 : l'utilisateur a pris l'option news FOXX (trading autorisé pendant les annonces)
+  news_trading_allowed_on_funded: true
+  news_trading_window_minutes: 5                  # 5 min avant ET après un événement à fort impact (compte financé)
+
+  # --- Sessions ---
+  weekend_trading_allowed: CRYPTO_ONLY
+  # ALL depuis le 2026-09-27 (décision utilisateur) : le relevé FOXX interdit seulement de TRADER hors crypto le
+  # week-end (`weekend_trading_allowed`), pas de GARDER une position ouverte ; « CRYPTO_ONLY » venait du modèle de
+  # départ (18/09), pas des règles FOXX. Avec CRYPTO_ONLY, le bot fermerait les positions hors crypto 15 min avant
+  # le reset du vendredi et refuserait les entrées hors crypto dans l'heure qui précède (code conservé).
+  # CRYPTO_ONLY depuis le 2026-09-27 au soir (décision utilisateur : « le vendredi, ferme les positions de forex avant la
+  # clôture du marché ») : fermeture des positions hors crypto 15 min avant le reset du vendredi 17:00 New York
+  # (22:45 Paris en été), aucune entrée hors crypto dans l'heure qui précède. Positions crypto conservées.
+  weekend_holding_allowed: CRYPTO_ONLY
+  weekend_no_entry_minutes_before: 60
+  weekend_close_minutes_before: 15
+  # 2026-10-01, décision utilisateur (« on ne garde pas la fermeture du vendredi pour le semi-long, mais il faut faire
+  # quelque chose pour l'écart de prix ») : les positions SEMI-LONGUES (agents H4 / D1 / W1) restent ouvertes le week-end,
+  # sous trois protections ; toutes les autres positions hors crypto sont fermées comme avant.
+  weekend_semi_long:
+    enabled: true
+    timeframes: [H4, D1, W1]
+    require_break_even: true        # stop au moins au prix d'entrée (profit protégé), sinon fermeture
+    reduce_percent: 50              # la moitié du volume est fermée avant le week-end (gain encaissé, écart divisé par 2)
+    gap_budget_percent: 0.25        # perte au-delà du stop sur un écart « 1 week-end sur 100 » ≤ 0,25 % du capital
+    # écart de réouverture du lundi « 1 week-end sur 100 », en ATR journalier, mesuré sur l'historique H1 du cache
+    # (mai 2023 - sept. 2026) : métaux 0,77 · indices 1,15 · forex 1,26 · énergie 2,40 → arrondis vers le haut
+    gap_p99_atr_d1: {forex: 1.3, indices: 1.2, metals: 0.8, energies: 2.4, default: 1.5}
+
+  # --- Paiements ---
+  payout_rules: "1er paiement après 14 jours de trading puis tous les 7 jours ; fenêtre de demande 24 h ; partage 70/30 puis 80/20 puis 90/10 ; retrait max 15 % du solde initial par cycle"
+  payout_first_after_trading_days: 14
+  payout_interval_trading_days: 7
+  payout_request_window_hours: 24
+  max_withdrawal_percent_per_cycle: 15.0
+  payout_profit_split_sequence: [70, 80, 90]      # part du trader : 1er paiement, 2e, puis 3e et suivants
+  # La FAQ relevée le 2026-09-19 ne dit PAS si le plancher de drawdown est recalé après un paiement.
+  # UNKNOWN => le simulateur retient l'hypothèse prudente (plancher inchangé) et le signale.
+  payout_floor_rebased_after_withdrawal: UNKNOWN

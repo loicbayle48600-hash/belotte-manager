@@ -1,0 +1,59 @@
+import shutil
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+
+import pytest
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "src"))
+
+from tradinglab.core.config import load_settings  # noqa: E402
+from tradinglab.mt5.mock_adapter import MockBroker  # noqa: E402
+
+FIXED_NOW = datetime(2026, 1, 20, 10, 0, tzinfo=timezone.utc)  # mardi 10:00 UTC, session LONDON
+
+
+@pytest.fixture(autouse=True)
+def _gestion_backtest_par_defaut_isolee():
+    """2026-10-01 : le pipeline de recherche (orchestrateur, optimiseur) branche la gestion de position par défaut du
+    moteur de backtest (réglage global du module) ; sans remise à l'état initial, un test suivant qui compare
+    `run_backtest(management=None)` à une simulation sans gestion échouait selon l'ordre des tests."""
+    from tradinglab.backtest import engine
+
+    avant = engine.DEFAULT_MANAGEMENT
+    yield
+    engine.DEFAULT_MANAGEMENT = avant
+
+
+@pytest.fixture
+def home(tmp_path):
+    shutil.copytree(ROOT / "config", tmp_path / "config")
+    # la date de début du compte maître RÉEL (`master_account_since`, changement de compte du 2026-09-24) filtrerait
+    # les trades fictifs des tests : les tests partent d'une config sans compte maître daté
+    sysf = tmp_path / "config" / "system.yaml"
+    sysf.write_text("".join(l for l in sysf.read_text(encoding="utf-8").splitlines(keepends=True)
+                            if not l.lstrip().startswith("master_account_since:")), encoding="utf-8")
+    return tmp_path
+
+
+@pytest.fixture
+def settings(home, monkeypatch):
+    monkeypatch.setenv("TRADINGLAB_BROKER", "mock")
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("FMP_API_KEY", raising=False)
+    return load_settings(home)
+
+
+@pytest.fixture
+def broker(settings):
+    """Broker simulé se présentant comme le compte DEMO attendu par la configuration.
+
+    Le login et le serveur sont lus dans `config/system.yaml` (`account_expected`) : changer de compte
+    démo dans la configuration ne casse donc aucun test.
+    """
+    exp = settings.get("account_expected", {}) or {}
+    b = MockBroker(seed=7, login=int(exp.get("login", 5056182608)), server=str(exp.get("server", "MetaQuotes-Demo")))
+    b.connect()
+    b.set_now(FIXED_NOW)
+    return b

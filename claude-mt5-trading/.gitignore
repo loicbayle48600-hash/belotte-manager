@@ -1,0 +1,52 @@
+# Secrets / credentials — JAMAIS versionnés
+.env
+.env.*
+*.key
+*.pem
+credentials*
+secrets/
+tokens*
+*token*.json
+api_keys*
+mt5_login*
+broker_*.ini
+
+# Environnement Python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+build/
+dist/
+
+# Données d'exécution
+logs/*
+!logs/.gitkeep
+state/*
+!state/.gitkeep
+state/private/
+data/*.db
+data/*.db-journal
+data/cache/
+reports/*
+!reports/.gitkeep
+backups/*
+!backups/.gitkeep
+models/*
+!models/.gitkeep
+
+# archives des anciens comptes maîtres (état du compte, rapports)
+archives/
+
+# Données d'exécution du bot (2026-09-25, plan pro point 1) : modifiées en permanence par le bot, elles marqueraient
+# toujours la version comme « modifiée ». Sauvegardées par start_all (archives\auto) et par les copies datées.
+data/agent_status.json
+data/agent_stats.json
+data/cot_cache.json
+data/research/
+data/validation_live/
+data/validation_live_*/
+data/validation_*/
